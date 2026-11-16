@@ -187,10 +187,11 @@ final class ShareSettings {
         if a.broadcastKey { text += " keystroke(Control+Alt+B) = keyboardBroadcast(toggle)\n" }
         // Control+Alt+1 is this host, 2-9 the receivers by their jump number (chosen in 排列螢幕, else pairing order).
         if a.directKeys {
-            if receivers.isEmpty { for (i, (name, _)) in grid.prefix(9).enumerated() { text += " keystroke(Control+Alt+\(i + 1)) = switchToScreen(\(name))\n" } }
+            if receivers.isEmpty { for (i, (name, _)) in grid.prefix(9).enumerated() { text += " keystroke(Control+Alt+\(i + 1)) = switchToScreen(\(name))\n keystroke(Control+Alt+KP_\(i + 1)) = switchToScreen(\(name))\n" } }
             else {
-                text += " keystroke(Control+Alt+1) = switchToScreen(\(hostName))\n"
-                for (fp, n) in numbers(receivers, custom: custom).sorted(by: { $0.value < $1.value }) { text += " keystroke(Control+Alt+\(n)) = switchToScreen(\(screenName(fp)))\n" }
+                // Each number also works on the numeric keypad (KP_N), pointing at the same computer.
+                text += " keystroke(Control+Alt+1) = switchToScreen(\(hostName))\n keystroke(Control+Alt+KP_1) = switchToScreen(\(hostName))\n"
+                for (fp, n) in numbers(receivers, custom: custom).sorted(by: { $0.value < $1.value }) { text += " keystroke(Control+Alt+\(n)) = switchToScreen(\(screenName(fp)))\n keystroke(Control+Alt+KP_\(n)) = switchToScreen(\(screenName(fp)))\n" }
             }
         }
         // Extra options from the removed expert box: skipped if invalid, so they can never stop the core from starting.
@@ -1068,7 +1069,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let tap = choice([0, 250, 400], { $0 == 0 ? "關閉" : seconds($0) + "內" }, a.doubleTap); row("連碰兩下邊緣才切換", nil, tap)
         let corners = toggle(a.corners); row("螢幕角落不切換", "方便點角落的選單或關閉鈕", corners)
         let keys = toggle(a.switchKeys); row("啟用切換快捷鍵", "開啟後，按 Control+Option+方向鍵切到另一台", keys)
-        let direct = toggle(a.directKeys); row("啟用跳到指定電腦快捷鍵", "按 Control+Option+1 回到這台，2 以後依排列螢幕的順序", direct)
+        let direct = toggle(a.directKeys); row("啟用跳到指定電腦快捷鍵", "按 Control+Option+1 回到這台，2 以後依排列螢幕的順序；右側數字鍵也可以", direct)
         let needs = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 140, height: 26)); needs.addItems(withTitles: ["不需要", "Shift", "Control", "Option"])
         needs.selectItem(at: ["", "shift", "control", "alt"].firstIndex(of: a.switchNeeds) ?? 0)
         row("按住按鍵才切換", "要按住這個鍵，滑鼠碰到邊緣才會切換", needs)
@@ -1634,7 +1635,7 @@ func selfTest(_ directory: URL) throws {
     guard ShareSettings.numbers([jA, jB, jC], custom: [jC: 5, jB: 2]) == [jB: 2, jA: 3, jC: 5] else { throw ShareError.message("Jump numbering wrong") }
     var keys = ShareAdvanced(); keys.directKeys = true
     let numbered = try ShareSettings.config("right", keys, receivers: [jA, jB], numbers: [jB: 7])
-    guard numbered.contains(" keystroke(Control+Alt+7) = switchToScreen(\(ShareSettings.screenName(jB)))\n"), numbered.contains(" keystroke(Control+Alt+2) = switchToScreen(\(ShareSettings.screenName(jA)))\n") else { throw ShareError.message("Custom jump numbers not in config") }
+    guard numbered.contains(" keystroke(Control+Alt+7) = switchToScreen(\(ShareSettings.screenName(jB)))\n"), numbered.contains(" keystroke(Control+Alt+2) = switchToScreen(\(ShareSettings.screenName(jA)))\n"), numbered.contains(" keystroke(Control+Alt+KP_7) = switchToScreen(\(ShareSettings.screenName(jB)))\n") else { throw ShareError.message("Custom jump numbers not in config") }
     app.log("NOTE: client \"\(screen)\" has disconnected")
     guard app.badge.text == "等待中", !app.status.stringValue.hasPrefix("正在控制"), app.map.tiles[1].placeholder else { throw ShareError.message("Disconnect not shown: \(app.badge.text) / \(app.status.stringValue)") }
     app.log("NOTE: client \"\(screen)\" has connected")

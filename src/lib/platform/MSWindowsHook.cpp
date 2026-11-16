@@ -238,8 +238,10 @@ keyboardHookHandler(WPARAM wParam, LPARAM lParam)
         // we don't use virtual keys because we don't know what the
         // state of the numlock key is.  we'll hard code the scan codes
         // instead.  hopefully this works across all keyboards.
+        // Ctrl+Alt+numpad is not Alt-code entry; let it through to the hot key check
+        // so keystroke(Control+Alt+KP_n) works while the cursor is on this screen.
         UINT sc = (lParam & 0x01ff0000u) >> 16;
-        if (menu &&
+        if (menu && (control & 0x80) == 0 &&
             (sc >= 0x47u && sc <= 0x52u && sc != 0x4au && sc != 0x4eu)) {
             return false;
         }

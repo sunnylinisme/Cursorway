@@ -227,7 +227,7 @@ static class ShareSettings
         b.Append(" screenSaverSync = " + (a.ScreenSaver ? "true" : "false") + "\n");
         if (a.SwitchKeys) foreach (string d in UsedDirections(cells)) b.Append(" keystroke(Control+Alt+" + Char.ToUpperInvariant(d[0]) + d.Substring(1) + ") = switchInDirection(" + d + ")\n");
         if (a.LockKey) b.Append(" keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n");
-        if (a.DirectKeys) foreach (var item in AssignedNumbers().OrderBy(item => item.Value)) b.Append(" keystroke(Control+Alt+" + item.Value + ") = switchToScreen(" + item.Key + ")\n");
+        if (a.DirectKeys) foreach (var item in AssignedNumbers().OrderBy(item => item.Value)) { b.Append(" keystroke(Control+Alt+" + item.Value + ") = switchToScreen(" + item.Key + ")\n"); b.Append(" keystroke(Control+Alt+KP_" + item.Value + ") = switchToScreen(" + item.Key + ")\n"); }
         if (a.BroadcastKey) b.Append(" keystroke(Control+Alt+B) = keyboardBroadcast(toggle)\n");
         // Old saved extra options can no longer be seen or fixed, so a bad one is skipped rather than stopping the core.
         List<string> extra;
@@ -1587,7 +1587,7 @@ sealed class ShareWindow : Form
         row("連碰兩下邊緣才切換", null, tap);
         var corners = check(a.Corners); row("螢幕角落不切換", "方便點角落的開始按鈕或關閉鈕", corners);
         var keys = check(a.SwitchKeys); row("啟用切換快捷鍵", "開啟後，按 Ctrl+Alt+方向鍵切到另一台", keys);
-        var direct = check(a.DirectKeys); row("啟用跳到指定電腦快捷鍵", "按 Ctrl+Alt+1 回到這台，2 以後依排列螢幕的順序", direct);
+        var direct = check(a.DirectKeys); row("啟用跳到指定電腦快捷鍵", "按 Ctrl+Alt+1 回到這台，2 以後依排列螢幕的順序；右側數字鍵也可以（需開 NumLock）", direct);
         var needs = choice(new[] { 0, 1, 2, 3 }, v => new[] { "不需要", "Shift", "Ctrl", "Alt" }[v], Math.Max(0, Array.IndexOf(ShareAdvanced.NeedKeys, a.SwitchNeeds)));
         row("按住按鍵才切換", "要按住這個鍵，滑鼠碰到邊緣才會切換", needs);
         y += 16; section("鍵盤與滑鼠");
@@ -2176,7 +2176,7 @@ static class ShareProgram
             // Chosen switch numbers: kept, a repeated one only once, the rest fill the free numbers in arrange order.
             ShareSettings.Numbers = new Dictionary<string, int> { { fc, 2 } };
             string numbered = ShareSettings.Config(true);
-            foreach (string expected in new[] { " keystroke(Control+Alt+1) = switchToScreen(windows-host)\n", " keystroke(Control+Alt+2) = switchToScreen(" + nc + ")\n", " keystroke(Control+Alt+3) = switchToScreen(" + na + ")\n", " keystroke(Control+Alt+4) = switchToScreen(" + nb + ")\n" })
+            foreach (string expected in new[] { " keystroke(Control+Alt+1) = switchToScreen(windows-host)\n", " keystroke(Control+Alt+2) = switchToScreen(" + nc + ")\n", " keystroke(Control+Alt+KP_2) = switchToScreen(" + nc + ")\n", " keystroke(Control+Alt+3) = switchToScreen(" + na + ")\n", " keystroke(Control+Alt+4) = switchToScreen(" + nb + ")\n" })
                 if (!numbered.Contains(expected)) throw new Exception("Chosen switch number not used: " + expected.Trim() + "\n" + numbered);
             ShareSettings.Numbers = new Dictionary<string, int> { { fa, 5 }, { fb, 5 }, { fc, 1 } };
             var assigned = ShareSettings.AssignedNumbers();

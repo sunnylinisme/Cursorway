@@ -1418,9 +1418,17 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     @objc func forgetChosen(_ item: NSMenuItem) {
         if let fp = item.representedObject as? String { confirmForget("FORGET\t" + fp, "解除與「\(peers.first { $0.fingerprint == fp }?.name ?? "")」的配對？") } else { confirmForget("FORGET", "解除所有配對？") }
     }
+    // Removing one receiver while others stay paired keeps the core running; REMOVED then reloads its config
+    // so the others stay connected. Removing the last one, or all, stops the core first.
+    func forgetNow(_ command: String) {
+        let parts = command.components(separatedBy: "\t")
+        let keepCore = options.host && parts.count == 2 && peers.contains { $0.fingerprint != parts[1] }
+        if !keepCore { stopBackend() }
+        send(command)
+    }
     func confirmForget(_ command: String, _ question: String) {
         let alert = NSAlert(); alert.messageText = "解除配對？"; alert.informativeText = question; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "解除")
-        if alert.runModal() == .alertSecondButtonReturn { stopBackend(); send(command) }
+        if alert.runModal() == .alertSecondButtonReturn { forgetNow(command) }
     }
     // Keeps the screen list, the paired label and the position controls in step with the paired computers.
     func peersChanged() {
@@ -1797,6 +1805,11 @@ func selfTest(_ directory: URL) throws {
     app.linkLine("REMOVED\t\(peer)"); app.linkLine("UNPAIRED\t\(peer)")
     guard !app.peers.contains(where: { $0.fingerprint == peer }), app.status.stringValue == "「\(movedName)」已解除和這台的配對（或改和其他主控端配對），這裡也已自動解除。" else { throw ShareError.message("UNPAIRED not shown: \(app.status.stringValue)") }
     app.rebuildNearby(); guard app.nearbyList.subviews.count == app.computers.count else { throw ShareError.message("Unpaired receiver not back in nearby list") }
+    app.peers = peersBefore; app.peersChanged()
+    // 解除 one of several receivers keeps the core (and so the other receivers' connections) running.
+    let fakeCore = Process(); app.core = fakeCore; app.peers = [(peer, "A"), ("v2:sha256:" + String(repeating: "e", count: 64), "B")]
+    app.forgetNow("FORGET\t\(peer)"); guard app.core === fakeCore else { throw ShareError.message("Forgetting one of two receivers stopped the core") }
+    app.peers = [(peer, "A")]; app.forgetNow("FORGET\t\(peer)"); guard app.core == nil else { throw ShareError.message("Forgetting the last receiver kept the core") }
     app.peers = peersBefore; app.peersChanged()
     // Receiver: its host unpaired it.
     app.options.host = false; app.linkLine("REMOVED\t\(peer)"); app.linkLine("UNPAIRED\t\(peer)")

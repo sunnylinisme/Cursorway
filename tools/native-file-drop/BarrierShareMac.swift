@@ -1170,7 +1170,9 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let saver = toggle(a.screenSaver); row("同步螢幕保護程式", nil, saver)
         let broadcast = toggle(a.broadcastKey); row("啟用鍵盤廣播快捷鍵", "開啟後，按 Control+Option+B 開始或停止：打的字會同時送到所有電腦", broadcast)
         let caps = toggle(a.capsLockFix); row("接收端的 Caps Lock 修正", "接收端的大小寫或 Caps Lock 燈號跟按鍵對不上時再開啟", caps)
-        let focus = toggle(a.preserveFocus); row("切走時保留這台的視窗焦點", "游標移到另一台時，這台目前使用中的視窗不會失去焦點", focus)
+        // The core keeps the foreground window only on Windows (and Linux) hosts; a Mac host has no equivalent,
+        // so the switch is shown greyed out and its saved value is kept unchanged.
+        let focus = toggle(a.preserveFocus); focus.isEnabled = false; row("切走時保留這台的視窗焦點", "Mac 主控端不支援；只對 Windows 主控端有效", focus)
         y += 16; section("剪貼簿")
         let clip = toggle(a.clipboard); row("共用剪貼簿", "關閉後，兩台不再同步複製的文字和檔案", clip)
         y += 16; section("這台當接收端時（只影響這台）")

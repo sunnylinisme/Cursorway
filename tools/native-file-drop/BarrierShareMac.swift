@@ -1349,9 +1349,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             status.stringValue = !peers.isEmpty ? (keepCore ? "已解除一台；其他電腦維持連線。" : "已解除一台；其餘的會自動重新連線。") : options.host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。"
         }
         else if f[0] == "UNPAIRED" && f.count == 2 {
-            // The receiver now trusts another host; barrier-link already removed it here (REMOVED came first).
-            let name = removedNames.removeValue(forKey: f[1]) ?? "接收端"
-            status.stringValue = "「\(name)」已改和其他主控端配對，已自動解除這裡的配對。"; log(status.stringValue)
+            // The receiver removed this host or paired with another one; barrier-link already removed it here (REMOVED came first).
+            // Receiver: its host unpaired it (or no longer knows it), so the pairing here was dropped too.
+            let name = removedNames.removeValue(forKey: f[1]) ?? (options.host ? "接收端" : "主控端")
+            status.stringValue = options.host ? "「\(name)」已解除和這台的配對（或改和其他主控端配對），這裡也已自動解除。" : "主控端「\(name)」已解除配對，這裡也已自動解除。"; log(status.stringValue)
         }
         else if f[0] == "UNAVAILABLE" && f.count == 3 && core == nil { status.stringValue = "正在重新尋找並驗證已配對的電腦…"; log(decoded(f[2])) }
         else if (f[0] == "ERROR" || f[0] == "FATAL") && f.count == 2 { if f[0] == "FATAL" { stopLink() }; status.stringValue = decoded(f[1]); log(status.stringValue) }
@@ -1777,9 +1778,13 @@ func selfTest(_ directory: URL) throws {
     // A receiver that paired with another host: the old host drops it and says why; it shows up as nearby again.
     let movedName = app.decoded(name); let peersBefore = app.peers
     app.linkLine("REMOVED\t\(peer)"); app.linkLine("UNPAIRED\t\(peer)")
-    guard !app.peers.contains(where: { $0.fingerprint == peer }), app.status.stringValue == "「\(movedName)」已改和其他主控端配對，已自動解除這裡的配對。" else { throw ShareError.message("UNPAIRED not shown: \(app.status.stringValue)") }
+    guard !app.peers.contains(where: { $0.fingerprint == peer }), app.status.stringValue == "「\(movedName)」已解除和這台的配對（或改和其他主控端配對），這裡也已自動解除。" else { throw ShareError.message("UNPAIRED not shown: \(app.status.stringValue)") }
     app.rebuildNearby(); guard app.nearbyList.subviews.count == app.computers.count else { throw ShareError.message("Unpaired receiver not back in nearby list") }
     app.peers = peersBefore; app.peersChanged()
+    // Receiver: its host unpaired it.
+    app.options.host = false; app.linkLine("REMOVED\t\(peer)"); app.linkLine("UNPAIRED\t\(peer)")
+    guard app.peers.isEmpty, app.status.stringValue == "主控端「\(movedName)」已解除配對，這裡也已自動解除。" else { throw ShareError.message("Receiver UNPAIRED not shown: \(app.status.stringValue)") }
+    app.options.host = true; app.peers = peersBefore; app.peersChanged()
     var keys = ShareAdvanced(); keys.directKeys = true
     let numbered = try ShareSettings.config("right", keys, receivers: [jA, jB], numbers: [jB: 7])
     guard numbered.contains(" keystroke(Control+Alt+7) = switchToScreen(\(ShareSettings.screenName(jB)))\n"), numbered.contains(" keystroke(Control+Alt+2) = switchToScreen(\(ShareSettings.screenName(jA)))\n"), numbered.contains(" keystroke(Control+Alt+KP_7) = switchToScreen(\(ShareSettings.screenName(jB)))\n") else { throw ShareError.message("Custom jump numbers not in config") }

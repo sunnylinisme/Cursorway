@@ -106,7 +106,7 @@ struct SocketOwner {
     Socket release() { auto result = value; value = invalidSocket; return result; }
     SocketOwner(const SocketOwner&) = delete;
 };
-struct Peer { std::string fingerprint, name, ip; unsigned port = 24801; char role = 'R'; Clock::time_point seen, resumed; };
+struct Peer { std::string fingerprint, name, ip; unsigned port = 24801; char role = 'R'; Clock::time_point seen, resumed; int tries = 0; };
 struct State {
     fs::path profile; bool host; std::string name, fingerprint; unsigned port;
     std::atomic<bool> stopping{false}, busy{false}, search{true};
@@ -331,6 +331,10 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
         }
     } catch (const QuietEnd&) {
     } catch (const std::exception& error) {
+        // A receiver drops connections that come too soon after the last one; try telling it again shortly.
+        if (forget && !state.stopping && peer.tries < 4) {
+            std::lock_guard<std::mutex> lock(state.mutex); Peer again = peer; again.tries++; again.resumed = Clock::now(); state.forgetNotices.insert(state.forgetNotices.begin(), again);
+        }
         if (!state.stopping && !check && !forget) {
             if (!resume) emit("ERROR\t" + base64(error.what()));
             else if (!incoming) emit("UNAVAILABLE\t" + peer.fingerprint + '\t' + base64(error.what()));
@@ -478,11 +482,12 @@ static void network(State& state, const std::string& testTarget) {
                     if (now - it->second.seen > std::chrono::seconds(12)) { emit("GONE\t" + it->first); it = state.devices.erase(it); } else ++it;
                 }
                 if (!state.busy && state.request) { pending = state.requested; state.request = false; start = true; }
-                else if (!state.busy && !state.forgetNotices.empty()) {
+                else if (!state.busy && !state.forgetNotices.empty() && now - state.forgetNotices.back().resumed > std::chrono::milliseconds(2200)) {
                     // Tell a receiver removed here, now, if discovery sees it; otherwise it finds out with a CHECK later.
+                    // Wait until 2 s after the last resume to it: a receiver drops connections that arrive sooner.
                     Peer removed = state.forgetNotices.back(); state.forgetNotices.pop_back();
                     auto found = state.devices.find(removed.fingerprint);
-                    if (found != state.devices.end()) { pending = found->second; start = true; notify = true; }
+                    if (found != state.devices.end()) { pending = found->second; pending.tries = removed.tries; start = true; notify = true; }
                 }
                 else if (!state.busy && state.host && !state.saved.empty() && now - lastResume > std::chrono::milliseconds(500)) {
                     // Each paired receiver that is online is resumed at most every 5 seconds, one at a time.

@@ -202,14 +202,21 @@ final class ShareSettings {
         return text + "end\n"
     }
     static var receivers: [String] = []
+    // Host screen config, written atomically (temp file + rename) so a running core never reads half of it.
+    // Returns true when the content changed; barriers re-reads the file within a second and logs "reloaded configuration".
+    static func writeConfig(_ options: ShareOptions) throws -> Bool {
+        let path = profile(true).appendingPathComponent("screens.conf")
+        let text = try config(options.position, options.advanced, receivers: receivers, layout: options.layout, platforms: options.platforms, edgeRange: options.edgeRange, numbers: options.screenNumbers)
+        if (try? String(contentsOf: path, encoding: .utf8)) == text { return false }
+        try text.write(to: path, atomically: true, encoding: .utf8); return true
+    }
     static func command(_ options: ShareOptions) throws -> Process {
         let p = profile(options.host), process = Process()
         process.executableURL = bin.appendingPathComponent(options.host ? "barriers" : "barrierc")
         var args = ["-f", "--no-tray", "--file-clipboard", "--profile-dir", p.path, "--log", p.appendingPathComponent(options.host ? "server.log" : "mac.log").path, "--name", options.host ? hostName : receiverName]
         if options.host {
-            let path = p.appendingPathComponent("screens.conf")
-            try config(options.position, options.advanced, receivers: receivers, layout: options.layout, platforms: options.platforms, edgeRange: options.edgeRange, numbers: options.screenNumbers).write(to: path, atomically: true, encoding: .utf8)
-            args += ["-c", path.path]
+            _ = try writeConfig(options)
+            args += ["-c", p.appendingPathComponent("screens.conf").path]
         } else {
             var ip = in_addr()
             guard options.address.withCString({ inet_pton(AF_INET, $0, &ip) }) == 1 else { throw ShareError.message("請輸入主控端的區網 IPv4 位址，例如 192.168.1.20。") }
@@ -946,7 +953,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     }
     @objc func inviteRow(_ sender: NSButton) {
         guard let fp = sender.identifier?.rawValue, options.host, link != nil, consent == nil, !peers.contains(where: { $0.fingerprint == fp }) else { return }
-        stopBackend(); send("PAIR\t" + fp); status.stringValue = "正在發出邀請…"
+        // Receivers already connected stay connected; the new one is added to the running core when pairing succeeds.
+        send("PAIR\t" + fp); status.stringValue = "正在發出邀請…"
     }
     // The connection card's badge and screen map follow the role, pairing and connection.
     // One computer of the host's list: jump number, name, where it sits, whether it is connected and has the mouse.
@@ -1221,9 +1229,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
                 // Only the visible fields are checked; a hidden value from the removed expert box must not block saving.
                 _ = try value.targetList()
                 options.advanced = value; try ShareSettings.save(options); sendTargets()
-                // The host core reads options at start; the saved pairing reconnects it right away.
-                if options.host && core != nil { stopBackend() }
-                status.stringValue = "已儲存進階設定。"; peersChanged(); return
+                // The host core re-reads its config file, so connected receivers stay connected.
+                status.stringValue = "已儲存進階設定。"; peersChanged(); applyHostConfig(); return
             } catch { let alert = NSAlert(); alert.messageText = "進階設定"; alert.informativeText = error.localizedDescription; alert.runModal() }
         }
     }
@@ -1313,13 +1320,14 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             options.platforms[f[1]] = f[2]
             do { try ShareSettings.save(options) } catch { showError(error) }
             // The swap is written into the host's screen config, so restart the core to apply it.
-            if options.host && core != nil { stopBackend(); startBackend() }
+            applyHostConfig()
         } else if f[0] == "GONE" && f.count == 2 { computers.removeAll { $0.fingerprint == f[1] } }
         else if (f[0] == "SAVED" || f[0] == "PAIRED") && f.count == 3 {
             // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
-            if f[0] == "PAIRED" { stopBackend(); if !options.host { peers.removeAll(); hostNumber = nil; hostCell = nil } }
+            // A receiver has one host, so it reconnects; a host adds the new receiver to its running core's config.
+            if f[0] == "PAIRED" && !options.host { stopBackend(); peers.removeAll(); hostNumber = nil; hostCell = nil }
             if let index = peers.firstIndex(where: { $0.fingerprint == f[1] }) { peers[index].name = decoded(f[2]) } else { peers.append((f[1], decoded(f[2]))) }
-            peersChanged()
+            peersChanged(); applyHostConfig()
         } else if (f[0] == "REQUEST" || f[0] == "VERIFY") && f.count == 5 { showConsent(f) }
         else if f[0] == "NUMBER" && (f.count == 3 || f.count == 4) && !options.host && peers.contains(where: { $0.fingerprint == f[1] }), let n = Int(f[2]), (1...9).contains(n) {
             let d = f.count == 4 ? f[3].split(separator: ",").compactMap { Int($0) } : []
@@ -1479,7 +1487,21 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         guard accepted(), view.reachable() else { return }
         for (fp, cell) in view.placement { options.layout[fp] = [cell.x, cell.y] }
         options.edgeRange = ranges.ranges.filter { $0.value != "all" }; options.screenNumbers = numbers.numbers
-        do { try ShareSettings.save(options); if core != nil { stopBackend() }; status.stringValue = "已儲存螢幕排列。"; peersChanged() } catch { showError(error) }
+        do { try ShareSettings.save(options); status.stringValue = "已儲存螢幕排列。"; peersChanged(); applyHostConfig() } catch { showError(error) }
+    }
+    // Host: apply new settings without dropping connected receivers. Older cores that never log
+    // "reloaded configuration" within 4 seconds are restarted as before.
+    var reloadTimer: Timer?
+    func applyHostConfig() {
+        guard options.host, core != nil else { return }
+        do {
+            guard try ShareSettings.writeConfig(options) else { return }
+            reloadTimer?.invalidate()
+            reloadTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak self] _ in
+                guard let self = self, self.reloadTimer != nil else { return }
+                self.reloadTimer = nil; self.log("核心沒有自動套用新設定，改為重新啟動。"); self.stopBackend(); self.startBackend()
+            }
+        } catch { stopBackend() }
     }
     func startBackend() {
         guard core == nil && enabled && !test else { return }
@@ -1496,9 +1518,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             try process.run(); connectedAddress = options.address; status.stringValue = "配對已驗證，正在連線…"; updateControls()
         } catch { stopBackend(); showError(error) }
     }
-    func stopBackend() { let process = core; core = nil; connections = 0; liveScreens.removeAll(); activeScreen = ShareSettings.hostName; corePipe?.fileHandleForReading.readabilityHandler = nil; corePipe = nil; endProcess(process); updateControls() }
+    func stopBackend() { reloadTimer?.invalidate(); reloadTimer = nil; let process = core; core = nil; connections = 0; liveScreens.removeAll(); activeScreen = ShareSettings.hostName; corePipe?.fileHandleForReading.readabilityHandler = nil; corePipe = nil; endProcess(process); updateControls() }
     func log(_ line: String) {
         details.string = String((details.string + line + "\n").suffix(20000)); details.scrollToEndOfDocument(nil)
+        if line.contains("reloaded configuration") { reloadTimer?.invalidate(); reloadTimer = nil }
         if line.contains("connected to server") || line.contains("has connected") { status.stringValue = "已連線 · 雙向複製貼上已啟用"; connections += 1; updateCard() }
         if line.contains("disconnected from server") || line.contains("has disconnected") { connections = max(0, connections - 1); updateCard() }
         // Which receivers are up and where the mouse is, from the host core's log: client "X" has (dis)connected, switch from "A" to "B".

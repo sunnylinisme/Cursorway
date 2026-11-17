@@ -136,16 +136,18 @@ def run():
             finally: host.stop(); impostor.stop()
             a,b=port(),port(); host=Agent(hp,'host',a,b); receiver=Agent(rp,'receiver',b,a)
             host.wait('CONNECT'); receiver.wait('CONNECT')
-            receiver.send('FORGET'); receiver.wait('REMOVED'); host.clear(); receiver.clear()
+            host.clear(); started=time.monotonic()
+            receiver.send('FORGET'); receiver.wait('REMOVED')
+            # The host is told at once and drops the pairing too, so the receiver can be invited again.
+            assert host.wait('UNPAIRED')[1]==rf and any(e[0]=='REMOVED' and e[1:]==[rf] for e in host.history), host.history
+            assert time.monotonic()-started < 5, 'Host learned of the removal only after %.1f s' % (time.monotonic()-started)
+            assert rf not in (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().split()
+            print('PASS: a host drops a receiver that removed it, right away',flush=True)
+            host.clear(); receiver.clear()
             time.sleep(6.5)
             assert not any(e[0]=='CONNECT' for e in host.history+receiver.history), 'Revoked pair reconnected'
             assert not (rp/'Peer.txt').exists() and not (rp/'SSL/Fingerprints/TrustedServers.txt').read_text().strip()
             print('PASS: forgetting a peer blocks automatic reconnect and clears trust',flush=True)
-            # The host learns on its next attempt that the receiver no longer follows it (as when it pairs
-            # with another host) and drops the pairing too, so the receiver can be invited again.
-            assert host.wait('UNPAIRED')[1]==rf and any(e[0]=='REMOVED' and e[1:]==[rf] for e in host.history), host.history
-            assert rf not in (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().split()
-            print('PASS: a host drops a receiver that paired elsewhere',flush=True)
             # The other way round: the host removes the receiver; the receiver finds out by asking and drops it too.
             time.sleep(2.1)
             hi,ri=invitation(host,receiver,rf); host.send('ACCEPT',hi); receiver.send('ACCEPT',ri)

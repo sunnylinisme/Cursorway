@@ -121,7 +121,7 @@ struct State {
     std::map<std::string, std::string> numbers;
     // Receiver only: when its host last connected; long silence while the host is visible triggers a CHECK.
     Clock::time_point contact = Clock::now();
-    // Host only: receivers just removed here that are told right away, if they are online.
+    // Computers just removed here (either role), told right away if they are online.
     std::vector<Peer> forgetNotices;
     fs::path trustPath() const { return profile / "SSL" / "Fingerprints" / (host ? "TrustedClients.txt" : "TrustedServers.txt"); }
 };
@@ -244,7 +244,9 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             auto hello = fields(session.read());
             // A host only answers CHECK from a receiver asking whether it is still paired; it never accepts pairing this way.
             if (state.host) {
-                require(hello.size() == 3 && hello[0] == "BPAIR1" && hello[1] == "CHECK" && validName(hello[2]), "Invalid check");
+                require(hello.size() == 3 && hello[0] == "BPAIR1" && (hello[1] == "CHECK" || hello[1] == "FORGET") && validName(hello[2]), "Invalid check");
+                // A receiver (identity from the TLS session) removed this host: drop it here as well.
+                if (hello[1] == "FORGET") { unpaired(state, generation, fingerprint); throw QuietEnd(); }
                 bool known; { std::lock_guard<std::mutex> lock(state.mutex); known = state.find(fingerprint) != nullptr; }
                 session.write(known ? "BREADY1\t" + state.name : std::string("BNOTPAIRED1"));
                 throw QuietEnd();
@@ -465,7 +467,7 @@ static void network(State& state, const std::string& testTarget) {
 #endif
                 Socket fd = accept(listener.value, reinterpret_cast<sockaddr*>(&from), &length);
                 if (fd != invalidSocket) {
-                    // A host takes incoming connections only for a receiver's CHECK (enforced in runSession).
+                    // A host takes incoming connections only for a receiver's CHECK or FORGET (enforced in runSession).
                     if (state.busy || now - lastInvitation < std::chrono::seconds(2)) closeSocket(fd);
                     else { lastInvitation = now; Peer peer; peer.ip = addressOf(from); launch(fd, peer, false, false, false); }
                 }
@@ -476,7 +478,7 @@ static void network(State& state, const std::string& testTarget) {
                     if (now - it->second.seen > std::chrono::seconds(12)) { emit("GONE\t" + it->first); it = state.devices.erase(it); } else ++it;
                 }
                 if (!state.busy && state.request) { pending = state.requested; state.request = false; start = true; }
-                else if (!state.busy && state.host && !state.forgetNotices.empty()) {
+                else if (!state.busy && !state.forgetNotices.empty()) {
                     // Tell a receiver removed here, now, if discovery sees it; otherwise it finds out with a CHECK later.
                     Peer removed = state.forgetNotices.back(); state.forgetNotices.pop_back();
                     auto found = state.devices.find(removed.fingerprint);
@@ -550,7 +552,7 @@ int main(int argc, char** argv) {
                 } else if (f[0] == "FORGET") {
                     // FORGET removes every pairing; FORGET <fingerprint> removes one receiver.
                     std::lock_guard<std::mutex> lock(state.mutex); ++state.generation; state.decision = -1; state.request = false;
-                    if (state.host) for (const auto& p : state.saved) if (f.size() != 2 || p.fingerprint == f[1]) state.forgetNotices.push_back(p);
+                    for (const auto& p : state.saved) if (f.size() != 2 || p.fingerprint == f[1]) state.forgetNotices.push_back(p);
                     if (f.size() == 2) { state.saved.erase(std::remove_if(state.saved.begin(), state.saved.end(), [&](const Peer& p) { return p.fingerprint == f[1]; }), state.saved.end()); }
                     else state.saved.clear();
                     storeSaved(state); emit(f.size() == 2 ? "REMOVED\t" + f[1] : std::string("REMOVED"));

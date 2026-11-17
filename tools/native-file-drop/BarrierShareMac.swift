@@ -525,8 +525,22 @@ final class ShareScreenMap: NSView, NSViewToolTipOwner {
             let color: NSColor = t.active ? .white : t.placeholder ? ShareStyle.faint : ShareStyle.ink
             let text = NSAttributedString(string: t.number ?? "", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: min(15, ch * 0.42), weight: .semibold), .foregroundColor: color, .paragraphStyle: style])
             text.draw(in: NSRect(x: r.minX, y: r.midY - text.size().height / 2, width: r.width, height: text.size().height))
+            if t.isSelf { ShareScreenMap.drawHere(r) }
             let tag = addToolTip(r, owner: self, userData: nil); tips[tag] = t.tip
         }
+    }
+    // "You are here": blue ring, centre dot and four short ticks on a white disc, in the self tile's top-right corner.
+    static func drawHere(_ r: NSRect) {
+        let d = min(14, r.height * 0.42), c = NSPoint(x: r.maxX - d / 2 - 2, y: r.minY + d / 2 + 2), rad = d * 0.3
+        NSColor.white.setFill(); NSBezierPath(ovalIn: NSRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)).fill()
+        ShareStyle.blue.setStroke(); ShareStyle.blue.setFill()
+        let ring = NSBezierPath(ovalIn: NSRect(x: c.x - rad, y: c.y - rad, width: rad * 2, height: rad * 2)); ring.lineWidth = 1.2; ring.stroke()
+        NSBezierPath(ovalIn: NSRect(x: c.x - 1.3, y: c.y - 1.3, width: 2.6, height: 2.6)).fill()
+        let ticks = NSBezierPath(); ticks.lineWidth = 1.2
+        for (dx, dy) in [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0)] {
+            ticks.move(to: NSPoint(x: c.x + dx * rad, y: c.y + dy * rad)); ticks.line(to: NSPoint(x: c.x + dx * d / 2, y: c.y + dy * d / 2))
+        }
+        ticks.stroke()
     }
     // Grey rounded frame; 16:10 screens up to 76×48 with the name underneath; this one has a mouse outline.
     override func draw(_ dirtyRect: NSRect) {
@@ -557,6 +571,7 @@ final class ShareScreenMap: NSView, NSViewToolTipOwner {
                 let mouse = NSBezierPath(ovalIn: NSRect(x: r.midX - 5, y: r.midY - 8, width: 10, height: 16)); mouse.lineWidth = 1.5; mouse.stroke()
                 let wheel = NSBezierPath(); wheel.move(to: NSPoint(x: r.midX, y: r.midY - 8)); wheel.line(to: NSPoint(x: r.midX, y: r.midY - 3)); wheel.lineWidth = 1.5; wheel.stroke()
             }
+            if t.isSelf { ShareScreenMap.drawHere(r) }
             let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
             NSAttributedString(string: t.name, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: t.placeholder ? ShareStyle.faint : ShareStyle.muted, .paragraphStyle: style])
                 .draw(in: NSRect(x: r.minX - gap / 2, y: r.maxY + 1, width: r.width + gap, height: label))
@@ -904,9 +919,16 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     var hostNumber: Int? { didSet { if hostNumber != oldValue { updateCard() } } }
     // Host: the last NUMBERS line sent to this barrier-link process, so unchanged lists are not resent.
     var sentNumbers: String?
+    // Receiver: where its host put it (dx,dy); the host is drawn on the opposite side. nil = old host, drawn on the left.
+    var hostCell: ShareSettings.Cell? { didSet { if hostCell != oldValue { updateCard() } } }
     func numbersLine() -> String {
         let numbers = ShareSettings.numbers(peers.map { $0.fingerprint }, custom: options.screenNumbers)
-        return "NUMBERS\t" + peers.compactMap { p in numbers[p.fingerprint].map { "\(p.fingerprint)=\($0)" } }.joined(separator: ",")
+        let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
+        return "NUMBERS\t" + peers.compactMap { p in numbers[p.fingerprint].map { n in
+            // n/dx/dy: the receiver's place in this host's arrangement, so it can draw the host on the right side.
+            let cell = grid.first { $0.0 == ShareSettings.screenName(p.fingerprint) }?.1
+            return "\(p.fingerprint)=\(n)" + (cell.map { abs($0.x) <= 2 && abs($0.y) <= 2 ? "/\($0.x)/\($0.y)" : "" } ?? "")
+        } }.joined(separator: ",")
     }
     func sendNumbers() {
         guard options.host, link != nil, sentNumbers != nil else { return }
@@ -955,7 +977,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             }
         } else if options.host {
             tiles.append(.init(cell: ShareSettings.step(options.position), name: "接收端", placeholder: true))
-        } else { tiles.append(.init(cell: .init(x: -1, y: 0), name: peers.first?.name ?? "主控端", placeholder: peers.isEmpty, color: peers.isEmpty ? nil : ShareStyle.peer(0))) }
+        } else { tiles.append(.init(cell: hostCell ?? .init(x: -1, y: 0), name: peers.first?.name ?? "主控端", placeholder: peers.isEmpty, color: peers.isEmpty ? nil : ShareStyle.peer(0))) }
         map.tiles = tiles
     }
     @objc func toggleLogin() {
@@ -1234,7 +1256,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         if let process = process, process.isRunning { process.terminate(); DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }; process.waitUntilExit() }
     }
     func stopLink() {
-        closeConsent(); send("QUIT"); let process = link; link = nil; sentNumbers = nil; hostNumber = nil; linkOutput?.fileHandleForReading.readabilityHandler = nil; linkOutput = nil; linkInput = nil
+        closeConsent(); send("QUIT"); let process = link; link = nil; sentNumbers = nil; hostNumber = nil; hostCell = nil; linkOutput?.fileHandleForReading.readabilityHandler = nil; linkOutput = nil; linkInput = nil
         endProcess(process); computers.removeAll(); updateControls()
     }
     func consume(_ data: Data, discovery: Bool) {
@@ -1259,16 +1281,20 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         } else if f[0] == "GONE" && f.count == 2 { computers.removeAll { $0.fingerprint == f[1] } }
         else if (f[0] == "SAVED" || f[0] == "PAIRED") && f.count == 3 {
             // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
-            if f[0] == "PAIRED" { stopBackend(); if !options.host { peers.removeAll(); hostNumber = nil } }
+            if f[0] == "PAIRED" { stopBackend(); if !options.host { peers.removeAll(); hostNumber = nil; hostCell = nil } }
             if let index = peers.firstIndex(where: { $0.fingerprint == f[1] }) { peers[index].name = decoded(f[2]) } else { peers.append((f[1], decoded(f[2]))) }
             peersChanged()
         } else if (f[0] == "REQUEST" || f[0] == "VERIFY") && f.count == 5 { showConsent(f) }
-        else if f[0] == "NUMBER" && f.count == 3 && !options.host && peers.contains(where: { $0.fingerprint == f[1] }), let n = Int(f[2]), (1...9).contains(n) { hostNumber = n }
+        else if f[0] == "NUMBER" && (f.count == 3 || f.count == 4) && !options.host && peers.contains(where: { $0.fingerprint == f[1] }), let n = Int(f[2]), (1...9).contains(n) {
+            let d = f.count == 4 ? f[3].split(separator: ",").compactMap { Int($0) } : []
+            hostCell = d.count == 2 && d != [0, 0] && d.allSatisfy({ abs($0) <= 2 }) ? .init(x: -d[0], y: -d[1]) : nil
+            hostNumber = n
+        }
         else if f[0] == "CLOSED" && f.count == 2 && consentId == f[1] { closeConsent() }
         else if f[0] == "CONNECT" && f.count == 4 && peers.contains(where: { $0.fingerprint == f[1] }) {
             if core == nil || (!options.host && connectedAddress != f[3]) { stopBackend(); options.address = f[3]; do { try ShareSettings.save(options); startBackend() } catch { showError(error) } }
         } else if f[0] == "REMOVED" {
-            stopBackend(); if !options.host { hostNumber = nil }
+            stopBackend(); if !options.host { hostNumber = nil; hostCell = nil }
             if f.count == 2 { peers.removeAll { $0.fingerprint == f[1] }; options.layout[f[1]] = nil } else { peers.removeAll() }
             peersChanged(); try? ShareSettings.save(options); if peers.isEmpty { peerLabel.stringValue = "已解除配對。" }
             status.stringValue = !peers.isEmpty ? "已解除一台；其餘的會自動重新連線。" : options.host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。"
@@ -1659,13 +1685,14 @@ func selfTest(_ directory: URL) throws {
     guard ShareSettings.numbers([jA, jB, jC], custom: [jC: 5, jB: 2]) == [jB: 2, jA: 3, jC: 5] else { throw ShareError.message("Jump numbering wrong") }
     // The host tells each receiver its number; a receiver shows the one from its own host only.
     app.options.screenNumbers = [peer: 4]
-    guard app.numbersLine() == "NUMBERS\t\(peer)=4" else { throw ShareError.message("NUMBERS line wrong: \(app.numbersLine())") }
+    guard app.numbersLine().hasPrefix("NUMBERS\t\(peer)=4/") else { throw ShareError.message("NUMBERS line wrong: \(app.numbersLine())") }
     app.options.host = false; app.hostNumber = nil; app.updateCard()
     guard app.map.tiles[0].label == nil, app.map.tiles[0].tip == "號碼由主控端決定" else { throw ShareError.message("Receiver guessed a number") }
     app.linkLine("NUMBER\tv2:sha256:\(String(repeating: "d", count: 64))\t6"); guard app.hostNumber == nil else { throw ShareError.message("NUMBER from an unpaired host accepted") }
-    app.linkLine("NUMBER\t\(peer)\t3"); guard app.hostNumber == 3, app.map.tiles[0].label == "3" else { throw ShareError.message("Receiver number not shown") }
+    app.linkLine("NUMBER\t\(peer)\t3\t-1,0"); guard app.map.tiles[1].cell == .init(x: 1, y: 0) else { throw ShareError.message("Host not drawn opposite the receiver") }
+    guard app.hostNumber == 3, app.map.tiles[0].label == "3" else { throw ShareError.message("Receiver number not shown") }
     try snapshot(app.map, "gui-receiver-number.png")
-    app.options.host = true; app.options.screenNumbers = [:]; app.hostNumber = nil
+    app.options.host = true; app.options.screenNumbers = [:]; app.hostNumber = nil; app.hostCell = nil
     var keys = ShareAdvanced(); keys.directKeys = true
     let numbered = try ShareSettings.config("right", keys, receivers: [jA, jB], numbers: [jB: 7])
     guard numbered.contains(" keystroke(Control+Alt+7) = switchToScreen(\(ShareSettings.screenName(jB)))\n"), numbered.contains(" keystroke(Control+Alt+2) = switchToScreen(\(ShareSettings.screenName(jA)))\n"), numbered.contains(" keystroke(Control+Alt+KP_7) = switchToScreen(\(ShareSettings.screenName(jB)))\n") else { throw ShareError.message("Custom jump numbers not in config") }

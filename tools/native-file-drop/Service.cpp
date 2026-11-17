@@ -20,6 +20,7 @@
 //
 // Pipe protocol (\\.\pipe\BarrierShare.Service, one request per connection, UTF-8):
 //   START \t host|receiver \t address \t base64(Barrier.pem) \t base64(trusted) \t base64(config) \t screen name \t user profile folder [\t wheel "percent,0|1", receiver only]
+//   CONFIG \t base64(config)   (host: replace the running core's configuration; it reloads without reconnecting)
 //   STOP
 //   STATUS
 //   DESKTOP \t <name>|auto   (tests: act as if the input desktop were <name>)
@@ -284,6 +285,16 @@ std::string handle(HANDLE pipe, const std::string& request) {
     if (f[0] == "STOP") { wanted = false; stopCore(); return reply(); }
     if (f[0] == "DESKTOP" && f.size() == 2 && !f[1].empty() && f[1].size() < 32 && f[1].find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == std::string::npos) {
         forcedDesktop = f[1] == "auto" ? "" : f[1]; apply(); return reply();
+    }
+    // CONFIG <base64 config>: new host settings for the running core, which re-reads its file
+    // without dropping connections (0.3.17+ core). Only the user who started it may change it.
+    if (f[0] == "CONFIG" && f.size() == 2) {
+        if (!wanted || !command.host) throw std::runtime_error("No host core is running");
+        auto config = base64Decode(f[1]);
+        if (config.find("section: screens") == std::string::npos) throw std::runtime_error("Incomplete configuration");
+        if (clientSid(pipe) != command.sid) throw std::runtime_error("The core was started by another user");
+        writeFile(command.directory + L"\\windows-windows.conf", config);
+        return reply();
     }
     if (f[0] != "START" || (f.size() != 8 && f.size() != 9) || (f[1] != "host" && f[1] != "receiver")) throw std::runtime_error("Invalid request");
     // The user profile folder is only handed to the core that runs as that same user.

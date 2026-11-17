@@ -68,6 +68,9 @@ public:
     static void reloadSignalHandler(Arch::ESignal, void*);
 
     void reloadConfig(const Event&, void*);
+    // Barrier Share: re-reads the configuration file when its contents change, so the
+    // GUI can apply new settings without restarting the server and dropping clients.
+    void checkConfigFile(const Event&, void*);
     void loadConfig();
     bool loadConfig(const String& pathname);
     void forceReconnect(const Event&, void*);
@@ -111,6 +114,8 @@ public:
     PrimaryClient*        m_primaryClient;
     ClientListener*        m_listener;
     EventQueueTimer*    m_timer;
+    EventQueueTimer*    m_configWatch = nullptr;
+    std::string         m_configText;
     NetworkAddress*        m_barrierAddress;
 
 private:

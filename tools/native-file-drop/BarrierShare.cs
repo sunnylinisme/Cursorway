@@ -267,14 +267,22 @@ static class ShareSettings
         if (a.WheelScale != 100) { yield return "--wheel-scale"; yield return a.WheelScale.ToString(); }
         if (a.WheelInvert) yield return "--wheel-invert";
     }
+    // Writes the host configuration in one step (a running core re-reads it when it changes).
+    public static string WriteConfig()
+    {
+        string config = Path.Combine(Profile(true), "windows-windows.conf"), temporary = config + ".new";
+        Directory.CreateDirectory(Profile(true));
+        File.WriteAllText(temporary, Config(true), new UTF8Encoding(false));
+        if (File.Exists(config)) File.Replace(temporary, config, null); else File.Move(temporary, config);
+        return config;
+    }
     public static ProcessStartInfo Backend(bool host, string address)
     {
         string profile = Profile(host);
         var args = new List<string> { "-f", "--no-tray", "--file-clipboard", "--profile-dir", profile,
             "--log", Path.Combine(profile, host ? "server.log" : "windows.log"), "--name", host ? HostName : ReceiverName };
         if (host) {
-            string config = Path.Combine(profile, "windows-windows.conf");
-            File.WriteAllText(config, Config(true), new UTF8Encoding(false)); args.Add("-c"); args.Add(config);
+            string config = WriteConfig(); args.Add("-c"); args.Add(config);
         } else {
             IPAddress parsed;
             if (!IPAddress.TryParse(address, out parsed) || parsed.AddressFamily != AddressFamily.InterNetwork)
@@ -1049,12 +1057,13 @@ sealed class ShareWindow : Form
             if (loading || position.SelectedIndex < 0) return;
             // The simple choice places the only receiver; a custom arrangement of it is dropped.
             ShareSettings.Position = ShareSettings.Directions[position.SelectedIndex]; foreach (string fp in peers.Keys) ShareSettings.Layout.Remove(fp);
-            Save(); if (backend != null) StopBackend();
+            Save(); ApplyConfig();
         };
         nearby.SelectedIndexChanged += delegate { UpdateControls(); };
         retry.Tick += delegate { if (enabled && link == null && !testing && !closing) StartLink(); };
         updateTimer.Tick += delegate { CheckUpdate(); };
         serviceTail.Tick += delegate { FollowServiceLog(); };
+        reloadTimer.Tick += delegate { reloadTimer.Stop(); if (reloadPending) { reloadPending = false; Diagnose("核心沒有回報已套用新設定，改為重新連線"); StopBackend(); } };
         ResumeLayout(false);
         ShareStyle.Theme(this); ShareStyle.Theme(menu);
         Microsoft.Win32.UserPreferenceChangedEventHandler systemChanged = (sender, e) => { if (ShareSettings.Appearance == "system" && IsHandleCreated) BeginInvoke((Action)ApplyAppearance); };
@@ -1404,7 +1413,7 @@ sealed class ShareWindow : Form
             string known;
             if (!ShareSettings.Platforms.TryGetValue(f[1], out known) || known != f[2]) {
                 ShareSettings.Platforms[f[1]] = f[2]; Save(); LogLine("對方系統：" + f[2] + " · " + f[1].Substring(10, 16));
-                if (Host && peers.ContainsKey(f[1]) && backend != null) StopBackend();
+                if (Host && peers.ContainsKey(f[1])) ApplyConfig();
             }
         } else if (f[0] == "NUMBER" && (f.Length == 3 || f.Length == 4)) {
             // A receiver's own switch number and place, as its host sent them on connecting (0.3.17+ hosts).
@@ -1416,8 +1425,10 @@ sealed class ShareWindow : Form
         } else if (f[0] == "GONE" && f.Length == 2) { if (devices.Remove(f[1])) RebuildNearby(); }
         else if ((f[0] == "SAVED" || f[0] == "PAIRED") && f.Length == 3) {
             // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
-            if (f[0] == "PAIRED") { StopBackend(); if (!Host) { peers.Clear(); ownNumber = 0; hostCell = new Point(-1, 0); } }
+            // A host adds the new receiver to the running core; a receiver follows its new host from scratch.
+            if (f[0] == "PAIRED" && !Host) { StopBackend(); peers.Clear(); ownNumber = 0; hostCell = new Point(-1, 0); }
             peers[f[1]] = Decode(f[2]); PeersChanged();
+            if (f[0] == "PAIRED" && Host) ApplyConfig();
         }
         else if ((f[0] == "VERIFY" || f[0] == "REQUEST") && f.Length == 5) ShowConsent(f);
         else if (f[0] == "CLOSED" && f.Length == 2 && f[1] == consentId) CloseConsent();
@@ -1482,9 +1493,23 @@ sealed class ShareWindow : Form
             process.Start(); process.BeginOutputReadLine(); process.BeginErrorReadLine(); connectedAddress = address.Text; status.Text = "配對已驗證，正在連線…"; UpdateControls();
         } catch (Exception e) { StopBackend(); Error(e); }
     }
+    // New host settings for the running core: it re-reads its file within a second and keeps every
+    // connection (0.3.17+ core). If it has not confirmed after a few seconds (an older core or
+    // service), the core is restarted as before. A receiver always restarts.
+    bool reloadPending; readonly System.Windows.Forms.Timer reloadTimer = new System.Windows.Forms.Timer { Interval = 4000 };
+    internal void ApplyConfig()
+    {
+        if (backend == null) return;
+        if (!Host) { StopBackend(); return; }
+        try {
+            ShareSettings.WriteConfig();
+            if (serviceLog != null) ShareService.Request("CONFIG\t" + Convert.ToBase64String(new UTF8Encoding(false).GetBytes(ShareSettings.Config(true))), 5000);
+            reloadPending = true; reloadTimer.Stop(); reloadTimer.Start();
+        } catch (Exception e) { Diagnose("無法直接套用新設定，改為重新連線：" + e.Message); StopBackend(); }
+    }
     void StopBackend()
     {
-        var process = backend; backend = null; connections = 0; online.Clear(); mouseAt = null;
+        var process = backend; backend = null; connections = 0; online.Clear(); mouseAt = null; reloadPending = false; reloadTimer.Stop();
         if (serviceLog != null) {
             serviceTail.Stop(); serviceLog = null;
             if (!keepServiceCore) try { ShareService.Request("STOP", 5000); } catch (Exception e) { LogLine("停止背景服務核心失敗：" + e.Message); }
@@ -1498,6 +1523,7 @@ sealed class ShareWindow : Form
         if (line.Contains("connected to server") || line.Contains("has connected")) { status.Text = Host && !ShareSettings.Advanced.Clipboard ? "已連線 · 剪貼簿未共用" : "已連線 · 雙向複製貼上已啟用"; ++connections; UpdateControls(); }
         if (line.Contains("disconnected from server") || line.Contains("has disconnected")) { connections = Math.Max(0, connections - 1); UpdateControls(); }
         TrackScreens(line);
+        if (line.Contains("reloaded configuration") && reloadPending) { reloadPending = false; reloadTimer.Stop(); status.Text = "已套用新設定，連線沒有中斷"; }
         bool wasTransferring = transferring;
         if (line.Contains("file clipboard: sending")) { status.Text = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; progress.Reset(); }
         if (line.Contains("file clipboard: receiving")) { status.Text = "正在接收檔案… 完成後即可貼上"; transferring = true; progress.Reset(); popup.Prepare(); if (!testing) autoPaste.Start(); }
@@ -1752,7 +1778,7 @@ sealed class ShareWindow : Form
             foreach (var item in editor.Placement) ShareSettings.Layout[item.Key] = item.Value;
             foreach (var item in editor.Ranges) ShareSettings.EdgeRange[item.Key] = item.Value;
             foreach (var item in editor.Numbers) if (item.Value >= 2) ShareSettings.Numbers[item.Key] = item.Value; else ShareSettings.Numbers.Remove(item.Key);
-            Save(); PeersChanged(); if (backend != null) StopBackend(); status.Text = "已儲存螢幕排列。";
+            Save(); PeersChanged(); status.Text = "已儲存螢幕排列。"; ApplyConfig();
         }
     }
     void SendTargets() { try { string list = ShareSettings.Advanced.TargetList(); if (list.Length > 0 || link != null) Send("TARGETS\t" + list); } catch (Exception e) { Error(e); } }
@@ -1854,8 +1880,8 @@ sealed class ShareWindow : Form
             // The host core reads options at start; the saved pairing reconnects it right away.
             // A receiver restarts only when its own wheel settings changed.
             bool wheelChanged = before.WheelScale != ShareSettings.Advanced.WheelScale || before.WheelInvert != ShareSettings.Advanced.WheelInvert;
-            if ((Host || wheelChanged) && backend != null) StopBackend();
             status.Text = "已儲存進階設定。";
+            if (Host || wheelChanged) ApplyConfig();
         }
     }
     void ClearCache()
@@ -2399,12 +2425,22 @@ static class ShareProgram
             if (fromOld.SwitchNeeds != "" || fromOld.WheelScale != 100 || !fromOld.Clipboard) throw new Exception("Invalid saved values were not reset");
             ShareSettings.OwnFingerprint = null;
             // The core must accept the file with every option, including half edges.
-            using (var core = Process.Start(ShareSettings.Backend(true, ""))) {
+            using (var core = Process.Start(ShareSettings.Backend(true, "")))
+            try {
                 Thread.Sleep(1500);
                 if (core.HasExited) throw new Exception("Hidden backend failed: " + core.StandardError.ReadToEnd() + core.StandardOutput.ReadToEnd());
                 if (core.MainWindowHandle != IntPtr.Zero) throw new Exception("Backend opened a console");
-                core.Kill(); core.WaitForExit(5000);
-            }
+                // Changed settings reach the running core without a restart: it re-reads its file and says so.
+                string log = Path.Combine(ShareSettings.Profile(true), "server.log"); long seen = File.Exists(log) ? new FileInfo(log).Length : 0;
+                ShareSettings.Advanced.BroadcastKey = !ShareSettings.Advanced.BroadcastKey; ShareSettings.WriteConfig();
+                string tail = ""; var until = DateTime.UtcNow.AddSeconds(6);
+                while (DateTime.UtcNow < until && !tail.Contains("reloaded configuration")) {
+                    Thread.Sleep(250);
+                    try { using (var stream = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) { stream.Seek(Math.Min(seen, stream.Length), SeekOrigin.Begin); tail = new StreamReader(stream).ReadToEnd(); } } catch (IOException) { }
+                }
+                if (core.HasExited || !tail.Contains("reloaded configuration")) throw new Exception("Running core did not reload its changed configuration: " + tail);
+                ShareSettings.Advanced.BroadcastKey = !ShareSettings.Advanced.BroadcastKey;
+            } finally { try { if (!core.HasExited) { core.Kill(); core.WaitForExit(5000); } } catch (InvalidOperationException) { } }
             ShareSettings.Advanced = allOptions; ShareSettings.EdgeRange = new Dictionary<string, string>(); ShareSettings.Save(true, "");
             string releases = "[{\"tag_name\":\"mac-v9.0.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/mac-v9.0.0\",\"draft\":false,\"prerelease\":false}," +
                 "{\"tag_name\":\"windows-v0.4.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/windows-v0.4.0\",\"draft\":true,\"prerelease\":false}," +

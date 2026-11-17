@@ -61,6 +61,7 @@
 #include <iostream>
 #include <stdio.h>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 
 //
@@ -191,6 +192,26 @@ ServerApp::reloadConfig(const Event&, void*)
         }
         LOG((CLOG_NOTE "reloaded configuration"));
     }
+}
+
+static bool readWholeFile(const String& path, std::string& text)
+{
+    std::ifstream in(path.c_str(), std::ios::binary);
+    if (!in.is_open()) return false;
+    text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    return true;
+}
+
+void
+ServerApp::checkConfigFile(const Event&, void*)
+{
+    // Compare contents rather than times: an unchanged rewrite does nothing, and a file the
+    // GUI is still replacing (empty or missing) is skipped until it is complete.
+    std::string text;
+    if (args().m_configFile.empty() || !readWholeFile(args().m_configFile, text) || text.empty() || text == m_configText) return;
+    m_configText = text;
+    LOG((CLOG_NOTE "configuration file changed, reloading"));
+    reloadConfig(Event(), NULL);
 }
 
 void
@@ -783,6 +804,14 @@ ServerApp::mainLoop()
         m_events->getSystemTarget(),
         new TMethodEventJob<ServerApp>(this, &ServerApp::reloadConfig));
 
+    // watch the configuration file once a second (all platforms; SIGHUP still works on Unix)
+    if (!args().m_configFile.empty()) {
+        readWholeFile(args().m_configFile, m_configText);
+        m_configWatch = m_events->newTimer(1.0, NULL);
+        m_events->adoptHandler(Event::kTimer, m_configWatch,
+            new TMethodEventJob<ServerApp>(this, &ServerApp::checkConfigFile));
+    }
+
     // handle force reconnect event by disconnecting clients.  they'll
     // reconnect automatically.
     m_events->adoptHandler(m_events->forServerApp().forceReconnect(),
@@ -822,6 +851,11 @@ ServerApp::mainLoop()
         m_events->getSystemTarget());
     m_events->removeHandler(m_events->forServerApp().reloadConfig(),
         m_events->getSystemTarget());
+    if (m_configWatch != nullptr) {
+        m_events->removeHandler(Event::kTimer, m_configWatch);
+        m_events->deleteTimer(m_configWatch);
+        m_configWatch = nullptr;
+    }
     cleanupServer();
     updateStatus();
     LOG((CLOG_NOTE "stopped server"));

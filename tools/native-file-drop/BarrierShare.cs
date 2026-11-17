@@ -631,6 +631,17 @@ sealed class ShareScreenMap : Control
         string text = hit != null ? hit.Tip : null;
         if (text != tipShown) { tipShown = text; tip.SetToolTip(this, text ?? ""); }
     }
+    // Single-colour map pin (teardrop with a round hole), h tall with its tip at top + h.
+    static GraphicsPath PinPath(float cx, float top, float h)
+    {
+        float w = h * 0.74F, r = w / 2, cy = top + r, hole = w * 0.40F;
+        var pin = new GraphicsPath();
+        pin.AddArc(cx - r, cy - r, w, w, 145, 250);
+        pin.AddLine(cx + r * 0.819F, cy + r * 0.574F, cx, top + h);
+        pin.CloseFigure();
+        pin.AddEllipse(cx - hole / 2, cy - hole / 2, hole, hole);   // alternate fill leaves the hole open
+        return pin;
+    }
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics; g.Clear(BackColor); g.SmoothingMode = SmoothingMode.AntiAlias; float s = scale = g.DpiX / 96F;
@@ -642,25 +653,22 @@ sealed class ShareScreenMap : Control
             using (var edge = new Pen(t.Self ? ShareStyle.Ink : t.Active ? ShareStyle.Blue : ShareStyle.Faint, (t.Self ? 2F : 1F) * s) { DashStyle = t.Waiting && !t.Self ? DashStyle.Dash : DashStyle.Solid }) {
                 if (!t.Waiting || t.Self) g.FillPath(fill, path); g.DrawPath(edge, path);
             }
-            // Without a number (a receiver whose host has not said it yet) a small screen marks the tile.
-            if (t.Icon && !t.Waiting) using (var pen = new Pen(t.Active ? Color.White : ShareStyle.Ink, 1.4F * s)) {
+            Color ink = t.Active ? Color.White : t.Waiting ? ShareStyle.Faint : ShareStyle.Ink;
+            if (t.Self) {
+                // This computer: a location pin above its number, in the number's colour (a larger pin alone when the number is not known).
+                float ph = (t.Icon ? 17 : 11) * s, top = t.Icon ? r.Y + (r.Height - ph) / 2 : r.Y + 5 * s;
+                using (var pin = PinPath(r.X + r.Width / 2, top, ph)) using (var b = new SolidBrush(ink)) g.FillPath(b, pin);
+                if (!t.Icon) using (var f = new Font(Font.FontFamily, 10F, FontStyle.Bold))
+                    TextRenderer.DrawText(g, t.Label, f, Rectangle.Round(new RectangleF(r.X, top + ph, r.Width, r.Bottom - top - ph - 2 * s)), ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding);
+                continue;
+            }
+            // Without a number (past nine computers) a small screen marks the tile.
+            if (t.Icon && !t.Waiting) using (var pen = new Pen(ink, 1.4F * s)) {
                 float w = Math.Min(r.Width * 0.45F, 18 * s), h = w * 0.62F, x = r.X + (r.Width - w) / 2, y = r.Y + (r.Height - h) / 2 - 2 * s;
                 g.DrawRectangle(pen, x, y, w, h); g.DrawLine(pen, x + w / 2, y + h, x + w / 2, y + h + 3 * s); g.DrawLine(pen, x + w / 4, y + h + 3 * s, x + w * 3 / 4, y + h + 3 * s);
             }
-            // A GPS "you are here" mark on the top-right corner shows which tile is this computer.
-            if (t.Self) {
-                float d = 19 * s, cx = r.Right - 3 * s, cy = r.Y + 3 * s, ring = d * 0.32F;
-                using (var back = new SolidBrush(Color.White)) g.FillEllipse(back, cx - d / 2, cy - d / 2, d, d);
-                using (var pen = new Pen(ShareStyle.Blue, 1.4F * s)) {
-                    g.DrawEllipse(pen, cx - ring, cy - ring, ring * 2, ring * 2);
-                    float a = ring, b = d / 2 - 0.5F * s;
-                    g.DrawLine(pen, cx, cy - b, cx, cy - a); g.DrawLine(pen, cx, cy + a, cx, cy + b);
-                    g.DrawLine(pen, cx - b, cy, cx - a, cy); g.DrawLine(pen, cx + a, cy, cx + b, cy);
-                }
-                using (var dot = new SolidBrush(ShareStyle.Blue)) g.FillEllipse(dot, cx - 2.2F * s, cy - 2.2F * s, 4.4F * s, 4.4F * s);
-            }
             if (!t.Icon) using (var f = new Font(Font.FontFamily, 11F, FontStyle.Bold))
-                TextRenderer.DrawText(g, t.Label, f, Rectangle.Round(r), t.Active ? Color.White : t.Waiting ? ShareStyle.Faint : ShareStyle.Ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                TextRenderer.DrawText(g, t.Label, f, Rectangle.Round(r), ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         }
     }
 }

@@ -902,7 +902,7 @@ sealed class ShareWindow : Form
     readonly HashSet<string> online = new HashSet<string>();
     string mouseAt;
     // Receiver: the switch number its host gave it (0: not known, e.g. an older host). Host: the list last sent to the link.
-    int ownNumber; string sentNumbers;
+    int ownNumber; string sentNumbers, removedName;
     // Receiver: where its host sits relative to it, from the host's arrangement (left until the host says).
     Point hostCell = new Point(-1, 0);
     internal string NumberList()
@@ -1445,6 +1445,7 @@ sealed class ShareWindow : Form
             // A host losing one receiver keeps the others connected: the core drops it on reloading its file.
             bool keep = Host && f.Length == 2 && peers.Count > 1;
             if (!keep) StopBackend();
+            if (f.Length == 2 && peers.ContainsKey(f[1])) removedName = peers[f[1]];
             if (f.Length == 2) { peers.Remove(f[1]); ShareSettings.Layout.Remove(f[1]); ShareSettings.Numbers.Remove(f[1]); } else peers.Clear();
             if (!Host && peers.Count == 0) { ownNumber = 0; hostCell = new Point(-1, 0); }
             PeersChanged(); if (peers.Count == 0) peerLabel.Text = "已解除配對。"; Save();
@@ -1452,7 +1453,7 @@ sealed class ShareWindow : Form
             if (keep) ApplyConfig();
         } else if (f[0] == "UNPAIRED" && f.Length == 2) {
             // The receiver paired with another host; it is listed again under nearby computers.
-            NearbyDevice device; string name = devices.TryGetValue(f[1], out device) ? device.Name : "一台接收端";
+            NearbyDevice device; string name = removedName ?? (devices.TryGetValue(f[1], out device) ? device.Name : "一台接收端");
             status.Text = "「" + name + "」已改和其他主控端配對，已自動解除這裡的配對。"; Diagnose(status.Text);
         }
         else if (f[0] == "UNAVAILABLE" && f.Length == 3 && backend == null) { status.Text = "正在重新尋找並驗證已配對的電腦…"; LogLine(Decode(f[2])); }

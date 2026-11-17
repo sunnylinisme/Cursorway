@@ -446,6 +446,10 @@ int main(int argc, char** argv)
         DWORD ax = direction == "right" ? 65535 : direction == "left" ? 0 : 30000, ay = direction == "down" ? 65535 : direction == "up" ? 0 : 30000;
         // The centre is about half a screen from the edge; anything closer than a quarter counts as the edge.
         int limit = (sx ? w : h) / 4, worst = 0; bool passed = true;
+        // Relative moves are scaled by pointer acceleration ("enhance pointer precision"): after an early
+        // return, the rest of the burst could carry the host cursor past the limit. Measure without it.
+        int mouse[3] = {}; bool savedMouse = SystemParametersInfoW(SPI_GETMOUSE, 0, mouse, 0) != 0;
+        int flat[3] = { 0, 0, 0 }; if (savedMouse) SystemParametersInfoW(SPI_SETMOUSE, 0, flat, 0);
         for (int i = 0; i < count && passed; ++i) {
             mouse_event(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, ax, ay, 0, 0); pump(150);
             for (int k = 0; k < 3; ++k) mouse_event(MOUSEEVENTF_MOVE, static_cast<DWORD>(8 * sx), static_cast<DWORD>(8 * sy), 0, 0);
@@ -479,6 +483,7 @@ int main(int argc, char** argv)
                 saveScreen(L"cursor-fast-return.bmp");
             }
         }
+        if (savedMouse) SystemParametersInfoW(SPI_SETMOUSE, 0, mouse, 0);
         std::cout << "::notice::fast return " << direction << ": " << count << " returns, farthest " << worst << " px from the edge (limit " << limit << ")\n";
         if (passed) std::cout << "PASS: " << count << " fast returns kept the host cursor at the " << direction << " edge\n";
         OleUninitialize(); return passed ? 0 : 1;

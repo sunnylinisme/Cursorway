@@ -523,24 +523,30 @@ final class ShareScreenMap: NSView, NSViewToolTipOwner {
             (t.isSelf ? ShareStyle.ink : t.active ? ShareStyle.blue : t.placeholder ? ShareStyle.faint : ShareStyle.muted).setStroke(); path.stroke()
             let style = NSMutableParagraphStyle(); style.alignment = .center
             let color: NSColor = t.active ? .white : t.placeholder ? ShareStyle.faint : ShareStyle.ink
-            let text = NSAttributedString(string: t.number ?? "", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: min(15, ch * 0.42), weight: .semibold), .foregroundColor: color, .paragraphStyle: style])
-            text.draw(in: NSRect(x: r.minX, y: r.midY - text.size().height / 2, width: r.width, height: text.size().height))
-            if t.isSelf { ShareScreenMap.drawHere(r) }
+            if t.isSelf { ShareScreenMap.drawSelf(r, number: t.number, color: color) } else {
+                let text = NSAttributedString(string: t.number ?? "", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: min(15, ch * 0.42), weight: .semibold), .foregroundColor: color, .paragraphStyle: style])
+                text.draw(in: NSRect(x: r.minX, y: r.midY - text.size().height / 2, width: r.width, height: text.size().height))
+            }
             let tag = addToolTip(r, owner: self, userData: nil); tips[tag] = t.tip
         }
     }
-    // "You are here": blue ring, centre dot and four short ticks on a white disc, in the self tile's top-right corner.
-    static func drawHere(_ r: NSRect) {
-        let d = min(14, r.height * 0.42), c = NSPoint(x: r.maxX - d / 2 - 2, y: r.minY + d / 2 + 2), rad = d * 0.3
-        NSColor.white.setFill(); NSBezierPath(ovalIn: NSRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)).fill()
-        ShareStyle.blue.setStroke(); ShareStyle.blue.setFill()
-        let ring = NSBezierPath(ovalIn: NSRect(x: c.x - rad, y: c.y - rad, width: rad * 2, height: rad * 2)); ring.lineWidth = 1.2; ring.stroke()
-        NSBezierPath(ovalIn: NSRect(x: c.x - 1.3, y: c.y - 1.3, width: 2.6, height: 2.6)).fill()
-        let ticks = NSBezierPath(); ticks.lineWidth = 1.2
-        for (dx, dy) in [(0.0, 1.0), (0.0, -1.0), (1.0, 0.0), (-1.0, 0.0)] {
-            ticks.move(to: NSPoint(x: c.x + dx * rad, y: c.y + dy * rad)); ticks.line(to: NSPoint(x: c.x + dx * d / 2, y: c.y + dy * d / 2))
-        }
-        ticks.stroke()
+    // Location pin (teardrop with a round hole) in the given color; top is the pin's top edge, h its height.
+    static func pinPath(centerX: CGFloat, top: CGFloat, height h: CGFloat) -> NSBezierPath {
+        let w = h * 0.74, c = NSPoint(x: centerX, y: top + w / 2), path = NSBezierPath()
+        path.appendArc(withCenter: c, radius: w / 2, startAngle: 145, endAngle: 395, clockwise: false)
+        path.line(to: NSPoint(x: centerX, y: top + h)); path.close()
+        let hole = w * 0.40; path.appendOval(in: NSRect(x: c.x - hole / 2, y: c.y - hole / 2, width: hole, height: hole))
+        path.windingRule = .evenOdd; return path
+    }
+    // "This computer": a pin with the switch number under it, or a larger pin alone while the number is unknown.
+    static func drawSelf(_ r: NSRect, number: String?, color: NSColor) {
+        color.setFill()
+        guard let number = number, !number.isEmpty, number != "·" else { pinPath(centerX: r.midX, top: r.midY - 8.5, height: 17).fill(); return }
+        let style = NSMutableParagraphStyle(); style.alignment = .center
+        let text = NSAttributedString(string: number, attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold), .foregroundColor: color, .paragraphStyle: style])
+        let pin: CGFloat = 11, th = text.size().height, top = r.height >= 5 + pin + th ? r.minY + 5 : r.midY - (pin + th) / 2
+        pinPath(centerX: r.midX, top: top, height: pin).fill()
+        text.draw(in: NSRect(x: r.minX, y: top + pin, width: r.width, height: th))
     }
     // Grey rounded frame; 16:10 screens up to 76×48 with the name underneath; this one has a mouse outline.
     override func draw(_ dirtyRect: NSRect) {
@@ -560,18 +566,7 @@ final class ShareScreenMap: NSView, NSViewToolTipOwner {
             if t.placeholder { path.setLineDash([4, 3], count: 2, phase: 0) } else { (t.isSelf ? ShareStyle.tint : NSColor.white).setFill(); path.fill() }
             (t.isSelf ? ShareStyle.blue : t.placeholder ? ShareStyle.faint : ShareStyle.border).setStroke(); path.stroke()
             if !t.tip.isEmpty { let tag = addToolTip(r, owner: self, userData: nil); tips[tag] = t.tip }
-            if let label = t.label {
-                // Receiver: the switch number its host gave it.
-                let style = NSMutableParagraphStyle(); style.alignment = .center
-                let text = NSAttributedString(string: label, attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: min(17, ch * 0.45), weight: .semibold), .foregroundColor: ShareStyle.blue, .paragraphStyle: style])
-                text.draw(in: NSRect(x: r.minX, y: r.midY - text.size().height / 2, width: r.width, height: text.size().height))
-            } else if t.isSelf {
-                // A mouse outline marks the computer whose keyboard and mouse are used.
-                ShareStyle.blue.setStroke()
-                let mouse = NSBezierPath(ovalIn: NSRect(x: r.midX - 5, y: r.midY - 8, width: 10, height: 16)); mouse.lineWidth = 1.5; mouse.stroke()
-                let wheel = NSBezierPath(); wheel.move(to: NSPoint(x: r.midX, y: r.midY - 8)); wheel.line(to: NSPoint(x: r.midX, y: r.midY - 3)); wheel.lineWidth = 1.5; wheel.stroke()
-            }
-            if t.isSelf { ShareScreenMap.drawHere(r) }
+            if t.isSelf { ShareScreenMap.drawSelf(r, number: t.label, color: ShareStyle.ink) }
             let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
             NSAttributedString(string: t.name, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: t.placeholder ? ShareStyle.faint : ShareStyle.muted, .paragraphStyle: style])
                 .draw(in: NSRect(x: r.minX - gap / 2, y: r.maxY + 1, width: r.width + gap, height: label))

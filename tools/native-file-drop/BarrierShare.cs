@@ -224,6 +224,8 @@ static class ShareSettings
             }
         }
         b.Append("end\nsection: options\n clipboardSharing = " + (clipboard && a.Clipboard ? "true" : "false") + "\n");
+        // preserveFocus (per screen) only works on Linux; a Windows host keeps its foreground window with this.
+        if (a.PreserveFocus) b.Append(" win32KeepForeground = true\n");
         if (a.SwitchNeeds != "") b.Append(" switchNeeds" + Char.ToUpperInvariant(a.SwitchNeeds[0]) + a.SwitchNeeds.Substring(1) + " = true\n");
         if (a.SwitchDelay > 0) b.Append(" switchDelay = " + a.SwitchDelay + "\n");
         if (a.DoubleTap > 0) b.Append(" switchDoubleTap = " + a.DoubleTap + "\n");
@@ -1836,28 +1838,28 @@ sealed class ShareWindow : Form
         Func<ShareComboBox, int> picked = box => ((List<int>)box.Tag)[Math.Max(0, box.SelectedIndex)];
         section("切換螢幕");
         var delay = choice(new[] { 0, 250, 500, 1000 }, v => v == 0 ? "立即" : v % 1000 == 0 ? v / 1000 + " 秒" : (v / 1000.0).ToString("0.##") + " 秒", a.SwitchDelay);
-        row("停留多久才切換", "避免滑鼠擦過邊緣就跑到另一台", delay);
+        row("停留多久才切換", "滑鼠要停在邊緣這麼久才切過去，避免擦過邊緣就跑到另一台", delay);
         var tap = choice(new[] { 0, 250, 400 }, v => v == 0 ? "關閉" : (v / 1000.0).ToString("0.##") + " 秒內", a.DoubleTap);
-        row("連碰兩下邊緣才切換", null, tap);
-        var corners = check(a.Corners); row("螢幕角落不切換", "方便點角落的開始按鈕或關閉鈕", corners);
-        var keys = check(a.SwitchKeys); row("啟用切換快捷鍵", "開啟後，按 Ctrl+Alt+方向鍵切到另一台", keys);
-        var direct = check(a.DirectKeys); row("啟用跳到指定電腦快捷鍵", "按 Ctrl+Alt+1 回到這台，2 以後依排列螢幕的順序；右側數字鍵也可以（需開 NumLock）", direct);
+        row("連碰兩下邊緣才切換", "在這段時間內碰兩下邊緣才切換，適合常不小心碰到邊緣時", tap);
+        var corners = check(a.Corners); row("螢幕角落不切換", "滑鼠在四個角落時不切換，方便點開始按鈕、關閉鈕或觸發熱角", corners);
+        var keys = check(a.SwitchKeys); row("啟用切換快捷鍵", "按 Ctrl+Alt+方向鍵，直接切到那個方向的電腦", keys);
+        var direct = check(a.DirectKeys); row("啟用跳到指定電腦快捷鍵", "按 Ctrl+Alt+1 回到這台，2 以後照「排列螢幕」裡的號碼；右側數字鍵也可以（需開 NumLock）", direct);
         var needs = choice(new[] { 0, 1, 2, 3 }, v => new[] { "不需要", "Shift", "Ctrl", "Alt" }[v], Math.Max(0, Array.IndexOf(ShareAdvanced.NeedKeys, a.SwitchNeeds)));
-        row("按住按鍵才切換", "要按住這個鍵，滑鼠碰到邊緣才會切換", needs);
+        row("按住按鍵才切換", "只有按住這個鍵時，滑鼠碰到邊緣才會切換，平常碰到邊緣不會跑走", needs);
         y += 16; section("鍵盤與滑鼠");
-        var swap = check(a.SwapModifiers); row("Mac 上對調 Ctrl 與 Command", "Windows 鍵盤在 Mac 上可按 Ctrl+C／V", swap);
-        var lockKey = check(a.LockKey); row("啟用鎖定游標快捷鍵", "開啟後按 Ctrl+Alt+L 鎖定或解除，游標不會跑到另一台", lockKey);
-        var relative = check(a.RelativeMouse); row("相對滑鼠移動", "全螢幕遊戲用", relative);
-        var saver = check(a.ScreenSaver); row("同步螢幕保護程式", null, saver);
-        var broadcast = check(a.BroadcastKey); row("啟用鍵盤廣播快捷鍵", "開啟後，按 Ctrl+Alt+B 開始或停止：打的字會同時送到所有電腦", broadcast);
-        var caps = check(a.CapsLockFix); row("接收端的 Caps Lock 修正", "接收端的大小寫或 Caps Lock 燈號跟按鍵對不上時再開啟", caps);
-        var focus = check(a.PreserveFocus); row("切走時保留這台的視窗焦點", "游標移到另一台時，這台目前使用中的視窗不會失去焦點", focus);
+        var swap = check(a.SwapModifiers); row("Mac 上對調 Ctrl 與 Command", "只對 Mac 接收端生效：用這台的鍵盤在 Mac 上按 Ctrl+C／V 就是複製貼上", swap);
+        var lockKey = check(a.LockKey); row("啟用鎖定游標快捷鍵", "按 Ctrl+Alt+L 把游標鎖在目前這台，碰到邊緣也不會切換；再按一次解除", lockKey);
+        var relative = check(a.RelativeMouse); row("相對滑鼠移動", "搭配鎖定游標使用：鎖定時只傳送移動量，全螢幕遊戲和 3D 軟體的視角才會正常轉動", relative);
+        var saver = check(a.ScreenSaver); row("同步螢幕保護程式", "一台啟動螢幕保護程式時，其他電腦也一起啟動，結束時也一起結束", saver);
+        var broadcast = check(a.BroadcastKey); row("啟用鍵盤廣播快捷鍵", "按 Ctrl+Alt+B 開始或停止：打的字會同時送到所有電腦，適合在多台輸入相同指令", broadcast);
+        var caps = check(a.CapsLockFix); row("接收端的 Caps Lock 修正", "接收端的大小寫或 Caps Lock 燈號跟按鍵對不上時再開啟，常見於 Mac 接收端", caps);
+        var focus = check(a.PreserveFocus); row("切走時保留這台的視窗焦點", "游標移到另一台時，這台正在用的視窗不會失去焦點（標題列不變灰、遊戲不會縮小）", focus);
         y += 16; section("剪貼簿");
-        var clipboard = check(a.Clipboard); row("共用剪貼簿", "關閉後，兩台不再同步複製的文字和檔案", clipboard);
+        var clipboard = check(a.Clipboard); row("共用剪貼簿", "在一台複製的文字、圖片和檔案，可以在另一台貼上；關閉後不再同步", clipboard);
         y += 16; section("這台當接收端時（只影響這台）");
         var wheel = choice(ShareAdvanced.WheelScales, v => v + "%", a.WheelScale);
-        row("滾輪速度", "另一台的滑鼠在這台捲動時的速度", wheel);
-        var invert = check(a.WheelInvert); row("反轉滾輪方向", "Mac 自然捲動和 Windows 方向相反時開啟", invert);
+        row("滾輪速度", "主控端的滑鼠在這台捲動時的速度", wheel);
+        var invert = check(a.WheelInvert); row("反轉滾輪方向", "這台捲動方向和主控端相反時開啟，例如 Mac 的自然捲動", invert);
         y += 16; section("連線");
         // A full-width field under its explanation: addresses are long and there may be several.
         var targets = new TextBox { Text = String.Join(Environment.NewLine, (a.Targets ?? "").Split(new[] { ',', ' ', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)),
@@ -2421,7 +2423,7 @@ static class ShareProgram
             // Defaults leave the generated file and the receiver command as they were.
             var allOptions = ShareSettings.Advanced; ShareSettings.Advanced = new ShareAdvanced();
             string plain = ShareSettings.Config(true), plainReceiver = ShareSettings.Backend(false, "192.168.1.2").Arguments;
-            foreach (string unexpected in new[] { "preserveFocus", "halfDuplexCapsLock", "switchNeeds", "switchToScreen", "keyboardBroadcast", "(0,50)", "(50,100)", "clipboardSharing = false" })
+            foreach (string unexpected in new[] { "preserveFocus", "win32KeepForeground", "halfDuplexCapsLock", "switchNeeds", "switchToScreen", "keyboardBroadcast", "(0,50)", "(50,100)", "clipboardSharing = false" })
                 if (plain.Contains(unexpected)) throw new Exception("Default settings changed the config: " + unexpected + "\n" + plain);
             if (plainReceiver.Contains("--wheel") || ShareService.StartCommand(false, "192.168.1.2").Split('\t').Length != 8) throw new Exception("Default wheel settings changed the receiver command");
             // The eight added options together; fa sits right of the host and uses only the top half of that edge.
@@ -2430,7 +2432,7 @@ static class ShareProgram
             string added = ShareSettings.Config(true);
             foreach (string expected in new[] { " windows-host:\n  preserveFocus = true\n", " " + na + ":\n  halfDuplexCapsLock = true\n", "  right(0,50) = " + na + "\n", "  left(50,100) = " + nc + "\n",
                 " " + na + ":\n  left = windows-host(0,50)\n", " " + nc + ":\n  right = windows-host(50,100)\n", " " + nb + ":\n  down = windows-host\n", "  up = " + nb + "\n",
-                " clipboardSharing = false\n", " switchNeedsAlt = true\n", " keystroke(Control+Alt+1) = switchToScreen(windows-host)\n", " keystroke(Control+Alt+2) = switchToScreen(" + na + ")\n",
+                " clipboardSharing = false\n", " win32KeepForeground = true\n", " switchNeedsAlt = true\n", " keystroke(Control+Alt+1) = switchToScreen(windows-host)\n", " keystroke(Control+Alt+2) = switchToScreen(" + na + ")\n",
                 " keystroke(Control+Alt+3) = switchToScreen(" + nb + ")\n", " keystroke(Control+Alt+4) = switchToScreen(" + nc + ")\n", " keystroke(Control+Alt+B) = keyboardBroadcast(toggle)\n" })
                 if (!added.Contains(expected)) throw new Exception("Added option missing from config: " + expected.Trim() + "\n" + added);
             if (added.Contains("windows-host:\n  halfDuplexCapsLock") || added.Contains("  preserveFocus = true\n  left = ")) throw new Exception("Caps Lock fix or focus option on the wrong screen\n" + added);

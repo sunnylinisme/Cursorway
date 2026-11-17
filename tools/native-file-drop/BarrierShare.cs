@@ -26,6 +26,9 @@ static class ShareSettings
     public static string Bin = AppDomain.CurrentDomain.BaseDirectory;
     public static readonly string[] Directions = { "right", "left", "up", "down" };
     public static string Position = "right";
+    // Window colours: follow the Windows app mode, or always light or dark.
+    public static readonly string[] Appearances = { "system", "light", "dark" };
+    public static string Appearance = "system";
     public static Action<string> Warn;
     public static string Profile(bool host) { return Path.Combine(Root, host ? "profile-server" : "profile"); }
     public static string Quote(string value)
@@ -61,7 +64,7 @@ static class ShareSettings
     public static void Save(bool host, string address)
     {
         Directory.CreateDirectory(Root);
-        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), Advanced.ToXml(),
+        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), new XAttribute("appearance", Appearance), Advanced.ToXml(),
             new XElement("layout", Layout.Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("x", item.Value.X), new XAttribute("y", item.Value.Y)))),
             new XElement("numbers", Numbers.Where(item => item.Value >= 2 && item.Value <= 9).Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("number", item.Value)))),
             new XElement("edges", EdgeRange.Where(item => item.Value != "all").Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("range", item.Value)))),
@@ -72,13 +75,15 @@ static class ShareSettings
     }
     public static void Load(out bool host, out string address)
     {
-        host = true; address = ""; Position = "right"; Advanced = new ShareAdvanced(); Layout = new Dictionary<string, Point>(); EdgeRange = new Dictionary<string, string>(); Platforms = new Dictionary<string, string>(); Numbers = new Dictionary<string, int>();
+        host = true; address = ""; Position = "right"; Appearance = "system"; Advanced = new ShareAdvanced(); Layout = new Dictionary<string, Point>(); EdgeRange = new Dictionary<string, string>(); Platforms = new Dictionary<string, string>(); Numbers = new Dictionary<string, int>();
         string path = Path.Combine(Root, "settings.xml");
         if (!File.Exists(path)) return;
         var root = XDocument.Load(path).Root;
         host = (bool)root.Attribute("host"); address = (string)root.Attribute("address") ?? "";
         string position = (string)root.Attribute("position");
         Position = Directions.Contains(position) ? position : "right";
+        string appearance = (string)root.Attribute("appearance");
+        Appearance = Appearances.Contains(appearance) ? appearance : "system";
         Advanced = ShareAdvanced.FromXml(root.Element("advanced"));
         var platforms = root.Element("platforms");
         if (platforms != null) foreach (var peer in platforms.Elements("peer")) {
@@ -467,10 +472,98 @@ static class ShareCursor
 
 static class ShareStyle
 {
-    public static readonly Color Background = Color.FromArgb(244, 246, 250), Ink = Color.FromArgb(24, 37, 57), Muted = Color.FromArgb(88, 105, 129), Blue = Color.FromArgb(47, 101, 235);
-    public static readonly Color Field = Color.FromArgb(247, 249, 253), Border = Color.FromArgb(219, 226, 237);
-    public static readonly Color Tint = Color.FromArgb(232, 240, 253), BlueInk = Color.FromArgb(20, 70, 160), Green = Color.FromArgb(28, 128, 80), GreenTint = Color.FromArgb(226, 244, 233);
-    public static readonly Color Faint = Color.FromArgb(128, 140, 158), Danger = Color.FromArgb(190, 55, 45);
+    // Every colour the interface uses, by role; the light and dark sets line up index for index.
+    static readonly string[] Roles = { "Background", "Card", "Ink", "Muted", "Faint", "Border", "Field", "Blue", "Tint", "BlueInk", "Green", "GreenTint", "Amber", "AmberTint", "Danger",
+        "Tile", "Selected", "Divider", "CardEdge", "HoverFill", "PressFill", "ButtonFill", "DisabledFill", "DisabledText", "QuietDisabled", "BluePressed", "BlueHover", "MarkTint", "SegmentBack", "DetailsBack" };
+    static readonly Color[] LightSet = {
+        C(244,246,250), C(255,255,255), C(24,37,57), C(88,105,129), C(128,140,158), C(219,226,237), C(247,249,253), C(47,101,235), C(232,240,253), C(20,70,160), C(28,128,80), C(226,244,233), C(176,110,10), C(252,241,220), C(190,55,45),
+        C(255,255,255), C(243,247,255), C(236,240,246), C(228,233,242), C(232,238,249), C(218,227,243), C(246,248,252), C(239,242,247), C(133,145,163), C(160,170,185), C(28,69,181), C(36,84,206), C(232,239,255), C(232,236,243), C(249,251,255) };
+    static readonly Color[] DarkSet = {
+        C(24,26,31), C(34,37,44), C(232,236,242), C(160,170,186), C(118,128,144), C(56,62,73), C(42,46,54), C(92,140,255), C(37,50,80), C(170,196,255), C(84,200,140), C(30,58,45), C(232,170,70), C(62,50,30), C(240,112,96),
+        C(46,50,59), C(40,48,66), C(48,53,63), C(52,57,67), C(52,58,70), C(62,70,86), C(44,48,56), C(38,41,48), C(100,108,122), C(98,106,120), C(70,112,220), C(112,156,255), C(36,49,78), C(30,33,39), C(28,31,37) };
+    static Color C(int r, int g, int b) { return Color.FromArgb(r, g, b); }
+    public static Color Background, Card, Ink, Muted, Faint, Border, Field, Blue, Tint, BlueInk, Green, GreenTint, Amber, AmberTint, Danger,
+        Tile, Selected, Divider, CardEdge, HoverFill, PressFill, ButtonFill, DisabledFill, DisabledText, QuietDisabled, BluePressed, BlueHover, MarkTint, SegmentBack, DetailsBack;
+    public static bool Dark { get; private set; }
+    static ShareStyle() { Use(false); }
+    // Switches every role to the light or dark set; open windows are recoloured with Theme().
+    public static void Use(bool dark)
+    {
+        Dark = dark; var set = dark ? DarkSet : LightSet;
+        foreach (var field in typeof(ShareStyle).GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+            if (field.FieldType == typeof(Color)) { int i = Array.IndexOf(Roles, field.Name); if (i >= 0) field.SetValue(null, set[i]); }
+    }
+    static bool IsRole(Color color) { return LightSet.Concat(DarkSet).Any(c => c.ToArgb() == color.ToArgb()); }
+    // A colour from either set, moved to the same role in the current set. White text stays white.
+    public static Color Swap(Color color, bool back)
+    {
+        if (!back && color.ToArgb() == Color.White.ToArgb()) return color;
+        int i = Array.FindIndex(LightSet, c => c.ToArgb() == color.ToArgb());
+        if (i < 0) i = Array.FindIndex(DarkSet, c => c.ToArgb() == color.ToArgb());
+        return i < 0 ? color : (Dark ? DarkSet : LightSet)[i];
+    }
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
+    [System.Runtime.InteropServices.DllImport("uxtheme.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)] static extern int SetWindowTheme(IntPtr window, string app, string list);
+    // Recolours a window (or menu) and everything in it for the current set, including the title bar and scroll bars.
+    public static void Theme(Control root)
+    {
+        Recolor(root);
+        var form = root as Form;
+        if (form != null) {
+            Action titleBar = () => { int on = Dark ? 1 : 0; if (DwmSetWindowAttribute(form.Handle, 20, ref on, 4) != 0) DwmSetWindowAttribute(form.Handle, 19, ref on, 4); };
+            if (form.IsHandleCreated) titleBar(); else form.HandleCreated += delegate { titleBar(); };
+        }
+        root.Invalidate(true);
+    }
+    static void Recolor(Control c)
+    {
+        c.BackColor = Swap(c.BackColor, true); c.ForeColor = Swap(c.ForeColor, false);
+        if (c is TextBoxBase || c is ListBox || (c is ScrollableControl && ((ScrollableControl)c).AutoScroll)) {
+            Action dark = () => { try { SetWindowTheme(c.Handle, Dark ? "DarkMode_Explorer" : "Explorer", null); } catch (Exception) { } };
+            if (c.IsHandleCreated) dark(); else c.HandleCreated += delegate { dark(); };
+        }
+        var strip = c as ToolStrip;
+        if (strip != null) { strip.Renderer = new ToolStripProfessionalRenderer(new MenuColors()); strip.BackColor = Card; strip.ForeColor = Ink; foreach (ToolStripItem item in strip.Items) Recolor(item); }
+        foreach (Control child in c.Controls) Recolor(child);
+    }
+    static void Recolor(ToolStripItem item)
+    {
+        // Items keep a role colour they were given (such as 解除配對 in red); everything else takes the text colour.
+        var swapped = Swap(item.ForeColor, false); item.ForeColor = swapped.ToArgb() != item.ForeColor.ToArgb() || IsRole(item.ForeColor) ? swapped : Ink;
+        if (item.BackColor != SystemColors.Control) item.BackColor = Swap(item.BackColor, true);
+        var menu = item as ToolStripMenuItem;
+        if (menu != null && menu.HasDropDownItems) { menu.DropDown.Renderer = new ToolStripProfessionalRenderer(new MenuColors()); menu.DropDown.BackColor = Card; foreach (ToolStripItem sub in menu.DropDownItems) Recolor(sub); }
+    }
+    // Menu colours that follow the current set.
+    sealed class MenuColors : ProfessionalColorTable
+    {
+        public override Color ToolStripDropDownBackground { get { return Card; } }
+        public override Color ImageMarginGradientBegin { get { return Card; } }
+        public override Color ImageMarginGradientMiddle { get { return Card; } }
+        public override Color ImageMarginGradientEnd { get { return Card; } }
+        public override Color MenuBorder { get { return Border; } }
+        public override Color MenuItemBorder { get { return Selected; } }
+        public override Color MenuItemSelected { get { return Selected; } }
+        public override Color MenuItemSelectedGradientBegin { get { return Selected; } }
+        public override Color MenuItemSelectedGradientEnd { get { return Selected; } }
+        public override Color MenuItemPressedGradientBegin { get { return Selected; } }
+        public override Color MenuItemPressedGradientEnd { get { return Selected; } }
+        public override Color SeparatorDark { get { return Divider; } }
+        public override Color SeparatorLight { get { return Divider; } }
+        public override Color CheckBackground { get { return Tint; } }
+        public override Color CheckSelectedBackground { get { return Tint; } }
+        public override Color CheckPressedBackground { get { return Tint; } }
+    }
+    // Windows apps setting (Settings > Personalization > Colors > app mode); light when it cannot be read.
+    public static bool SystemDark()
+    {
+        try {
+            using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")) {
+                object value = key == null ? null : key.GetValue("AppsUseLightTheme");
+                return value is int && (int)value == 0;
+            }
+        } catch (Exception) { return false; }
+    }
     public static GraphicsPath Rounded(RectangleF r, float radius) {
         var path = new GraphicsPath(); float d = radius * 2;
         path.AddArc(r.X, r.Y, d, d, 180, 90); path.AddArc(r.Right-d, r.Y, d, d, 270, 90); path.AddArc(r.Right-d, r.Bottom-d, d, d, 0, 90); path.AddArc(r.X, r.Bottom-d, d, d, 90, 90); path.CloseFigure(); return path;
@@ -481,7 +574,7 @@ sealed class ShareCard : Panel
     public ShareCard() { DoubleBuffered = true; BackColor = ShareStyle.Background; }
     protected override void OnPaint(PaintEventArgs e) {
         base.OnPaint(e); e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),14 * e.Graphics.DpiX / 96F)) using (var fill = new SolidBrush(Color.White)) using (var border = new Pen(Color.FromArgb(228,233,242))) { e.Graphics.FillPath(fill,path); e.Graphics.DrawPath(border,path); }
+        using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),14 * e.Graphics.DpiX / 96F)) using (var fill = new SolidBrush(ShareStyle.Card)) using (var border = new Pen(ShareStyle.CardEdge)) { e.Graphics.FillPath(fill,path); e.Graphics.DrawPath(border,path); }
     }
 }
 sealed class ShareButton : Button
@@ -502,18 +595,18 @@ sealed class ShareButton : Button
         float scale=e.Graphics.DpiX/96F;
         if (Quiet) {
             // Toolbar style: no frame until the pointer is over it.
-            if (Enabled && (hover || pressed)) using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),8*scale)) using (var brush = new SolidBrush(pressed ? Color.FromArgb(218,227,243) : Color.FromArgb(232,238,249))) e.Graphics.FillPath(brush,path);
+            if (Enabled && (hover || pressed)) using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),8*scale)) using (var brush = new SolidBrush(pressed ? ShareStyle.PressFill : ShareStyle.HoverFill)) e.Graphics.FillPath(brush,path);
             if (Focused && ShowFocusCues) using (var path=ShareStyle.Rounded(new RectangleF(2*scale,2*scale,Width-4*scale,Height-4*scale),6*scale)) using (var pen=new Pen(ShareStyle.Blue,scale)) e.Graphics.DrawPath(pen,path);
-            TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,!Enabled ? Color.FromArgb(160,170,185) : hover ? ShareStyle.Ink : ShareStyle.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPrefix);
+            TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,!Enabled ? ShareStyle.QuietDisabled : hover ? ShareStyle.Ink : ShareStyle.Muted,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPrefix);
             return;
         }
-        var fill = !Enabled ? Color.FromArgb(239,242,247) : Primary ? (pressed ? Color.FromArgb(28,69,181) : hover ? Color.FromArgb(36,84,206) : ShareStyle.Blue) : (pressed ? Color.FromArgb(218,227,243) : hover ? Color.FromArgb(232,238,249) : Color.FromArgb(246,248,252));
+        var fill = !Enabled ? ShareStyle.DisabledFill : Primary ? (pressed ? ShareStyle.BluePressed : hover ? ShareStyle.BlueHover : ShareStyle.Blue) : (pressed ? ShareStyle.PressFill : hover ? ShareStyle.HoverFill : ShareStyle.ButtonFill);
         using (var path = ShareStyle.Rounded(new RectangleF(0.5F,0.5F,Width-1,Height-1),9*scale)) using (var brush = new SolidBrush(fill)) {
             e.Graphics.FillPath(brush,path);
             if (!Primary && Enabled) using (var pen=new Pen(ShareStyle.Border)) e.Graphics.DrawPath(pen,path);
         }
         if (Focused && ShowFocusCues) using (var path=ShareStyle.Rounded(new RectangleF(3*scale,3*scale,Width-6*scale,Height-6*scale),6*scale)) using (var pen=new Pen(Primary ? Color.White : ShareStyle.Blue,scale)) e.Graphics.DrawPath(pen,path);
-        TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,!Enabled ? Color.FromArgb(133,145,163) : Primary ? Color.White : ShareStyle.Ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPrefix);
+        TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,!Enabled ? ShareStyle.DisabledText : Primary ? Color.White : ShareStyle.Ink,TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter|TextFormatFlags.EndEllipsis|TextFormatFlags.NoPrefix);
     }
 }
 // Keep native keyboard navigation and accessibility while giving the whole field a visible surface.
@@ -524,7 +617,9 @@ sealed class ShareComboBox : ComboBox
         FlatStyle=FlatStyle.Standard; BackColor=ShareStyle.Field; ForeColor=ShareStyle.Ink;
         IntegralHeight=false; MaxDropDownItems=8; UpdateItemHeight();
     }
-    void UpdateItemHeight() { ItemHeight=(int)Math.Ceiling(Font.Height*1.8F); DropDownHeight=ItemHeight*5; }
+    // Compact: the height of a plain drop-down list, for tight rows such as the 排列螢幕 legend.
+    bool compact; public bool Compact { get { return compact; } set { compact = value; UpdateItemHeight(); } }
+    void UpdateItemHeight() { ItemHeight=(int)Math.Ceiling(Font.Height*(compact ? 1.2F : 1.8F)); DropDownHeight=ItemHeight*(compact ? 8 : 5); }
     protected override void OnFontChanged(EventArgs e) { base.OnFontChanged(e); UpdateItemHeight(); }
     protected override void OnDrawItem(DrawItemEventArgs e) {
         bool selected=(e.State & DrawItemState.Selected)!=0 && (e.State & DrawItemState.ComboBoxEdit)==0;
@@ -542,7 +637,7 @@ sealed class ComputerMark : Control
     protected override void OnPaint(PaintEventArgs e) {
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.ScaleTransform(Width/52F,Height/52F);
-        using (var path = ShareStyle.Rounded(new RectangleF(0,0,51,51),12)) using (var brush = new SolidBrush(Color.FromArgb(232,239,255))) e.Graphics.FillPath(brush,path);
+        using (var path = ShareStyle.Rounded(new RectangleF(0,0,51,51),12)) using (var brush = new SolidBrush(ShareStyle.MarkTint)) e.Graphics.FillPath(brush,path);
         using (var pen = new Pen(ShareStyle.Blue,2)) { e.Graphics.DrawRectangle(pen,12,12,28,20); e.Graphics.DrawLine(pen,8,37,44,37); e.Graphics.DrawLine(pen,22,32,22,36); e.Graphics.DrawLine(pen,30,32,30,36); }
     }
 }
@@ -576,10 +671,10 @@ sealed class ShareSegment : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics; g.Clear(BackColor); g.SmoothingMode = SmoothingMode.AntiAlias; float s = g.DpiX / 96F;
-        using (var path = ShareStyle.Rounded(new RectangleF(0.5F, 0.5F, Width - 1, Height - 1), 8 * s)) using (var fill = new SolidBrush(Color.FromArgb(232, 236, 243))) g.FillPath(fill, path);
+        using (var path = ShareStyle.Rounded(new RectangleF(0.5F, 0.5F, Width - 1, Height - 1), 8 * s)) using (var fill = new SolidBrush(ShareStyle.SegmentBack)) g.FillPath(fill, path);
         for (int i = 0; i < options.Length; ++i) {
             var r = Part(i);
-            if (i == selected) using (var path = ShareStyle.Rounded(new RectangleF(r.X, r.Y, r.Width, r.Height), 6 * s)) using (var fill = new SolidBrush(Color.White)) using (var edge = new Pen(ShareStyle.Border)) { g.FillPath(fill, path); g.DrawPath(edge, path); }
+            if (i == selected) using (var path = ShareStyle.Rounded(new RectangleF(r.X, r.Y, r.Width, r.Height), 6 * s)) using (var fill = new SolidBrush(ShareStyle.Card)) using (var edge = new Pen(ShareStyle.Border)) { g.FillPath(fill, path); g.DrawPath(edge, path); }
             TextRenderer.DrawText(g, options[i], Font, r, i == selected ? ShareStyle.Ink : ShareStyle.Muted, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         }
         if (Focused && ShowFocusCues) using (var path = ShareStyle.Rounded(new RectangleF(1, 1, Width - 3, Height - 3), 8 * s)) using (var pen = new Pen(ShareStyle.Blue, s)) g.DrawPath(pen, path);
@@ -649,7 +744,7 @@ sealed class ShareScreenMap : Control
         foreach (var item in Rects()) {
             var t = item.Key; var r = item.Value;
             using (var path = ShareStyle.Rounded(r, 5 * s))
-            using (var fill = new SolidBrush(t.Active ? ShareStyle.Blue : Color.White))
+            using (var fill = new SolidBrush(t.Active ? ShareStyle.Blue : ShareStyle.Tile))
             using (var edge = new Pen(t.Self ? ShareStyle.Ink : t.Active ? ShareStyle.Blue : ShareStyle.Faint, (t.Self ? 2F : 1F) * s) { DashStyle = t.Waiting && !t.Self ? DashStyle.Dash : DashStyle.Solid }) {
                 if (!t.Waiting || t.Self) g.FillPath(fill, path); g.DrawPath(edge, path);
             }
@@ -711,8 +806,8 @@ sealed class ShareDeviceList : ListBox
         }
         var device = (NearbyDevice)Items[e.Index]; int state = State(device);
         bool selected = (e.State & DrawItemState.Selected) != 0;
-        using (var b = new SolidBrush(selected ? Color.FromArgb(243, 247, 255) : Color.White)) g.FillRectangle(b, row);
-        if (e.Index + 1 < Items.Count && !(Items[e.Index + 1] is ListHeader)) using (var pen = new Pen(Color.FromArgb(236, 240, 246))) g.DrawLine(pen, row.X + 14 * s, row.Bottom - 1, row.Right - 14 * s, row.Bottom - 1);
+        using (var b = new SolidBrush(selected ? ShareStyle.Selected : ShareStyle.Card)) g.FillRectangle(b, row);
+        if (e.Index + 1 < Items.Count && !(Items[e.Index + 1] is ListHeader)) using (var pen = new Pen(ShareStyle.Divider)) g.DrawLine(pen, row.X + 14 * s, row.Bottom - 1, row.Right - 14 * s, row.Bottom - 1);
         Color ink = state == 2 ? ShareStyle.Faint : ShareStyle.Ink;
         // Screen icon: a Mac gets a thinner bezel and a stand, a Windows PC a laptop base.
         float ix = row.X + 16 * s, iy = row.Y + row.Height / 2F - 9 * s;
@@ -931,6 +1026,7 @@ sealed class ShareWindow : Form
             string text = status.Text; trayStatus.Text = text.Length > 40 ? text.Substring(0, 40) + "…" : text;
             trayPause.Text = enabled ? "暫停共用" : "繼續共用"; trayLogin.Checked = autostart.Checked;
             trayArrange.Visible = Host; trayArrange.Enabled = peers.Count > 0;
+            ShareStyle.Theme(menu);
         };
         menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share " + ShareUpdate.Label; tray.ContextMenuStrip = menu; tray.Visible = !testing;
         tray.DoubleClick += delegate { ShowWindow(); };
@@ -960,6 +1056,10 @@ sealed class ShareWindow : Form
         updateTimer.Tick += delegate { CheckUpdate(); };
         serviceTail.Tick += delegate { FollowServiceLog(); };
         ResumeLayout(false);
+        ShareStyle.Theme(this); ShareStyle.Theme(menu);
+        Microsoft.Win32.UserPreferenceChangedEventHandler systemChanged = (sender, e) => { if (ShareSettings.Appearance == "system" && IsHandleCreated) BeginInvoke((Action)ApplyAppearance); };
+        Microsoft.Win32.SystemEvents.UserPreferenceChanged += systemChanged;
+        FormClosed += delegate { Microsoft.Win32.SystemEvents.UserPreferenceChanged -= systemChanged; };
         Shown += delegate {
             var available=Screen.FromControl(this).WorkingArea;
             if (Width>available.Width || Height>available.Height) { Size=new Size(Math.Min(Width,available.Width),Math.Min(Height,available.Height)); Location=available.Location; }
@@ -981,7 +1081,7 @@ sealed class ShareWindow : Form
         if (!testing) { ShareCursor.Restore(); ShareLogin.Refresh(); }
         try {
             ShareSettings.Import(ShareSettings.Bin, true, false); ShareSettings.Import(ShareSettings.Bin, false, false);
-            bool host; string ip; ShareSettings.Load(out host, out ip); role.SelectedIndex = host ? 0 : 1; address.Text = ip;
+            bool host; string ip; ShareSettings.Load(out host, out ip); ApplyAppearance(); role.SelectedIndex = host ? 0 : 1; address.Text = ip;
             loading = false; RefreshRole(); if (!testing) { StartLink(); retry.Start(); CheckUpdate(); updateTimer.Start(); }
         } catch (Exception e) { loading = false; Error(e); }
     }
@@ -1055,11 +1155,28 @@ sealed class ShareWindow : Form
         nearby.EndUpdate(); UpdateControls();
     }
     internal int DeviceCount { get { return nearby.Items.OfType<NearbyDevice>().Count(d => !d.Offline); } }
+    // Picks light or dark from the setting (and the Windows app mode for "system") and recolours every open window.
+    internal void ApplyAppearance()
+    {
+        bool dark = ShareSettings.Appearance == "dark" || (ShareSettings.Appearance == "system" && ShareStyle.SystemDark());
+        if (dark == ShareStyle.Dark && started) return;
+        ShareStyle.Use(dark);
+        foreach (var form in Application.OpenForms.Cast<Form>().ToList()) ShareStyle.Theme(form);
+        if (diagnostics != null) ShareStyle.Theme(diagnostics);
+        if (popup != null) ShareStyle.Theme(popup);
+        ShareStyle.Theme(this); UpdateControls();
+    }
     ContextMenuStrip BuildMoreMenu()
     {
         var menu = new ContextMenuStrip { Font = new Font(Font.FontFamily, 10F) };
         menu.Items.Add("清除暫存檔案", null, delegate { ClearCache(); }).Enabled = clear.Enabled;
         menu.Items.Add("關於 Barrier Share", null, delegate { MessageBox.Show(this, "Barrier Share\r\n" + ShareUpdate.Details + "\r\n\r\n以 Barrier 為基礎，在區域網路共用鍵盤、滑鼠與剪貼簿。", "關於 Barrier Share"); });
+        var look = new ToolStripMenuItem("外觀");
+        foreach (var choice in new[] { new[] { "system", "跟隨系統" }, new[] { "light", "淺色" }, new[] { "dark", "深色" } }) {
+            string value = choice[0];
+            look.DropDownItems.Add(new ToolStripMenuItem(choice[1], null, delegate { ShareSettings.Appearance = value; Save(); ApplyAppearance(); }) { Checked = ShareSettings.Appearance == value });
+        }
+        menu.Items.Add(look);
         menu.Items.Add(new ToolStripSeparator());
         var unpair = new ToolStripMenuItem("解除配對…") { ForeColor = ShareStyle.Danger, Enabled = forget.Enabled };
         if (peers.Count > 1) {
@@ -1068,7 +1185,7 @@ sealed class ShareWindow : Form
             unpair.DropDownItems.Add(new ToolStripMenuItem("全部解除", null, delegate { Forget("FORGET", "解除所有配對？"); }) { ForeColor = ShareStyle.Danger });
         } else unpair.Click += delegate { Forget("FORGET", "解除後不會自動連線，需要重新邀請並經對方同意。"); };
         menu.Items.Add(unpair);
-        menu.Closed += delegate { BeginInvoke((Action)menu.Dispose); };
+        ShareStyle.Theme(menu); menu.Closed += delegate { BeginInvoke((Action)menu.Dispose); };
         return menu;
     }
     void OpenUpdate() { if (updateUrl != null) try { Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); } catch (Exception e) { Error(e); } }
@@ -1080,7 +1197,6 @@ sealed class ShareWindow : Form
     }
     // One row per computer for the card's map and the 全部電腦 list: this one first, then the paired ones.
     internal sealed class Machine { public string Screen, Name, Where; public int Number; public Point Cell; public bool Self, Online, Active; }
-    internal static readonly Color Amber = Color.FromArgb(176, 110, 10), AmberTint = Color.FromArgb(252, 241, 220);
     static string Side(Point c)
     {
         string v = c.Y < 0 ? "上" : c.Y > 0 ? "下" : "", h = c.X > 0 ? "右" : c.X < 0 ? "左" : "";
@@ -1122,7 +1238,7 @@ sealed class ShareWindow : Form
         if (!enabled) badge.Set("已暫停", ShareStyle.Muted, ShareStyle.Field);
         else if (up) badge.Set("已連線", ShareStyle.Green, ShareStyle.GreenTint);
         else if (peers.Count == 0) badge.Set("尚未配對", ShareStyle.Muted, ShareStyle.Field);
-        else badge.Set("等待中", Amber, AmberTint);
+        else badge.Set("等待中", ShareStyle.Amber, ShareStyle.AmberTint);
         title.Text = CardTitle(); title.ForeColor = enabled ? ShareStyle.Ink : ShareStyle.Muted;
         if (up && enabled && Host && !transferring && (status.Text.StartsWith("已連線") || status.Text.Length == 0)) {
             int count = all.Count(m => !m.Self && m.Online), waiting = all.Count(m => !m.Self && !m.Online);
@@ -1155,7 +1271,7 @@ sealed class ShareWindow : Form
         }
         // About nine rows show at once; longer lists scroll.
         menu.MaximumSize = new Size(0, (int)(menu.Items.Count > 9 ? 9 * 34 * DeviceScale() : 0));
-        menu.Closed += delegate { BeginInvoke((Action)menu.Dispose); };
+        ShareStyle.Theme(menu); menu.Closed += delegate { BeginInvoke((Action)menu.Dispose); };
         return menu;
     }
     float DeviceScale() { using (var g = CreateGraphics()) return g.DpiX / 96F; }
@@ -1164,7 +1280,7 @@ sealed class ShareWindow : Form
         var bitmap = new Bitmap(22, 22);
         using (var g = Graphics.FromImage(bitmap)) {
             g.SmoothingMode = SmoothingMode.AntiAlias;
-            using (var path = ShareStyle.Rounded(new RectangleF(1, 1, 20, 20), 4)) using (var b = new SolidBrush(active ? ShareStyle.Blue : Color.White)) using (var pen = new Pen(active ? ShareStyle.Blue : ShareStyle.Faint)) { g.FillPath(b, path); g.DrawPath(pen, path); }
+            using (var path = ShareStyle.Rounded(new RectangleF(1, 1, 20, 20), 4)) using (var b = new SolidBrush(active ? ShareStyle.Blue : ShareStyle.Card)) using (var pen = new Pen(active ? ShareStyle.Blue : ShareStyle.Faint)) { g.FillPath(b, path); g.DrawPath(pen, path); }
             using (var f = new Font("Segoe UI", 9F, FontStyle.Bold)) TextRenderer.DrawText(g, number > 0 ? number.ToString() : "–", f, new Rectangle(0, 0, 22, 22), active ? Color.White : ShareStyle.Ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         }
         return bitmap;
@@ -1185,7 +1301,7 @@ sealed class ShareWindow : Form
             dialog.Controls.Add(new Label { Text = text, Bounds = new Rectangle(22, 18, 396, 90), ForeColor = ShareStyle.Ink });
             var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(196, 116, 100, 34), DialogResult = DialogResult.Cancel };
             var ok = new ShareButton { Text = action, Primary = true, BackColor = Color.White, Bounds = new Rectangle(306, 116, 112, 34), DialogResult = DialogResult.OK };
-            dialog.Controls.Add(cancel); dialog.Controls.Add(ok); dialog.CancelButton = cancel; dialog.AcceptButton = cancel;
+            dialog.Controls.Add(cancel); dialog.Controls.Add(ok); dialog.CancelButton = cancel; dialog.AcceptButton = cancel; ShareStyle.Theme(dialog);
             return dialog.ShowDialog(this) == DialogResult.OK;
         }
     }
@@ -1322,7 +1438,7 @@ sealed class ShareWindow : Form
         CloseConsent(); Show(); Activate(); consentId = message[1]; string id = consentId;
         bool request = message[0] == "REQUEST";
         var dialog = new Form { Text = request ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(440, 372), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
-        consent = dialog;
+        consent = dialog; ShareStyle.Theme(dialog);
         var left = new ComputerMark { BackColor = Color.White, Bounds = new Rectangle(150, 22, 44, 44) };
         var joint = new Label { Text = "⟷", ForeColor = ShareStyle.Faint, Font = new Font(Font.FontFamily, 14F), TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(198, 28, 44, 32) };
         var right = new ComputerMark { BackColor = Color.White, Bounds = new Rectangle(246, 22, 44, 44) };
@@ -1453,7 +1569,7 @@ sealed class ShareWindow : Form
             bar.Controls.Add(copyAll);
             copyAll.Click += delegate { if (details.TextLength > 0) { Clipboard.SetText(details.Text); copyAll.Text = "已複製"; } };
             details.TextChanged += delegate { copyAll.Text = "全部複製"; };
-            diagnostics.Controls.Add(bar);
+            diagnostics.Controls.Add(bar); ShareStyle.Theme(diagnostics);
             diagnostics.FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!closing) { e.Cancel=true; diagnostics.Hide(); } };
         }
         diagnostics.Show(this); diagnostics.Activate();
@@ -1475,6 +1591,8 @@ sealed class ShareWindow : Form
                 DrawToBitmap(bitmap, new Rectangle(Point.Empty, Size)); bitmap.Save(Path.Combine(directory, filename));
             }
         };
+        // Screens are compared in light first, whatever the Windows app mode of the test machine is.
+        ShareSettings.Appearance = "light"; ApplyAppearance();
         role.SelectedIndex = 0;
         if (role.Items.Count != 2 || segment.Selected != 0) throw new Exception("Role choices are incomplete or out of step with the switch");
         // UI-only discovery fixture: no input capture or network service starts here.
@@ -1498,6 +1616,19 @@ sealed class ShareWindow : Form
             if (list.Items.Count != 2 || !list.Items[1].Text.Contains("另一台電腦") || list.Items[1].BackColor != ShareStyle.Tint || !list.Items[0].Text.Contains("這台")) throw new Exception("全部電腦 list rows wrong");
         }
         capture("gui-card.png");
+        // Dark appearance recolours the window in place; back to light restores the same colours.
+        var lightInk = ShareStyle.Ink; var lightBack = BackColor;
+        ShareSettings.Appearance = "dark"; ApplyAppearance();
+        if (!ShareStyle.Dark || BackColor != ShareStyle.Background || title.ForeColor != ShareStyle.Ink || lightInk == ShareStyle.Ink || body.BackColor != ShareStyle.Background || nearby.BackColor != ShareStyle.Card)
+            throw new Exception("Dark appearance did not recolour the window: " + ShareStyle.Dark + " " + BackColor + "/" + ShareStyle.Background + " " + title.ForeColor + "/" + ShareStyle.Ink + " " + lightInk + " " + body.BackColor + " " + nearby.BackColor + "/" + ShareStyle.Card);
+        using (var list = BuildMoreMenu()) {
+            var look = list.Items.OfType<ToolStripMenuItem>().First(i => i.Text == "外觀");
+            if (look.DropDownItems.Count != 3 || !((ToolStripMenuItem)look.DropDownItems[2]).Checked || list.BackColor != ShareStyle.Card) throw new Exception("外觀 menu does not show the dark choice");
+        }
+        capture("gui-card-dark.png");
+        ShareSettings.Appearance = "light"; ApplyAppearance();
+        if (ShareStyle.Dark || BackColor != lightBack || title.ForeColor != lightInk) throw new Exception("Light appearance did not restore the colours");
+        ShareSettings.Appearance = "system";
         if (NumberList() != fp + "=2/1/0") throw new Exception("Host number list for the link is wrong: " + NumberList());
         // A role change while connected asks first; declining keeps the role.
         string asked = null; Confirm = (text, action) => { asked = text + "|" + action; return false; };
@@ -1633,7 +1764,7 @@ sealed class ShareWindow : Form
         Action<string, string, Control> row = (title, detail, control) => {
             int lines = detail == null ? 0 : TextRenderer.MeasureText(detail, new Font(Font.FontFamily, 8.5F)).Width > W - 184 ? 2 : 1;
             int h = lines == 0 ? 44 : lines == 1 ? 56 : 74;
-            if (rowY > 0) group.Controls.Add(new Panel { BackColor = Color.FromArgb(236, 240, 246), Bounds = new Rectangle(14, rowY, W - 28, 1) });
+            if (rowY > 0) group.Controls.Add(new Panel { BackColor = ShareStyle.Divider, Bounds = new Rectangle(14, rowY, W - 28, 1) });
             group.Controls.Add(new Label { Text = title, BackColor = Color.White, Bounds = new Rectangle(14, rowY + (detail == null ? 11 : 8), W - 180, 22) });
             if (detail != null) group.Controls.Add(new Label { Text = detail, BackColor = Color.White, ForeColor = ShareStyle.Faint, Font = new Font(Font.FontFamily, 8.5F), Bounds = new Rectangle(14, rowY + 30, W - 180, lines * 18) });
             control.Location = new Point(W - 14 - control.Width, rowY + (h - control.Height) / 2); control.AccessibleName = title; group.Controls.Add(control);
@@ -1704,7 +1835,7 @@ sealed class ShareWindow : Form
             catch (IOException e) { MessageBox.Show(dialog, e.Message, "進階設定"); }
         };
         layout();
-        return dialog;
+        ShareStyle.Theme(dialog); return dialog;
     }
     void ShowAdvanced()
     {
@@ -1842,7 +1973,7 @@ sealed class ShareTransferPopup : Form
         detail.ForeColor = ShareStyle.Muted; detail.Bounds = new Rectangle(16, 36, 308, 22); detail.AutoEllipsis = true;
         bar.Bounds = new Rectangle(16, 66, 196, 14);
         cancel.BackColor = Color.White; cancel.Bounds = new Rectangle(224, 58, 100, 30); cancel.Click += delegate { var handler = CancelRequested; if (handler != null) handler(); };
-        Controls.AddRange(new Control[] { title, detail, bar, cancel });
+        Controls.AddRange(new Control[] { title, detail, bar, cancel }); ShareStyle.Theme(this);
         showTimer.Tick += delegate { showTimer.Stop(); ShowQuietly(); };
         closeTimer.Tick += delegate { closeTimer.Stop(); Hide(); };
     }
@@ -1930,11 +2061,11 @@ sealed class ShareLayoutEditor : Form
             Point cell; if (cells.TryGetValue(ShareSettings.ScreenName(peer.Key), out cell)) Placement[peer.Key] = cell;
             Ranges[peer.Key] = ShareSettings.RangeOf(peer.Key);
             string fp = peer.Key;
-            var box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Visible = false, AccessibleName = "相接的範圍：" + peer.Value };
+            var box = new ShareComboBox { Compact = true, Visible = false, AccessibleName = "相接的範圍：" + peer.Value };
             box.SelectedIndexChanged += delegate { if (box.SelectedIndex >= 0 && box.Tag == null) Ranges[fp] = ShareSettings.EdgeRanges[box.SelectedIndex]; };
             rangeBoxes[fp] = box; legend.Controls.Add(box);
             int saved; Numbers[fp] = ShareSettings.Numbers.TryGetValue(fp, out saved) ? saved : 0;
-            var number = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, AccessibleName = "切換號碼：" + peer.Value };
+            var number = new ShareComboBox { Compact = true, AccessibleName = "切換號碼：" + peer.Value };
             number.Items.Add("自動"); for (int n = 2; n <= 9; ++n) number.Items.Add(n.ToString());
             number.SelectedIndexChanged += delegate { if (number.SelectedIndex >= 0 && number.Tag == null) Choose(fp, number.SelectedIndex == 0 ? 0 : number.SelectedIndex + 1); };
             numberBoxes[fp] = number; legend.Controls.Add(number);
@@ -1961,14 +2092,17 @@ sealed class ShareLayoutEditor : Form
             if (Math.Abs(target.X) <= Span && Math.Abs(target.Y) <= Span && target != Point.Empty && !Placement.Any(p => p.Key != dragging && p.Value == target)) Placement[dragging] = target;
             dragging = null; canvas.Cursor = Cursors.Default; Check(); canvas.Invalidate();
         };
-        Check();
+        Check(); ShareStyle.Theme(this);
     }
     // Drawing works in 96-dpi units; the canvas itself is scaled with the dialog.
     float Zoom { get { return canvas.Width / (float)(Cell * (Span * 2 + 1)); } }
     Point Unscale(Point p) { float k = Zoom; return new Point((int)(p.X / k), (int)(p.Y / k)); }
     Rectangle CellBounds(Point cell) { return new Rectangle((cell.X + Span) * Cell + 5, (cell.Y + Span) * Tall + 5, Cell - 10, Tall - 10); }
     Color ColorOf(string fp) { return Palette[Math.Max(0, order.IndexOf(fp)) % Palette.Length]; }
-    static Color Light(Color c) { return Color.FromArgb(232 + (c.R * 23 / 255), 232 + (c.G * 23 / 255), 232 + (c.B * 23 / 255)); }
+    // Tile fill and outline from a computer's colour: pale on light windows, deep on dark ones.
+    static Color Mix(Color a, Color b, float t) { return Color.FromArgb((int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t)); }
+    static Color Light(Color c) { return ShareStyle.Dark ? Mix(ShareStyle.Card, c, 0.28F) : Color.FromArgb(232 + (c.R * 23 / 255), 232 + (c.G * 23 / 255), 232 + (c.B * 23 / 255)); }
+    static Color Deep(Color c) { return ShareStyle.Dark ? Mix(c, Color.White, 0.45F) : Color.FromArgb(c.R * 7 / 10, c.G * 7 / 10, c.B * 7 / 10); }
     static string Direction(Point c)
     {
         if (c == new Point(1, 0)) return "右"; if (c == new Point(-1, 0)) return "左"; if (c == new Point(0, -1)) return "上"; if (c == new Point(0, 1)) return "下";
@@ -2009,7 +2143,7 @@ sealed class ShareLayoutEditor : Form
             Point c; var box = rangeBoxes[fp]; var number = numberBoxes[fp]; int n;
             string auto = resolved.TryGetValue(ShareSettings.ScreenName(fp), out n) && Numbers[fp] == 0 ? "自動（" + n + "）" : "自動";
             number.Tag = "filling"; if ((string)number.Items[0] != auto) number.Items[0] = auto; number.SelectedIndex = Numbers[fp] == 0 ? 0 : Numbers[fp] - 1; number.Tag = null;
-            number.Bounds = new Rectangle((int)(60 * k), (int)((y + 34) * k) + legend.AutoScrollPosition.Y, (int)(100 * k), number.Height);
+            number.Bounds = new Rectangle((int)(60 * k), (int)((y + 34) * k) + legend.AutoScrollPosition.Y, (int)(112 * k), number.Height);
             bool beside = Placement.TryGetValue(fp, out c) && ShareSettings.Beside(c);
             if (beside) {
                 // Left/right neighbours split the edge into top and bottom halves, up/down neighbours into left and right.
@@ -2041,7 +2175,7 @@ sealed class ShareLayoutEditor : Form
         foreach (var p in Placement.OrderBy(p => p.Key == dragging)) {
             var r = CellBounds(p.Value);
             if (p.Key == dragging) r.Offset(pointer.X - r.X - r.Width / 2, pointer.Y - r.Y - r.Height / 2);
-            int n; var c = ColorOf(p.Key); tile(r, (numbers.TryGetValue(ShareSettings.ScreenName(p.Key), out n) ? n + " · " : "") + names[p.Key], Light(c), Color.FromArgb(c.R * 7 / 10, c.G * 7 / 10, c.B * 7 / 10), false);
+            int n; var c = ColorOf(p.Key); tile(r, (numbers.TryGetValue(ShareSettings.ScreenName(p.Key), out n) ? n + " · " : "") + names[p.Key], Light(c), Deep(c), false);
         }
     }
     void DrawLegend(Graphics g)
@@ -2316,6 +2450,9 @@ static class ShareProgram
                     if (layout.Numbers[fc] != 0 || layout.Numbers[fb] != 2 || picked[nb] != 2 || picked[na] != 3 || picked[nc] != 4) throw new Exception("Layout editor allowed a repeated switch number");
                     layout.Choose(fc, 4); Application.DoEvents();
                     using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout.png")); }
+                    ShareStyle.Use(true); ShareStyle.Theme(layout); Application.DoEvents();
+                    using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout-dark.png")); }
+                    ShareStyle.Use(false); ShareStyle.Theme(layout);
                     layout.Close();
                 }
                 ShareSettings.Receivers = new List<string>(); ShareSettings.Layout = new Dictionary<string, Point>(); ShareSettings.EdgeRange = new Dictionary<string, string>(); ShareSettings.Advanced.DirectKeys = false;

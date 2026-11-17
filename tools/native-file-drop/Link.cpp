@@ -119,6 +119,10 @@ struct State {
     std::map<std::string, std::string> platforms;
     // Host only: switch number (1-9) the GUI gave each paired receiver, sent to it on every connection.
     std::map<std::string, std::string> numbers;
+    // Receiver only: when its host last connected; long silence while the host is visible triggers a CHECK.
+    Clock::time_point contact = Clock::now();
+    // Host only: receivers just removed here that are told right away, if they are online.
+    std::vector<Peer> forgetNotices;
     fs::path trustPath() const { return profile / "SSL" / "Fingerprints" / (host ? "TrustedClients.txt" : "TrustedServers.txt"); }
 };
 static void atomicWrite(const fs::path& path, const std::string& value) {
@@ -200,7 +204,16 @@ struct Session {
         auto code = std::to_string(value % 1000000); return std::string(6 - code.size(), '0') + code;
     }
 };
-static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer peer, bool automatic) {
+// Ends a session that did its job without anything to report (a CHECK).
+struct QuietEnd {};
+// Drops the pairing with a peer that no longer trusts this computer (its identity was checked first).
+static void unpaired(State& state, unsigned generation, const std::string& fingerprint) {
+    std::lock_guard<std::mutex> lock(state.mutex);
+    if (state.generation != generation || !state.find(fingerprint)) return;
+    state.saved.erase(std::remove_if(state.saved.begin(), state.saved.end(), [&](const Peer& p) { return p.fingerprint == fingerprint; }), state.saved.end());
+    storeSaved(state); emit("REMOVED\t" + fingerprint); emit("UNPAIRED\t" + fingerprint);
+}
+static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer peer, bool automatic, bool check = false, bool forget = false) {
     unsigned generation; { std::lock_guard<std::mutex> lock(state.mutex); generation = state.generation; }
     bool incoming = accepted != invalidSocket, resume = automatic; std::string requestId;
     try {
@@ -229,7 +242,16 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
         const auto fingerprint = session.peerFingerprint();
         if (incoming) {
             auto hello = fields(session.read());
-            require(hello.size() == 3 && hello[0] == "BPAIR1" && (hello[1] == "PAIR" || hello[1] == "RESUME") && validName(hello[2]), "Invalid pairing invitation");
+            // A host only answers CHECK from a receiver asking whether it is still paired; it never accepts pairing this way.
+            if (state.host) {
+                require(hello.size() == 3 && hello[0] == "BPAIR1" && hello[1] == "CHECK" && validName(hello[2]), "Invalid check");
+                bool known; { std::lock_guard<std::mutex> lock(state.mutex); known = state.find(fingerprint) != nullptr; }
+                session.write(known ? "BREADY1\t" + state.name : std::string("BNOTPAIRED1"));
+                throw QuietEnd();
+            }
+            require(hello.size() == 3 && hello[0] == "BPAIR1" && (hello[1] == "PAIR" || hello[1] == "RESUME" || hello[1] == "FORGET") && validName(hello[2]), "Invalid pairing invitation");
+            // Its host (identity from the TLS session) removed this receiver: drop the pairing right away.
+            if (hello[1] == "FORGET") { unpaired(state, generation, fingerprint); throw QuietEnd(); }
             peer.fingerprint = fingerprint; peer.name = hello[2]; resume = hello[1] == "RESUME";
             if (resume) {
                 bool known; { std::lock_guard<std::mutex> lock(state.mutex); known = state.find(fingerprint) != nullptr; }
@@ -239,17 +261,22 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             session.write("BREADY1\t" + state.name);
         } else {
             require(fingerprint == peer.fingerprint, "Computer identity changed; search again");
+            if (forget) { session.write("BPAIR1\tFORGET\t" + state.name); throw QuietEnd(); }
+            if (check) {
+                // Receiver: has the host (identity checked above) dropped this pairing? Then drop it here too.
+                session.write("BPAIR1\tCHECK\t" + state.name);
+                auto answer = fields(session.read());
+                if (answer.size() == 1 && answer[0] == "BNOTPAIRED1") unpaired(state, generation, peer.fingerprint);
+                else { std::lock_guard<std::mutex> lock(state.mutex); state.contact = Clock::now(); }
+                throw QuietEnd();
+            }
             session.write("BPAIR1\t" + std::string(resume ? "RESUME" : "PAIR") + '\t' + state.name);
             auto ready = fields(session.read());
             if (resume && ready.size() == 1 && ready[0] == "BNOTPAIRED1") {
                 // The receiver (its identity checked above) paired with another host: forget it here too,
                 // so it shows up again as a computer that can be invited.
-                std::lock_guard<std::mutex> lock(state.mutex);
-                if (state.generation == generation && state.find(peer.fingerprint)) {
-                    state.saved.erase(std::remove_if(state.saved.begin(), state.saved.end(), [&](const Peer& p) { return p.fingerprint == peer.fingerprint; }), state.saved.end());
-                    storeSaved(state); emit("REMOVED\t" + peer.fingerprint); emit("UNPAIRED\t" + peer.fingerprint);
-                }
-                throw std::runtime_error("This computer paired with another host");
+                unpaired(state, generation, peer.fingerprint);
+                throw QuietEnd();
             }
             require(ready.size() == 2 && ready[0] == "BREADY1" && validName(ready[1]), "Invalid pairing response"); peer.name = ready[1];
         }
@@ -279,6 +306,7 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
         { std::lock_guard<std::mutex> lock(state.mutex);
             require(state.generation == generation, "Pairing cancelled"); if (auto existing = state.find(peer.fingerprint)) existing->ip = peer.ip;
             if (!resume) emit("PAIRED\t" + peer.fingerprint + '\t' + peer.name);
+            if (!state.host) state.contact = Clock::now();
             emit("CONNECT\t" + peer.fingerprint + '\t' + peer.name + '\t' + peer.ip);
         }
         // Optional last line (0.3.17+): the host tells the receiver its switch number. Older peers close
@@ -299,8 +327,9 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
                     emit("NUMBER\t" + peer.fingerprint + '\t' + line[1] + (line.size() == 3 ? "\t" + line[2] : ""));
             } catch (const std::exception&) {}
         }
+    } catch (const QuietEnd&) {
     } catch (const std::exception& error) {
-        if (!state.stopping) {
+        if (!state.stopping && !check && !forget) {
             if (!resume) emit("ERROR\t" + base64(error.what()));
             else if (!incoming) emit("UNAVAILABLE\t" + peer.fingerprint + '\t' + base64(error.what()));
         }
@@ -365,12 +394,13 @@ static void network(State& state, const std::string& testTarget) {
         auto local = endpoint(testTarget.empty() ? "0.0.0.0" : "127.0.0.1", state.port);
         require(bind(udp.value, reinterpret_cast<sockaddr*>(&local), sizeof(local)) == 0 && bind(listener.value, reinterpret_cast<sockaddr*>(&local), sizeof(local)) == 0 && listen(listener.value, 4) == 0, "Discovery port is busy; close the other Barrier Share window");
         nonblocking(udp.value); nonblocking(listener.value);
-        auto lastSearch = Clock::time_point{}, lastResume = Clock::time_point{}, lastInvitation = Clock::time_point{}, lastResolve = Clock::time_point{}; std::string query;
+        auto lastSearch = Clock::time_point{}, lastResume = Clock::time_point{}, lastInvitation = Clock::time_point{}, lastResolve = Clock::time_point{}, lastCheck = Clock::time_point{}; std::string query;
+        { std::lock_guard<std::mutex> lock(state.mutex); state.contact = Clock::now(); }
         std::vector<std::string> direct;
-        auto launch = [&](Socket accepted, Peer peer, bool automatic) {
+        auto launch = [&](Socket accepted, Peer peer, bool automatic, bool check, bool forget) {
             if (state.busy.exchange(true)) { if (accepted != invalidSocket) closeSocket(accepted); return; }
             if (worker.joinable()) worker.join();
-            worker = std::thread(runSession, std::ref(state), context.get(), accepted, peer, automatic);
+            worker = std::thread(runSession, std::ref(state), context.get(), accepted, peer, automatic, check, forget);
         };
         emit("READY\t" + state.fingerprint);
         while (!state.stopping) {
@@ -435,16 +465,23 @@ static void network(State& state, const std::string& testTarget) {
 #endif
                 Socket fd = accept(listener.value, reinterpret_cast<sockaddr*>(&from), &length);
                 if (fd != invalidSocket) {
-                    if (state.host || state.busy || now - lastInvitation < std::chrono::seconds(2)) closeSocket(fd);
-                    else { lastInvitation = now; Peer peer; peer.ip = addressOf(from); launch(fd, peer, false); }
+                    // A host takes incoming connections only for a receiver's CHECK (enforced in runSession).
+                    if (state.busy || now - lastInvitation < std::chrono::seconds(2)) closeSocket(fd);
+                    else { lastInvitation = now; Peer peer; peer.ip = addressOf(from); launch(fd, peer, false, false, false); }
                 }
             }
-            Peer pending; bool start = false, automatic = false;
+            Peer pending; bool start = false, automatic = false, checkHost = false, notify = false;
             { std::lock_guard<std::mutex> lock(state.mutex);
                 for (auto it = state.devices.begin(); it != state.devices.end();) {
                     if (now - it->second.seen > std::chrono::seconds(12)) { emit("GONE\t" + it->first); it = state.devices.erase(it); } else ++it;
                 }
                 if (!state.busy && state.request) { pending = state.requested; state.request = false; start = true; }
+                else if (!state.busy && state.host && !state.forgetNotices.empty()) {
+                    // Tell a receiver removed here, now, if discovery sees it; otherwise it finds out with a CHECK later.
+                    Peer removed = state.forgetNotices.back(); state.forgetNotices.pop_back();
+                    auto found = state.devices.find(removed.fingerprint);
+                    if (found != state.devices.end()) { pending = found->second; start = true; notify = true; }
+                }
                 else if (!state.busy && state.host && !state.saved.empty() && now - lastResume > std::chrono::milliseconds(500)) {
                     // Each paired receiver that is online is resumed at most every 5 seconds, one at a time.
                     for (auto& p : state.saved) {
@@ -453,8 +490,13 @@ static void network(State& state, const std::string& testTarget) {
                         p.resumed = now; pending = found->second; start = true; automatic = true; break;
                     }
                 }
+                else if (!state.busy && !state.host && !state.saved.empty() && now - state.contact > std::chrono::seconds(10) && now - lastCheck > std::chrono::seconds(10)) {
+                    // A receiver whose visible host has not connected for a while asks whether it is still paired.
+                    auto found = state.devices.find(state.saved.front().fingerprint);
+                    if (found != state.devices.end() && found->second.role == 'H') { lastCheck = now; pending = found->second; start = true; checkHost = true; }
+                }
             }
-            if (start) { lastResume = now; launch(invalidSocket, pending, automatic); }
+            if (start) { lastResume = now; launch(invalidSocket, pending, automatic, checkHost, notify); }
         }
         // SSL_CTX must outlive its session worker, including during shutdown.
         if (worker.joinable()) worker.join();
@@ -508,6 +550,7 @@ int main(int argc, char** argv) {
                 } else if (f[0] == "FORGET") {
                     // FORGET removes every pairing; FORGET <fingerprint> removes one receiver.
                     std::lock_guard<std::mutex> lock(state.mutex); ++state.generation; state.decision = -1; state.request = false;
+                    if (state.host) for (const auto& p : state.saved) if (f.size() != 2 || p.fingerprint == f[1]) state.forgetNotices.push_back(p);
                     if (f.size() == 2) { state.saved.erase(std::remove_if(state.saved.begin(), state.saved.end(), [&](const Peer& p) { return p.fingerprint == f[1]; }), state.saved.end()); }
                     else state.saved.clear();
                     storeSaved(state); emit(f.size() == 2 ? "REMOVED\t" + f[1] : std::string("REMOVED"));

@@ -1140,7 +1140,8 @@ sealed class ShareWindow : Form
     {
         var peer = SelectedDevice;
         if (peer == null || peer.Offline || peers.ContainsKey(peer.Fingerprint) || !Host || link == null || consent != null) return;
-        StopBackend(); Send("PAIR\t" + peer.Fingerprint); status.Text = "正在發出邀請…";
+        // Connected receivers stay connected; the new one is added to the running core once paired.
+        Send("PAIR\t" + peer.Fingerprint); status.Text = "正在發出邀請…";
     }
     // Paired computers first (offline ones greyed), then the others by name, filtered by the search box.
     void RebuildNearby()

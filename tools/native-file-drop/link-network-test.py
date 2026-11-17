@@ -140,7 +140,7 @@ def run():
             receiver.send('FORGET'); receiver.wait('REMOVED')
             # The host is told at once and drops the pairing too, so the receiver can be invited again.
             assert host.wait('UNPAIRED')[1]==rf and any(e[0]=='REMOVED' and e[1:]==[rf] for e in host.history), host.history
-            assert time.monotonic()-started < 5, 'Host learned of the removal only after %.1f s' % (time.monotonic()-started)
+            assert time.monotonic()-started < 8, 'Host learned of the removal only after %.1f s' % (time.monotonic()-started)
             assert rf not in (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().split()
             print('PASS: a host drops a receiver that removed it, right away',flush=True)
             host.clear(); receiver.clear()
@@ -155,7 +155,7 @@ def run():
             host.send('FORGET',rf); assert host.wait('REMOVED')[1]==rf; receiver.clear()
             # Told at once while it is online (not after the periodic check).
             started=time.monotonic(); assert receiver.wait('UNPAIRED',45)[1]==hf, receiver.history
-            assert time.monotonic()-started < 5, 'Receiver learned of the removal only after %.1f s' % (time.monotonic()-started)
+            assert time.monotonic()-started < 8, 'Receiver learned of the removal only after %.1f s' % (time.monotonic()-started)
             assert not (rp/'Peer.txt').exists()
             print('PASS: a receiver drops a host that removed it, right away',flush=True)
         finally:

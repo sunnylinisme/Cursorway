@@ -606,7 +606,7 @@ sealed class ShareScreenMap : Control
 {
     // Label: the switch number (or a short mark); Self: this computer (black frame); Active: the mouse is there (blue);
     // Waiting: paired but not connected (dashed); Tip: full name and shortcut shown on hover.
-    public sealed class Tile { public Point Cell; public string Label, Tip; public bool Self, Active, Waiting; }
+    public sealed class Tile { public Point Cell; public string Label, Tip; public bool Self, Active, Waiting, Icon; }
     public List<Tile> Tiles = new List<Tile>();
     readonly ToolTip tip = new ToolTip { InitialDelay = 300 };
     string tipShown; float scale = 1;
@@ -642,7 +642,12 @@ sealed class ShareScreenMap : Control
             using (var edge = new Pen(t.Self ? ShareStyle.Ink : t.Active ? ShareStyle.Blue : ShareStyle.Faint, (t.Self ? 2F : 1F) * s) { DashStyle = t.Waiting && !t.Self ? DashStyle.Dash : DashStyle.Solid }) {
                 if (!t.Waiting || t.Self) g.FillPath(fill, path); g.DrawPath(edge, path);
             }
-            using (var f = new Font(Font.FontFamily, 11F, FontStyle.Bold))
+            // Without a number (a receiver whose host has not said it yet) a small screen marks the tile.
+            if (t.Icon && !t.Waiting) using (var pen = new Pen(t.Active ? Color.White : ShareStyle.Ink, 1.4F * s)) {
+                float w = Math.Min(r.Width * 0.45F, 18 * s), h = w * 0.62F, x = r.X + (r.Width - w) / 2, y = r.Y + (r.Height - h) / 2 - 2 * s;
+                g.DrawRectangle(pen, x, y, w, h); g.DrawLine(pen, x + w / 2, y + h, x + w / 2, y + h + 3 * s); g.DrawLine(pen, x + w / 4, y + h + 3 * s, x + w * 3 / 4, y + h + 3 * s);
+            }
+            if (!t.Icon) using (var f = new Font(Font.FontFamily, 11F, FontStyle.Bold))
                 TextRenderer.DrawText(g, t.Label, f, Rectangle.Round(r), t.Active ? Color.White : t.Waiting ? ShareStyle.Faint : ShareStyle.Ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         }
     }
@@ -767,6 +772,21 @@ sealed class ShareWindow : Form
     // Core screen names connected right now, and the screen the mouse is on (null: this computer).
     readonly HashSet<string> online = new HashSet<string>();
     string mouseAt;
+    // Receiver: the switch number its host gave it (0: not known, e.g. an older host). Host: the list last sent to the link.
+    int ownNumber; string sentNumbers;
+    internal string NumberList()
+    {
+        var numbers = ShareSettings.AssignedNumbers();
+        return String.Join(",", peers.Keys.Where(fp => numbers.ContainsKey(ShareSettings.ScreenName(fp))).Select(fp => fp + "=" + numbers[ShareSettings.ScreenName(fp)]).ToArray());
+    }
+    // The host tells each receiver its number through the link helper, which passes it on at every connection.
+    void SendNumbers()
+    {
+        if (!Host || link == null || testing) return;
+        string list = NumberList();
+        if (list == sentNumbers) return;
+        sentNumbers = list; Send("NUMBERS\t" + list);
+    }
     // Asks before a role change drops live connections; the self-test answers it without a dialog.
     internal Func<string, string, bool> Confirm;
     bool balloonOpensUpdate, manualUpdateCheck, closing, loading = true, enabled = true, discoveryReady, started, transferring, keepServiceCore;
@@ -1053,7 +1073,7 @@ sealed class ShareWindow : Form
             }
         } else {
             bool up = online.Contains(ShareSettings.HostName);
-            list.Add(new Machine { Screen = ShareSettings.ReceiverName, Name = "這台（" + Environment.MachineName + "）", Cell = Point.Empty, Self = true, Online = true, Active = up && mouseAt == ShareSettings.ReceiverName, Where = "這台" });
+            list.Add(new Machine { Screen = ShareSettings.ReceiverName, Name = "這台（" + Environment.MachineName + "）", Number = ownNumber, Cell = Point.Empty, Self = true, Online = true, Active = up && mouseAt == ShareSettings.ReceiverName, Where = "這台" });
             if (peers.Count > 0) list.Add(new Machine { Screen = ShareSettings.HostName, Name = peers.Values.First(), Number = 1, Cell = new Point(-1, 0), Online = up, Active = up && mouseAt != ShareSettings.ReceiverName, Where = "主控端" });
         }
         return list;
@@ -1085,12 +1105,12 @@ sealed class ShareWindow : Form
         }
         bool keys = ShareSettings.Advanced.DirectKeys;
         var tiles = all.Select(m => new ShareScreenMap.Tile {
-            Cell = m.Cell, Label = m.Number > 0 ? m.Number.ToString() : "這", Self = m.Self, Active = enabled && up && m.Active, Waiting = !m.Self && (!m.Online || !enabled),
-            Tip = m.Name + (m.Number > 0 ? (keys && Host ? " · Ctrl+Alt+" + m.Number : " · 號碼 " + m.Number) : "") + (!m.Self && !m.Online ? " · 等待中" : "")
+            Cell = m.Cell, Label = m.Number > 0 ? m.Number.ToString() : "", Icon = m.Number == 0, Self = m.Self, Active = enabled && up && m.Active, Waiting = !m.Self && (!m.Online || !enabled),
+            Tip = m.Name + (m.Number > 0 ? (keys && Host ? " · Ctrl+Alt+" + m.Number : " · 號碼 " + m.Number) : m.Self ? " · 號碼由主控端決定" : "") + (!m.Self && !m.Online ? " · 等待中" : "")
         }).ToList();
         if (Host && peers.Count == 0) tiles.Add(new ShareScreenMap.Tile { Cell = ShareSettings.Step(ShareSettings.Position), Label = "", Waiting = true, Tip = "尚未配對接收端" });
         if (!Host && peers.Count == 0) tiles.Add(new ShareScreenMap.Tile { Cell = new Point(-1, 0), Label = "", Waiting = true, Tip = "尚未配對主控端" });
-        map.Tiles = tiles; map.Invalidate();
+        map.Tiles = tiles; map.Invalidate(); SendNumbers();
         everyone.Text = "全部電腦（" + all.Count + "）";
     }
     // Small list of every computer; clicking one switches to it with the Ctrl+Alt+number shortcut when that is on.
@@ -1192,7 +1212,7 @@ sealed class ShareWindow : Form
     }
     void RefreshRole()
     {
-        peers.Clear(); devices.Clear(); PeersChanged(); Save();
+        ownNumber = 0; peers.Clear(); devices.Clear(); PeersChanged(); Save();
         ShareSettings.Init(Host);
         status.Text = enabled ? "正在啟用區網搜尋…" : "已暫停"; UpdateControls();
     }
@@ -1232,7 +1252,7 @@ sealed class ShareWindow : Form
     void LinkLine(string line)
     {
         string[] f = line.Split('\t');
-        if (f[0] == "READY") { LogLine("區網搜尋已啟動 · UDP/TCP 24801"); discoveryReady = true; if (f.Length == 2) ShareSettings.OwnFingerprint = f[1]; SendTargets(); status.Text = Host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…"; }
+        if (f[0] == "READY") { LogLine("區網搜尋已啟動 · UDP/TCP 24801"); discoveryReady = true; if (f.Length == 2) ShareSettings.OwnFingerprint = f[1]; SendTargets(); sentNumbers = null; SendNumbers(); status.Text = Host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…"; }
         else if (f[0] == "DEVICE" && f.Length == 6) {
             NearbyDevice device;
             if (!devices.TryGetValue(f[1], out device)) { device = new NearbyDevice { Fingerprint = f[1] }; devices[f[1]] = device; }
@@ -1244,10 +1264,13 @@ sealed class ShareWindow : Form
                 ShareSettings.Platforms[f[1]] = f[2]; Save(); LogLine("對方系統：" + f[2] + " · " + f[1].Substring(10, 16));
                 if (Host && peers.ContainsKey(f[1]) && backend != null) StopBackend();
             }
+        } else if (f[0] == "NUMBER" && f.Length == 3) {
+            // A receiver's own switch number, as its host sent it on connecting (0.3.17+ hosts).
+            int n; if (!Host && peers.ContainsKey(f[1]) && Int32.TryParse(f[2], out n) && n >= 1 && n <= 9 && n != ownNumber) { ownNumber = n; UpdateControls(); }
         } else if (f[0] == "GONE" && f.Length == 2) { if (devices.Remove(f[1])) RebuildNearby(); }
         else if ((f[0] == "SAVED" || f[0] == "PAIRED") && f.Length == 3) {
             // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
-            if (f[0] == "PAIRED") { StopBackend(); if (!Host) peers.Clear(); }
+            if (f[0] == "PAIRED") { StopBackend(); if (!Host) { peers.Clear(); ownNumber = 0; } }
             peers[f[1]] = Decode(f[2]); PeersChanged();
         }
         else if ((f[0] == "VERIFY" || f[0] == "REQUEST") && f.Length == 5) ShowConsent(f);
@@ -1256,6 +1279,7 @@ sealed class ShareWindow : Form
             if (peers.ContainsKey(f[1]) && (backend == null || (!Host && connectedAddress != f[3]))) { StopBackend(); address.Text = f[3]; Save(); StartBackend(); }
         } else if (f[0] == "REMOVED") {
             StopBackend(); if (f.Length == 2) { peers.Remove(f[1]); ShareSettings.Layout.Remove(f[1]); } else peers.Clear();
+            if (!Host && peers.Count == 0) ownNumber = 0;
             PeersChanged(); if (peers.Count == 0) peerLabel.Text = "已解除配對。"; Save();
             status.Text = peers.Count > 0 ? "已解除一台；其餘的會自動重新連線。" : Host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。";
         }
@@ -1444,6 +1468,7 @@ sealed class ShareWindow : Form
             if (list.Items.Count != 2 || !list.Items[1].Text.Contains("另一台電腦") || list.Items[1].BackColor != ShareStyle.Tint || !list.Items[0].Text.Contains("這台")) throw new Exception("全部電腦 list rows wrong");
         }
         capture("gui-card.png");
+        if (NumberList() != fp + "=2") throw new Exception("Host number list for the link is wrong: " + NumberList());
         // A role change while connected asks first; declining keeps the role.
         string asked = null; Confirm = (text, action) => { asked = text + "|" + action; return false; };
         segment.Selected = 1;
@@ -1485,6 +1510,16 @@ sealed class ShareWindow : Form
         role.SelectedIndex = 1; link = new Process(); LinkLine("READY");
         if (segment.Selected != 1 || arrange.Visible || pair.Enabled) throw new Exception("Receiver offers host-only actions");
         capture("gui-receiver.png");
+        // A receiver shows a screen mark until its host says its number, then the number.
+        LinkLine("SAVED\t" + fp + "\t" + name);
+        var self = map.Tiles.First(t => t.Self);
+        if (Machines()[0].Number != 0 || !self.Icon || !self.Tip.Contains("號碼由主控端決定")) throw new Exception("Receiver guessed its own number");
+        LinkLine("NUMBER\tv2:sha256:" + new string('f', 64) + "\t4");
+        if (Machines()[0].Number != 0) throw new Exception("Receiver took a number from a computer it is not paired with");
+        LinkLine("NUMBER\t" + fp + "\t3");
+        self = map.Tiles.First(t => t.Self);
+        if (self.Icon || self.Label != "3" || map.Tiles.First(t => !t.Self).Label != "1") throw new Exception("Receiver did not show the number its host sent");
+        capture("gui-receiver-number.png");
         stop.PerformClick();
         if (!start.Enabled || !start.Visible || stop.Visible || pair.Enabled || !clear.Enabled) throw new Exception("Paused state exposes active connection controls");
         capture("gui-paused.png");

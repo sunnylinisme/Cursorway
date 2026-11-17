@@ -109,6 +109,11 @@ def run():
             host.wait('CONNECT'); receiver.wait('CONNECT')
             assert not any(e[0] in ('VERIFY','REQUEST') for e in host.history+receiver.history)
             print('PASS: restart and rediscovery reconnect automatically without new consent',flush=True)
+            # The host passes each receiver its switch number on the next automatic connection.
+            assert not any(e[0]=='NUMBER' for e in receiver.history), 'Number sent before the host chose one'
+            host.send('NUMBERS', rf+'=3,'+sf+'=x,bogus=4')
+            n=receiver.wait('NUMBER'); assert n[1:]==[hf,'3'], n
+            print('PASS: receiver learns its switch number from the host',flush=True)
             assert sorted(e[1] for e in host.history if e[0]=='SAVED')==sorted([rf,sf])
             host.send('FORGET',sf); assert host.wait('REMOVED')[1]==sf
             assert (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().strip()==rf

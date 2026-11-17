@@ -107,6 +107,8 @@ struct State {
     // Addresses or names outside the local broadcast domain (other subnets, VPN) that are searched directly.
     std::vector<std::string> targets; bool targetsChanged = false;
     std::map<std::string, std::string> platforms;
+    // Host only: switch number (1-9) the GUI gave each paired receiver, sent to it on every connection.
+    std::map<std::string, std::string> numbers;
     fs::path trustPath() const { return profile / "SSL" / "Fingerprints" / (host ? "TrustedClients.txt" : "TrustedServers.txt"); }
 };
 static void atomicWrite(const fs::path& path, const std::string& value) {
@@ -253,6 +255,18 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             require(state.generation == generation, "Pairing cancelled"); if (auto existing = state.find(peer.fingerprint)) existing->ip = peer.ip;
             if (!resume) emit("PAIRED\t" + peer.fingerprint + '\t' + peer.name);
             emit("CONNECT\t" + peer.fingerprint + '\t' + peer.name + '\t' + peer.ip);
+        }
+        // Optional last line (0.3.17+): the host tells the receiver its switch number. Older peers close
+        // the connection after SAVED, so a failed write or read here is ignored and changes nothing above.
+        if (state.host) {
+            std::string number; { std::lock_guard<std::mutex> lock(state.mutex); auto it = state.numbers.find(peer.fingerprint); if (it != state.numbers.end()) number = it->second; }
+            if (!number.empty()) try { session.write("NUMBER\t" + number); } catch (const std::exception&) {}
+        } else {
+            try {
+                session.deadline = Clock::now() + std::chrono::seconds(2);
+                auto line = fields(session.read());
+                if (line.size() == 2 && line[0] == "NUMBER" && line[1].size() == 1 && line[1][0] >= '1' && line[1][0] <= '9') emit("NUMBER\t" + peer.fingerprint + '\t' + line[1]);
+            } catch (const std::exception&) {}
         }
     } catch (const std::exception& error) {
         if (!state.stopping) {
@@ -444,6 +458,16 @@ int main(int argc, char** argv) {
                     require(list.size() <= 16, "Enter at most 16 addresses");
                     { std::lock_guard<std::mutex> lock(state.mutex); state.targets = list; state.targetsChanged = true; }
                     state.search = true;
+                }
+                else if (f.size() <= 2 && f[0] == "NUMBERS") {
+                    // NUMBERS <fingerprint>=<n>,...: the switch number of each paired receiver (host only).
+                    std::map<std::string, std::string> numbers; std::stringstream items(f.size() == 2 ? f[1] : ""); std::string item;
+                    while (std::getline(items, item, ',')) {
+                        auto equals = item.rfind('='); if (equals == std::string::npos) continue;
+                        auto fp = item.substr(0, equals), n = item.substr(equals + 1);
+                        if (validFingerprint(fp) && n.size() == 1 && n[0] >= '1' && n[0] <= '9') numbers[fp] = n;
+                    }
+                    std::lock_guard<std::mutex> lock(state.mutex); state.numbers = numbers;
                 }
                 else if (f.size() == 2 && f[0] == "PAIR") {
                     std::lock_guard<std::mutex> lock(state.mutex); require(state.host, "Select the receiver from the host computer"); require(!state.busy && !state.request, "Another invitation is in progress");

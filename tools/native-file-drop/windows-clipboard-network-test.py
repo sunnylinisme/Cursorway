@@ -319,6 +319,10 @@ for role, direction, via_service in runs:
                         except subprocess.CalledProcessError:
                             # How many trips the host really made tells a lost switch from a late one.
                             print("::error::fast return %s: screen switches seen by the receiver %r" % (direction, {k.decode(): v for k, v in counts.items()}), flush=True)
+                            # The core's own account of the last trips, readable as an annotation without the job log.
+                            keys = ("switch from", "entering screen", "leaving screen", "warping", "parked", "bogus", "jump zone", "dropped")
+                            lines = [l.strip() for l in (root / "core.log").read_text(errors="replace").splitlines() if any(k in l for k in keys)] if (root / "core.log").exists() else []
+                            if lines: print("::error title=core log, last fast-return trips::" + "%0A".join(lines[-40:]), flush=True)
                             raise
                         assert counts.get(b"CINN", 0) >= 50 and counts.get(b"COUT", 0) >= 50, "Fast-return trips did not all switch screens: %r" % counts
                     else:

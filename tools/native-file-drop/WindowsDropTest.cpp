@@ -455,6 +455,7 @@ int main(int argc, char** argv)
             POINT p = {}; GetCursorPos(&p);
             int distance = sx > 0 ? w - 1 - p.x : sx < 0 ? p.x : sy > 0 ? h - 1 - p.y : p.y;
             worst = (std::max)(worst, distance);
+            POINT first = p;   // before the resends below move the cursor further
             // The whole burst can land while the server still ignores motion right after the switch,
             // leaving the cursor on the receiver (host parked at the centre). A user keeps moving:
             // send the return again, 150 ms apart, up to 3 times. A cursor that did return and was
@@ -471,7 +472,8 @@ int main(int argc, char** argv)
                 pump(800); POINT later = {}; GetCursorPos(&later);
                 int again = sx > 0 ? w - 1 - later.x : sx < 0 ? later.x : sy > 0 ? h - 1 - later.y : later.y;
                 passed = false;
-                std::cout << "::error::fast return " << direction << " trip " << (i + 1) << ": host cursor at " << p.x << "," << p.y << " (" << distance
+                std::cout << "::error::fast return " << direction << " trip " << (i + 1) << ": right after the burst the host cursor was at " << first.x << "," << first.y
+                          << "; after the resends at " << p.x << "," << p.y << " (" << distance
                           << " px from the edge, centre " << w / 2 << "," << h / 2 << "); 800 ms later " << later.x << "," << later.y << " (" << again << " px)"
                           << (again <= limit ? " - the return was late, not lost" : " - still away from the edge") << "\n";
                 saveScreen(L"cursor-fast-return.bmp");

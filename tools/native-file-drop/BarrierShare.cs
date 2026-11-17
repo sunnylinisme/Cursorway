@@ -1438,7 +1438,7 @@ sealed class ShareWindow : Form
         CloseConsent(); Show(); Activate(); consentId = message[1]; string id = consentId;
         bool request = message[0] == "REQUEST";
         var dialog = new Form { Text = request ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(440, 372), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
-        consent = dialog; ShareStyle.Theme(dialog);
+        consent = dialog;
         var left = new ComputerMark { BackColor = Color.White, Bounds = new Rectangle(150, 22, 44, 44) };
         var joint = new Label { Text = "⟷", ForeColor = ShareStyle.Faint, Font = new Font(Font.FontFamily, 14F), TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(198, 28, 44, 32) };
         var right = new ComputerMark { BackColor = Color.White, Bounds = new Rectangle(246, 22, 44, 44) };
@@ -1449,7 +1449,7 @@ sealed class ShareWindow : Form
         var reject = new ShareButton { Text = "拒絕", BackColor=Color.White, Bounds = new Rectangle(24, 304, 128, 42), DialogResult = DialogResult.Cancel };
         var accept = new ShareButton { Text = "相同，同意配對", Primary=true, BackColor=Color.White, Bounds = new Rectangle(164, 304, 252, 42), DialogResult = DialogResult.OK };
         // Enter rejects: agreeing always takes a deliberate click.
-        dialog.Controls.AddRange(new Control[] { left, joint, right, title, explanation, code, permission, reject, accept }); dialog.CancelButton = reject; dialog.AcceptButton = reject;
+        dialog.Controls.AddRange(new Control[] { left, joint, right, title, explanation, code, permission, reject, accept }); dialog.CancelButton = reject; dialog.AcceptButton = reject; ShareStyle.Theme(dialog);
         UpdateControls(); var result = dialog.ShowDialog(this);
         if (consentId == id) { Send((result == DialogResult.OK ? "ACCEPT\t" : "REJECT\t") + id); consent = null; consentId = null; status.Text = result == DialogResult.OK ? "已同意，等待對方確認…" : "已拒絕配對。"; }
         dialog.Dispose(); UpdateControls();
@@ -1640,14 +1640,22 @@ sealed class ShareWindow : Form
         Confirm = AskRoleChange;
         LogLine("[2026-11-14T10:00:02] NOTE: client \"" + screen + "\" has disconnected");
         if (badge.Text != "等待中" || online.Count != 0 || mouseAt != null) throw new Exception("Disconnect did not reset the card");
+        string pairingProblem = null;
         using (var timer = new System.Windows.Forms.Timer { Interval = 250 }) {
             timer.Tick += delegate {
                 timer.Stop();
                 using (var bitmap = new Bitmap(consent.Width, consent.Height)) { consent.DrawToBitmap(bitmap, new Rectangle(Point.Empty, consent.Size)); bitmap.Save(Path.Combine(directory, "gui-pairing.png")); }
+                // Dark: nothing in the dialog may keep a light surface.
+                ShareStyle.Use(true); ShareStyle.Theme(consent); Application.DoEvents();
+                var light = consent.Controls.Cast<Control>().Where(c => c.BackColor.GetBrightness() > 0.6F).Select(c => c.GetType().Name + " " + c.Text).ToList();
+                using (var bitmap = new Bitmap(consent.Width, consent.Height)) { consent.DrawToBitmap(bitmap, new Rectangle(Point.Empty, consent.Size)); bitmap.Save(Path.Combine(directory, "gui-pairing-dark.png")); }
+                ShareStyle.Use(false); ShareStyle.Theme(consent);
+                if (light.Count > 0) pairingProblem = "Dark pairing dialog kept light parts: " + String.Join(", ", light);
                 LinkLine("CLOSED\ttest-request");
             };
             timer.Start(); LinkLine("VERIFY\ttest-request\t" + name + "\t" + fp + "\t123456");
         }
+        if (pairingProblem != null) throw new Exception(pairingProblem);
         if (consent != null || consentId != null) throw new Exception("Expired pairing dialog remained open");
         LinkLine("GONE\t" + fp);
         if (DeviceCount != 0 || nearby.Visible || !emptyNearby.Text.Contains("全部電腦") || !everyone.Visible) throw new Exception("Offline paired computer handling wrong: " + emptyNearby.Text);

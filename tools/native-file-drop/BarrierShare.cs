@@ -1809,7 +1809,7 @@ sealed class ShareWindow : Form
         var dialog = new Form { Text = "進階設定", ClientSize = new Size(568, 600), AutoScroll = true, BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions = new SizeF(96F, 96F), AutoScaleMode = AutoScaleMode.Dpi };
         const int W = 520; int y = 16;
         dialog.Controls.Add(new Label { Text = "進階設定", Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), Bounds = new Rectangle(24, y, W, 28) }); y += 30;
-        dialog.Controls.Add(new Label { Text = Host ? "由這台（主控端）套用到所有螢幕；儲存後自動重新連線。" : "切換設定只在主控端生效；這台目前是接收端。", ForeColor = ShareStyle.Muted, Bounds = new Rectangle(24, y, W, 22) }); y += 32;
+        dialog.Controls.Add(new Label { Text = Host ? "由這台（主控端）套用到所有螢幕；儲存後立即生效，不會斷線。" : "切換設定只在主控端生效；這台目前是接收端。", ForeColor = ShareStyle.Muted, Bounds = new Rectangle(24, y, W, 22) }); y += 32;
         ShareCard group = null; int rowY = 0;
         Action<string> section = text => {
             dialog.Controls.Add(new Label { Text = text, ForeColor = ShareStyle.Muted, Font = new Font(Font.FontFamily, 9F, FontStyle.Bold), Bounds = new Rectangle(24, y, W, 20) }); y += 22;

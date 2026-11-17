@@ -1338,10 +1338,20 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         else if f[0] == "CONNECT" && f.count == 4 && peers.contains(where: { $0.fingerprint == f[1] }) {
             if core == nil || (!options.host && connectedAddress != f[3]) { stopBackend(); options.address = f[3]; do { try ShareSettings.save(options); startBackend() } catch { showError(error) } }
         } else if f[0] == "REMOVED" {
-            stopBackend(); if !options.host { hostNumber = nil; hostCell = nil }
+            if f.count == 2, let p = peers.first(where: { $0.fingerprint == f[1] }) { removedNames[f[1]] = p.name }
+            // A host that keeps other receivers reloads its config so they stay connected; otherwise the core stops.
+            let keepCore = options.host && f.count == 2 && peers.contains { $0.fingerprint != f[1] } && core != nil
+            if !keepCore { stopBackend() }
+            if !options.host { hostNumber = nil; hostCell = nil }
             if f.count == 2 { peers.removeAll { $0.fingerprint == f[1] }; options.layout[f[1]] = nil } else { peers.removeAll() }
             peersChanged(); try? ShareSettings.save(options); if peers.isEmpty { peerLabel.stringValue = "已解除配對。" }
-            status.stringValue = !peers.isEmpty ? "已解除一台；其餘的會自動重新連線。" : options.host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。"
+            if keepCore { applyHostConfig() }
+            status.stringValue = !peers.isEmpty ? (keepCore ? "已解除一台；其他電腦維持連線。" : "已解除一台；其餘的會自動重新連線。") : options.host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。"
+        }
+        else if f[0] == "UNPAIRED" && f.count == 2 {
+            // The receiver now trusts another host; barrier-link already removed it here (REMOVED came first).
+            let name = removedNames.removeValue(forKey: f[1]) ?? "接收端"
+            status.stringValue = "「\(name)」已改和其他主控端配對，已自動解除這裡的配對。"; log(status.stringValue)
         }
         else if f[0] == "UNAVAILABLE" && f.count == 3 && core == nil { status.stringValue = "正在重新尋找並驗證已配對的電腦…"; log(decoded(f[2])) }
         else if (f[0] == "ERROR" || f[0] == "FATAL") && f.count == 2 { if f[0] == "FATAL" { stopLink() }; status.stringValue = decoded(f[1]); log(status.stringValue) }
@@ -1492,6 +1502,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     // Host: apply new settings without dropping connected receivers. Older cores that never log
     // "reloaded configuration" within 4 seconds are restarted as before.
     var reloadTimer: Timer?
+    // Names of receivers just removed, for the UNPAIRED message that follows REMOVED.
+    var removedNames: [String: String] = [:]
     func applyHostConfig() {
         guard options.host, core != nil else { return }
         do {
@@ -1762,6 +1774,12 @@ func selfTest(_ directory: URL) throws {
     guard app.hostNumber == 3, app.map.tiles[0].label == "3" else { throw ShareError.message("Receiver number not shown") }
     try snapshot(app.map, "gui-receiver-number.png")
     app.options.host = true; app.options.screenNumbers = [:]; app.hostNumber = nil; app.hostCell = nil
+    // A receiver that paired with another host: the old host drops it and says why; it shows up as nearby again.
+    let movedName = app.decoded(name); let peersBefore = app.peers
+    app.linkLine("REMOVED\t\(peer)"); app.linkLine("UNPAIRED\t\(peer)")
+    guard !app.peers.contains(where: { $0.fingerprint == peer }), app.status.stringValue == "「\(movedName)」已改和其他主控端配對，已自動解除這裡的配對。" else { throw ShareError.message("UNPAIRED not shown: \(app.status.stringValue)") }
+    app.rebuildNearby(); guard app.nearbyList.subviews.count == app.computers.count else { throw ShareError.message("Unpaired receiver not back in nearby list") }
+    app.peers = peersBefore; app.peersChanged()
     var keys = ShareAdvanced(); keys.directKeys = true
     let numbered = try ShareSettings.config("right", keys, receivers: [jA, jB], numbers: [jB: 7])
     guard numbered.contains(" keystroke(Control+Alt+7) = switchToScreen(\(ShareSettings.screenName(jB)))\n"), numbered.contains(" keystroke(Control+Alt+2) = switchToScreen(\(ShareSettings.screenName(jA)))\n"), numbered.contains(" keystroke(Control+Alt+KP_7) = switchToScreen(\(ShareSettings.screenName(jB)))\n") else { throw ShareError.message("Custom jump numbers not in config") }

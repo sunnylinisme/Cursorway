@@ -2094,11 +2094,15 @@ sealed class ShareLayoutEditor : Form
     // Part of the host's edge each receiver beside it uses ("all", "first", "second").
     public readonly Dictionary<string, string> Ranges = new Dictionary<string, string>();
     readonly Dictionary<string, ComboBox> rangeBoxes = new Dictionary<string, ComboBox>(), numberBoxes = new Dictionary<string, ComboBox>();
+    // One card per receiver in the list beside the grid; every part is a real control so scrolling moves them together.
+    sealed class LegendRow { public ShareCard Card; public Label Side, Shortcut, Joins; }
+    readonly Dictionary<string, LegendRow> rows = new Dictionary<string, LegendRow>();
     // Switch number chosen per receiver (0: next free number in this order); 1 stays with this computer.
     public readonly Dictionary<string, int> Numbers = new Dictionary<string, int>();
     readonly Dictionary<string, string> names = new Dictionary<string, string>();
     readonly List<string> order = new List<string>();
-    readonly Panel canvas = new Panel(), legend = new Panel();
+    readonly Panel canvas = new Panel();
+    readonly FlowLayoutPanel legend = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
     readonly Label warning = new Label();
     readonly ShareButton save = new ShareButton { Text = "儲存", Primary = true };
     string dragging; Point pointer;
@@ -2115,8 +2119,10 @@ sealed class ShareLayoutEditor : Form
         typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(canvas, true, null);
         Controls.Add(canvas);
         legend.Bounds = new Rectangle(width + 40, 74, 184 + SystemInformation.VerticalScrollBarWidth, height); legend.BackColor = Color.White;
-        typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(legend, true, null);
         Controls.Add(legend);
+        Func<string, float, Color, Rectangle, Label> text = (value, size, color, bounds) =>
+            new Label { Text = value, Font = new Font(Font.FontFamily, size), ForeColor = color, BackColor = Color.White, Bounds = bounds, AutoEllipsis = true, UseMnemonic = false };
+        legend.Controls.Add(new Label { Text = "已配對", Font = new Font(Font.FontFamily, 8.5F), ForeColor = ShareStyle.Faint, BackColor = Color.White, Size = new Size(180, 20), Margin = new Padding(0, 0, 0, 4) });
         warning.Bounds = new Rectangle(24, 80 + height, width + 200, 24); warning.ForeColor = ShareStyle.Danger; Controls.Add(warning);
         var reset = new ShareButton { Text = "恢復預設", Quiet = true, BackColor = Color.White, Bounds = new Rectangle(24, 110 + height, 100, 36) };
         var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(width + 224 + SystemInformation.VerticalScrollBarWidth - 244, 110 + height, 108, 36), DialogResult = DialogResult.Cancel };
@@ -2130,15 +2136,25 @@ sealed class ShareLayoutEditor : Form
             string fp = peer.Key;
             var box = new ShareComboBox { Compact = true, Visible = false, AccessibleName = "相接的範圍：" + peer.Value };
             box.SelectedIndexChanged += delegate { if (box.SelectedIndex >= 0 && box.Tag == null) Ranges[fp] = ShareSettings.EdgeRanges[box.SelectedIndex]; };
-            rangeBoxes[fp] = box; legend.Controls.Add(box);
+            rangeBoxes[fp] = box;
             int saved; Numbers[fp] = ShareSettings.Numbers.TryGetValue(fp, out saved) ? saved : 0;
             var number = new ShareComboBox { Compact = true, AccessibleName = "切換號碼：" + peer.Value };
             number.Items.Add("自動"); for (int n = 2; n <= 9; ++n) number.Items.Add(n.ToString());
             number.SelectedIndexChanged += delegate { if (number.SelectedIndex >= 0 && number.Tag == null) Choose(fp, number.SelectedIndex == 0 ? 0 : number.SelectedIndex + 1); };
-            numberBoxes[fp] = number; legend.Controls.Add(number);
+            numberBoxes[fp] = number;
+            var row = new LegendRow { Card = new ShareCard { BackColor = Color.White, Size = new Size(180, 66), Margin = new Padding(0, 0, 0, 6) } };
+            row.Card.Controls.Add(new Panel { BackColor = ColorOf(fp), Bounds = new Rectangle(10, 13, 8, 8) });
+            row.Card.Controls.Add(text(peer.Value, 9F, ShareStyle.Ink, new Rectangle(24, 6, 92, 22)));
+            row.Side = text("", 9F, ShareStyle.Faint, new Rectangle(116, 6, 56, 22)); row.Side.TextAlign = ContentAlignment.TopRight; row.Card.Controls.Add(row.Side);
+            row.Card.Controls.Add(text("號碼：", 8.5F, ShareStyle.Muted, new Rectangle(10, 40, 50, 20)));
+            number.Location = new Point(60, 36); number.Width = 112; row.Card.Controls.Add(number);
+            row.Shortcut = text("", 8.5F, ShareStyle.Faint, new Rectangle(24, 66, 150, 18)); row.Card.Controls.Add(row.Shortcut);
+            row.Joins = text("相接：", 8.5F, ShareStyle.Muted, new Rectangle(10, 68, 60, 18)); row.Card.Controls.Add(row.Joins);
+            box.Location = new Point(10, 86); box.Width = 150; row.Card.Controls.Add(box);
+            rows[fp] = row; legend.Controls.Add(row.Card);
         }
-        // The drop-downs move with the scroll; the drawn names and labels must be redrawn with them (wheel included).
-        legend.AutoScroll = true; legend.Scroll += delegate { legend.Invalidate(); }; legend.MouseWheel += delegate { legend.Invalidate(); };
+        legend.Controls.Add(new Label { Text = "每台都要能從這台一路走到；斜角不相連。螢幕大小不同時，可在上方選擇只相接上半段或下半段。", Font = new Font(Font.FontFamily, 8.5F),
+            ForeColor = ShareStyle.Faint, BackColor = Color.White, Size = new Size(180, 66), Margin = new Padding(0, 4, 0, 0) });
         reset.Click += delegate {
             // The automatic placement: the saved arrangement set aside for a moment.
             var saved = ShareSettings.Layout; ShareSettings.Layout = new Dictionary<string, Point>();
@@ -2147,7 +2163,6 @@ sealed class ShareLayoutEditor : Form
             Check(); canvas.Invalidate();
         };
         canvas.Paint += (sender, e) => Draw(e.Graphics);
-        legend.Paint += (sender, e) => DrawLegend(e.Graphics);
         canvas.MouseDown += (sender, e) => { dragging = Placement.Where(p => CellBounds(p.Value).Contains(Unscale(e.Location))).Select(p => p.Key).FirstOrDefault(); pointer = Unscale(e.Location); canvas.Cursor = dragging != null ? Cursors.SizeAll : Cursors.Default; };
         canvas.MouseMove += (sender, e) => {
             var at = Unscale(e.Location);
@@ -2180,7 +2195,7 @@ sealed class ShareLayoutEditor : Form
     internal void Choose(string fingerprint, int number)
     {
         if (number >= 2) foreach (var other in Numbers.Keys.ToList()) if (other != fingerprint && Numbers[other] == number) Numbers[other] = 0;
-        Numbers[fingerprint] = number >= 2 && number <= 9 ? number : 0; Arrange(); legend.Invalidate(); canvas.Invalidate();
+        Numbers[fingerprint] = number >= 2 && number <= 9 ? number : 0; Arrange(); canvas.Invalidate();
     }
     internal Dictionary<string, int> Resolved() { var saved = ShareSettings.Receivers; ShareSettings.Receivers = order; try { return ShareSettings.AssignedNumbers(Numbers); } finally { ShareSettings.Receivers = saved; } }
     // Every receiver must be connected to the host through neighbouring cells.
@@ -2198,21 +2213,24 @@ sealed class ShareLayoutEditor : Form
     {
         bool ok = Reachable(); save.Enabled = ok;
         warning.Text = ok ? "" : "有電腦沒有和其他螢幕相鄰，滑鼠到不了；請把它移到相鄰的位置。";
-        Arrange(); legend.Invalidate();
+        Arrange();
     }
-    // Legend rows: name and side, then the Ctrl+Alt+number shortcut, then the edge range for a receiver beside the host.
+    // Legend rows: name and side, the switch number, the Ctrl+Alt+number shortcut, then the edge range for a receiver beside the host.
     bool Direct { get { return ShareSettings.Advanced.DirectKeys; } }
-    int RowHeight(string fp) { Point c; return 34 + 32 + (Direct ? 16 : 0) + (Placement.TryGetValue(fp, out c) && ShareSettings.Beside(c) ? 52 : 0); }
-    int LegendHeight { get { return 24 + order.Sum(fp => RowHeight(fp) + 6) + 72; } }
     void Arrange()
     {
-        float k = Zoom; int y = 24; var resolved = Resolved();
+        float k = Zoom; var resolved = Resolved();
+        legend.SuspendLayout();
         foreach (var fp in order) {
-            Point c; var box = rangeBoxes[fp]; var number = numberBoxes[fp]; int n;
-            string auto = resolved.TryGetValue(ShareSettings.ScreenName(fp), out n) && Numbers[fp] == 0 ? "自動（" + n + "）" : "自動";
+            Point c; var row = rows[fp]; var box = rangeBoxes[fp]; var number = numberBoxes[fp]; int n;
+            bool known = resolved.TryGetValue(ShareSettings.ScreenName(fp), out n);
+            string auto = known && Numbers[fp] == 0 ? "自動（" + n + "）" : "自動";
             number.Tag = "filling"; if ((string)number.Items[0] != auto) number.Items[0] = auto; number.SelectedIndex = Numbers[fp] == 0 ? 0 : Numbers[fp] - 1; number.Tag = null;
-            number.Bounds = new Rectangle((int)(60 * k), (int)((y + 34) * k) + legend.AutoScrollPosition.Y, (int)(112 * k), number.Height);
             bool beside = Placement.TryGetValue(fp, out c) && ShareSettings.Beside(c);
+            row.Side.Text = Placement.ContainsKey(fp) ? Direction(c) : "";
+            int y = 66;
+            row.Shortcut.Visible = Direct; row.Shortcut.Text = known ? "快捷鍵 Ctrl+Alt+" + n : "超過 9 台，沒有快捷鍵";
+            if (Direct) { row.Shortcut.Top = (int)(y * k); y += 16; }
             if (beside) {
                 // Left/right neighbours split the edge into top and bottom halves, up/down neighbours into left and right.
                 string[] items = c.X != 0 ? new[] { "整個邊", "上半段", "下半段" } : new[] { "整個邊", "左半段", "右半段" };
@@ -2220,12 +2238,12 @@ sealed class ShareLayoutEditor : Form
                     box.Tag = "filling"; box.Items.Clear(); box.Items.AddRange(items); box.Tag = null;
                 }
                 box.Tag = "filling"; box.SelectedIndex = Array.IndexOf(ShareSettings.EdgeRanges, Ranges[fp]); box.Tag = null;
-                box.Bounds = new Rectangle((int)(10 * k), (int)((y + 34 + 32 + (Direct ? 16 : 0) + 18) * k) + legend.AutoScrollPosition.Y, (int)(150 * k), box.Height);
+                row.Joins.Top = (int)((y + 2) * k); box.Top = (int)((y + 20) * k); y += 20 + 30;
             }
-            box.Visible = beside;
-            y += RowHeight(fp) + 6;
+            row.Joins.Visible = box.Visible = beside;
+            row.Card.Height = (int)((y + 6) * k);
         }
-        legend.AutoScrollMinSize = new Size(0, (int)(LegendHeight * k));
+        legend.ResumeLayout(true);
     }
     void Draw(Graphics g)
     {
@@ -2246,32 +2264,8 @@ sealed class ShareLayoutEditor : Form
             int n; var c = ColorOf(p.Key); tile(r, (numbers.TryGetValue(ShareSettings.ScreenName(p.Key), out n) ? n + " · " : "") + names[p.Key], Light(c), Deep(c), false);
         }
     }
-    void DrawLegend(Graphics g)
-    {
-        g.SmoothingMode = SmoothingMode.AntiAlias; float k = Zoom; g.TranslateTransform(0, legend.AutoScrollPosition.Y); g.ScaleTransform(k, k);
-        using (var f = new Font(Font.FontFamily, 8.5F)) TextRenderer.DrawText(g, "已配對", f, new Point(0, 0), ShareStyle.Faint);
-        int y = 24; var direct = Resolved();
-        foreach (var fp in order) {
-            var r = new Rectangle(0, y, 180, RowHeight(fp));
-            using (var path = ShareStyle.Rounded(r, 7)) using (var pen = new Pen(ShareStyle.Border)) g.DrawPath(pen, path);
-            using (var b = new SolidBrush(ColorOf(fp))) g.FillRectangle(b, 10, y + 13, 8, 8);
-            using (var f = new Font(Font.FontFamily, 9F)) {
-                TextRenderer.DrawText(g, names[fp], f, new Rectangle(26, y, 100, 34), ShareStyle.Ink, TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-                Point c; string where = Placement.TryGetValue(fp, out c) ? Direction(c) : "";
-                TextRenderer.DrawText(g, where, f, new Rectangle(110, y, 62, 34), ShareStyle.Faint, TextFormatFlags.Right | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
-            }
-            int below = y + 30;
-            using (var f = new Font(Font.FontFamily, 8.5F)) TextRenderer.DrawText(g, "號碼：", f, new Point(10, below + 9), ShareStyle.Muted);
-            below += 32;
-            using (var f = new Font(Font.FontFamily, 8.5F)) {
-                int number; if (!direct.TryGetValue(ShareSettings.ScreenName(fp), out number)) number = 0;
-                if (Direct) { TextRenderer.DrawText(g, number > 0 ? "快捷鍵 Ctrl+Alt+" + number : "超過 9 台，沒有快捷鍵", f, new Point(26, below), ShareStyle.Faint); below += 16; }
-                Point c; if (Placement.TryGetValue(fp, out c) && ShareSettings.Beside(c)) TextRenderer.DrawText(g, "相接：", f, new Point(10, below + 2), ShareStyle.Muted);
-            }
-            y += RowHeight(fp) + 6;
-        }
-        using (var f = new Font(Font.FontFamily, 8.5F)) TextRenderer.DrawText(g, "每台都要能從這台一路走到；斜角不相連。螢幕大小不同時，可在上方選擇只相接上半段或下半段。", f, new Rectangle(0, y + 6, 180, 66), ShareStyle.Faint, TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
-    }
+    // Test hook: scroll the list beside the grid to its end.
+    internal void ScrollLegendToEnd() { legend.AutoScrollPosition = new Point(0, legend.DisplayRectangle.Height); }
     // Test hook: place a receiver as a drag would.
     internal bool Place(string fingerprint, Point cell)
     {
@@ -2537,6 +2531,8 @@ static class ShareProgram
                     if (layout.Numbers[fc] != 0 || layout.Numbers[fb] != 2 || picked[nb] != 2 || picked[na] != 3 || picked[nc] != 4) throw new Exception("Layout editor allowed a repeated switch number");
                     layout.Choose(fc, 4); Application.DoEvents();
                     using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout.png")); }
+                    layout.ScrollLegendToEnd(); Application.DoEvents();
+                    using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout-scrolled.png")); }
                     ShareStyle.Use(true); ShareStyle.Theme(layout); Application.DoEvents();
                     using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout-dark.png")); }
                     ShareStyle.Use(false); ShareStyle.Theme(layout);

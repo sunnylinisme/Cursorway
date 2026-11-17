@@ -77,7 +77,7 @@ struct ShareAdvanced: Codable, Equatable {
     // Comma separated IPv4 addresses or computer names outside the local network.
     func targetList() throws -> String {
         let items = targets.components(separatedBy: CharacterSet(charactersIn: ", ;\r\n")).filter { !$0.isEmpty }
-        for item in items where item.count > 253 || item.range(of: "^[A-Za-z0-9.-]+$", options: .regularExpression) == nil { throw ShareError.message("請輸入 IPv4 位址或電腦名稱，以逗號分隔：\(item)") }
+        for item in items where item.count > 253 || item.range(of: "^[A-Za-z0-9.-]+$", options: .regularExpression) == nil { throw ShareError.message("「\(item)」不是有效的 IP 位址或電腦名稱") }
         if items.count > 16 { throw ShareError.message("最多輸入 16 個位址。") }
         return items.joined(separator: ",")
     }
@@ -1125,7 +1125,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     func sendTargets() { do { let list = try options.advanced.targetList(); if !list.isEmpty || link != nil { send("TARGETS\t" + list) } } catch { showError(error) } }
     // Host-side Barrier options plus direct addresses for computers on another subnet or VPN.
     // Advanced settings in three groups; each row has a name, a short explanation and a switch or menu.
-    func buildAdvanced(_ a: ShareAdvanced) -> (NSWindow, () -> ShareAdvanced, ShareModalCloser) {
+    // complain(text) shows a red line under 手動位址 and scrolls it into view; nil hides it.
+    func buildAdvanced(_ a: ShareAdvanced) -> (NSWindow, () -> ShareAdvanced, ShareModalCloser, (String?) -> Void) {
         let W: CGFloat = 520, width: CGFloat = W + 48
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: 640), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "進階設定"
         let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: 640)); view.fill = ShareStyle.card; panel.contentView = view
@@ -1134,7 +1135,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: size, weight: weight); l.textColor = color; l.lineBreakMode = .byTruncatingTail; l.frame = NSRect(x: x, y: yy, width: w, height: size + 6); view.addSubview(l); return l
         }
         _ = label("進階設定", 18, .bold, ShareStyle.ink, 24, y, W); y += 30
-        _ = label(options.host ? "由這台（主控端）套用到所有螢幕；儲存後自動重新連線。" : "切換設定只在主控端生效；這台目前是接收端。", 12, .regular, ShareStyle.muted, 24, y, W); y += 30
+        _ = label(options.host ? "由這台（主控端）套用到所有螢幕；儲存後立即生效，不會斷線。" : "切換設定只在主控端生效；這台目前是接收端。", 12, .regular, ShareStyle.muted, 24, y, W); y += 30
         var group: ShareCard?, rowY: CGFloat = 0
         func section(_ text: String) { _ = label(text, 11, .semibold, ShareStyle.muted, 24, y, W); y += 20; let card = ShareCard(frame: NSRect(x: 24, y: y, width: W, height: 10)); view.addSubview(card); group = card; rowY = 0 }
         func row(_ title: String, _ detail: String?, _ control: NSView) {
@@ -1177,10 +1178,20 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let wheel = choice(wheelValues, { "\($0)%" }, a.wheelScale); row("滾輪速度", "另一台的滑鼠在這台捲動時的速度", wheel)
         let invert = toggle(a.wheelInvert); row("反轉滾輪方向", "Mac 自然捲動和 Windows 方向相反時開啟", invert)
         y += 16; section("連線")
-        let targetScroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 200, height: 44)); targetScroll.hasVerticalScroller = true; targetScroll.borderType = .bezelBorder
-        let targets = NSTextView(frame: targetScroll.bounds); targets.isRichText = false; targets.font = .monospacedSystemFont(ofSize: 12, weight: .regular); targets.autoresizingMask = [.width]
-        targets.string = a.targets.components(separatedBy: CharacterSet(charactersIn: ", ;\r\n")).filter { !$0.isEmpty }.joined(separator: "\n"); targetScroll.documentView = targets
-        row("手動位址", "跨網段或 VPN 時填入對方 IP，一行一個", targetScroll)
+        // 手動位址: title and explanation, then a full-width box (about 3 lines before it scrolls) and a red error line.
+        let targetCard = group!
+        let targetTitle = NSTextField(labelWithString: "手動位址"); targetTitle.font = .systemFont(ofSize: 13); targetTitle.textColor = ShareStyle.ink; targetTitle.frame = NSRect(x: 14, y: rowY + 9, width: W - 28, height: 18); targetCard.addSubview(targetTitle)
+        let targetHelp = NSTextField(wrappingLabelWithString: "跨網段或 VPN 時填入對方的 IP 位址或電腦名稱，一行一個，例如 10.8.0.5 或 office-pc.local"); targetHelp.font = .systemFont(ofSize: 11); targetHelp.textColor = ShareStyle.faint
+        targetHelp.frame = NSRect(x: 14, y: rowY + 30, width: W - 28, height: 16); targetCard.addSubview(targetHelp)
+        let targetScroll = NSScrollView(frame: NSRect(x: 14, y: rowY + 54, width: W - 28, height: 72)); targetScroll.hasVerticalScroller = true; targetScroll.autohidesScrollers = true; targetScroll.borderType = .bezelBorder
+        targetScroll.drawsBackground = true; targetScroll.backgroundColor = ShareStyle.field
+        let targets = NSTextView(frame: NSRect(x: 0, y: 0, width: targetScroll.contentSize.width, height: 72)); targets.isRichText = false; targets.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        targets.autoresizingMask = [.width]; targets.textContainerInset = NSSize(width: 4, height: 4); targets.backgroundColor = ShareStyle.field; targets.textColor = ShareStyle.ink; targets.insertionPointColor = ShareStyle.ink
+        targets.isAutomaticQuoteSubstitutionEnabled = false; targets.isAutomaticDashSubstitutionEnabled = false; targets.isAutomaticTextReplacementEnabled = false; targets.setAccessibilityLabel("手動位址")
+        targets.string = a.targets.components(separatedBy: CharacterSet(charactersIn: ", ;\r\n")).filter { !$0.isEmpty }.joined(separator: "\n"); targetScroll.documentView = targets; targetCard.addSubview(targetScroll)
+        let targetError = NSTextField(labelWithString: ""); targetError.font = .systemFont(ofSize: 12); targetError.textColor = ShareStyle.danger; targetError.lineBreakMode = .byTruncatingTail
+        targetError.frame = NSRect(x: 14, y: rowY + 130, width: W - 28, height: 18); targetError.isHidden = true; targetCard.addSubview(targetError)
+        rowY += 154; targetCard.frame.size.height = rowY + 1; y = targetCard.frame.maxY
         y += 8
         let buttonsY = y + 8
         let reset = NSButton(title: "恢復預設", target: nil, action: nil); reset.bezelStyle = .rounded; reset.frame = NSRect(x: 24, y: buttonsY, width: 100, height: 32); view.addSubview(reset)
@@ -1203,7 +1214,13 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             needs.selectItem(at: 0); wheel.selectItem(withTag: d.wheelScale)
         }
         reset.target = resetter; reset.action = #selector(ShareBlockTarget.toggle)
-        objc_setAssociatedObject(panel, "targets", [closer, resetter], .OBJC_ASSOCIATION_RETAIN)
+        // Typing hides the error again.
+        let typing = NotificationCenter.default.addObserver(forName: NSText.didChangeNotification, object: targets, queue: .main) { _ in targetError.isHidden = true }
+        objc_setAssociatedObject(panel, "targets", [closer, resetter, typing], .OBJC_ASSOCIATION_RETAIN)
+        let complain = { (text: String?) in
+            targetError.stringValue = text ?? ""; targetError.isHidden = text == nil
+            if text != nil { targetCard.scrollToVisible(targetError.frame.insetBy(dx: 0, dy: -12)); panel.makeFirstResponder(targets) }
+        }
         let read = { () -> ShareAdvanced in
             var v = ShareAdvanced(); v.cornerSize = a.cornerSize
             v.switchDelay = delay.selectedTag(); v.doubleTap = tap.selectedTag()
@@ -1217,10 +1234,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             v.extra = a.extra
             return v
         }
-        return (panel, read, closer)
+        return (panel, read, closer, complain)
     }
     @objc func showAdvanced() {
-        let (panel, read, closer) = buildAdvanced(options.advanced)
+        let (panel, read, closer, complain) = buildAdvanced(options.advanced)
         while true {
             panel.center(); NSApp.runModal(for: panel); panel.orderOut(nil)
             guard closer.accepted else { return }
@@ -1231,7 +1248,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
                 options.advanced = value; try ShareSettings.save(options); sendTargets()
                 // The host core re-reads its config file, so connected receivers stay connected.
                 status.stringValue = "已儲存進階設定。"; peersChanged(); applyHostConfig(); return
-            } catch { let alert = NSAlert(); alert.messageText = "進階設定"; alert.informativeText = error.localizedDescription; alert.runModal() }
+            } catch { complain(error.localizedDescription) }
         }
     }
     @objc func openUpdate() { if let url = updateURL { NSWorkspace.shared.open(url) } }
@@ -1795,8 +1812,20 @@ func selfTest(_ directory: URL) throws {
     let (layoutPanel, layoutView, _, _, _) = app.buildLayout()
     guard layoutView.reachable(), !layoutView.place(peer, .init(x: 2, y: 2)) || !layoutView.reachable() else { throw ShareError.message("Arrange editor rules failed") }
     layoutView.restoreDefaults(); try snapshot(layoutPanel.contentView, "gui-arrange.png")
-    let (advancedPanel, readAdvanced, _) = app.buildAdvanced(ShareAdvanced())
+    let (advancedPanel, readAdvanced, _, complain) = app.buildAdvanced(ShareAdvanced())
     guard readAdvanced() == ShareAdvanced() else { throw ShareError.message("Advanced settings did not round-trip the defaults") }
+    // 手動位址: an invalid entry is named in red under the box (no dialog) and typing hides it again.
+    var wrong = ShareAdvanced(); wrong.targets = "10.8.0.5, bad&name"
+    do { _ = try wrong.targetList(); throw ShareError.message("Invalid manual address accepted") } catch let e as ShareError where e.localizedDescription == "「bad&name」不是有效的 IP 位址或電腦名稱" {}
+    complain("「bad&name」不是有效的 IP 位址或電腦名稱")
+    let advancedDoc = (advancedPanel.contentView?.subviews.first as? NSScrollView)?.documentView
+    func findViews<T: NSView>(_ v: NSView?, _ t: T.Type) -> [T] { guard let v = v else { return [] }; return v.subviews.compactMap { $0 as? T } + v.subviews.flatMap { findViews($0, t) } }
+    guard let errorLine = findViews(advancedDoc, NSTextField.self).first(where: { $0.textColor == ShareStyle.danger }), !errorLine.isHidden, errorLine.stringValue.contains("bad&name") else { throw ShareError.message("Manual address error not shown under the box") }
+    guard let addressBox = findViews(advancedDoc, NSTextView.self).first(where: { $0.accessibilityLabel() == "手動位址" }) else { throw ShareError.message("Manual address box missing") }
+    try snapshot(advancedDoc, "gui-advanced-address-error.png")
+    addressBox.insertText("x", replacementRange: NSRange(location: 0, length: 0)); RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    guard errorLine.isHidden else { throw ShareError.message("Manual address error stayed after typing") }
+    addressBox.string = ""
     try snapshot(advancedPanel.contentView, "gui-advanced.png")
     // Buttons keep at least 20 pt from the bottom edge of every window.
     func bottomMargin(_ root: NSView?, _ file: String) throws {

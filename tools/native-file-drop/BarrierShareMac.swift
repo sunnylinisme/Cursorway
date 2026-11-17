@@ -18,6 +18,8 @@ struct ShareOptions: Codable {
     var edgeRange: [String: String] = [:]
     // Jump number (Control+Option+N) the user picked for a receiver: fingerprint -> 2...9. 1 is always this host.
     var screenNumbers: [String: Int] = [:]
+    // 外觀: "system" follows macOS light/dark, or "light" / "dark".
+    var appearance = "system"
     init() {}
     // Settings saved by older versions lack newer keys; keep their defaults.
     init(from decoder: Decoder) throws {
@@ -30,6 +32,7 @@ struct ShareOptions: Codable {
         edgeRange = ((try? c.decodeIfPresent([String: String].self, forKey: .edgeRange)) ?? [:]).filter { ["first", "second"].contains($0.value) }
         layout = ((try? c.decodeIfPresent([String: [Int]].self, forKey: .layout)) ?? [:]).filter { $0.value.count == 2 && abs($0.value[0]) <= 2 && abs($0.value[1]) <= 2 }
         screenNumbers = ((try? c.decodeIfPresent([String: Int].self, forKey: .screenNumbers)) ?? [:]).filter { (2...9).contains($0.value) }
+        appearance = (try? c.decodeIfPresent(String.self, forKey: .appearance)).flatMap { $0 }.flatMap { ["system", "light", "dark"].contains($0) ? $0 : nil } ?? "system"
     }
 }
 // Host-side Barrier options from the advanced settings dialog.
@@ -400,8 +403,8 @@ final class ShareLayoutView: NSView {
         dragging = nil; needsDisplay = true
     }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(srgbRed: 244/255, green: 246/255, blue: 250/255, alpha: 1).setFill(); bounds.fill()
-        let dash = NSColor(srgbRed: 219/255, green: 226/255, blue: 237/255, alpha: 1)
+        ShareStyle.mapBack.setFill(); bounds.fill()
+        let dash = ShareStyle.border
         for y in -2...2 { for x in -2...2 { let path = NSBezierPath(rect: rect(ShareSettings.Cell(x: x, y: y))); path.setLineDash([4, 3], count: 2, phase: 0); dash.setStroke(); path.stroke() } }
         ShareScreenMap.drawTile(.init(cell: .init(x: 0, y: 0), name: "這台", isSelf: true), rect(ShareSettings.Cell(x: 0, y: 0)), fontSize: 12)
         for (fp, c) in placement {
@@ -441,11 +444,10 @@ final class ShareModalCloser: NSObject {
 }
 final class ShareActionButton: NSButton {
     override func draw(_ dirtyRect: NSRect) {
-        let blue = NSColor(srgbRed:47/255,green:101/255,blue:235/255,alpha:1)
         let shape=NSBezierPath(roundedRect:bounds.insetBy(dx:1,dy:1),xRadius:10,yRadius:10)
-        (isEnabled ? (isHighlighted ? blue.blended(withFraction:0.18,of:.black)! : blue) : NSColor(srgbRed:230/255,green:236/255,blue:247/255,alpha:1)).setFill(); shape.fill()
+        (isEnabled ? (isHighlighted ? ShareStyle.bluePressed : ShareStyle.blue) : ShareStyle.disabledBack).setFill(); shape.fill()
         let paragraph=NSMutableParagraphStyle(); paragraph.alignment = .center
-        let text=NSAttributedString(string:title,attributes:[.font:NSFont.systemFont(ofSize:15,weight:.semibold),.foregroundColor:isEnabled ? NSColor.white : NSColor.secondaryLabelColor,.paragraphStyle:paragraph])
+        let text=NSAttributedString(string:title,attributes:[.font:NSFont.systemFont(ofSize:15,weight:.semibold),.foregroundColor:isEnabled ? NSColor.white : ShareStyle.disabledInk,.paragraphStyle:paragraph])
         text.draw(in:NSRect(x:12,y:(bounds.height-text.size().height)/2,width:bounds.width-24,height:text.size().height))
         if window?.firstResponder === self { NSColor.white.setStroke(); let focus=NSBezierPath(roundedRect:bounds.insetBy(dx:4,dy:4),xRadius:7,yRadius:7); focus.lineWidth=1.5; focus.stroke() }
     }
@@ -454,10 +456,20 @@ struct NearbyComputer { var fingerprint: String; var name: String; var address: 
 // Shared palette of the redesigned window (same values as the Windows ShareStyle).
 enum ShareStyle {
     static func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor { NSColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: 1) }
-    static let background = rgb(244, 246, 250), border = rgb(228, 233, 242), line = rgb(236, 240, 246)
-    static let blue = rgb(47, 101, 235), blueInk = rgb(31, 72, 180), tint = rgb(232, 239, 253)
-    static let ink = rgb(24, 37, 57), muted = rgb(109, 122, 141), faint = rgb(150, 160, 175), field = rgb(238, 241, 246)
-    static let green = rgb(24, 140, 82), greenTint = rgb(226, 245, 234), danger = rgb(200, 45, 45), amber = rgb(176, 110, 10), amberTint = rgb(252, 241, 220)
+    // Every colour has a light and a dark value (same palette as Windows); AppKit picks one when drawing.
+    static func dyn(_ light: NSColor, _ dark: NSColor) -> NSColor { NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light } }
+    static var isDark: Bool { NSAppearance.currentDrawing().bestMatch(from: [.aqua, .darkAqua]) == .darkAqua }
+    static let background = dyn(rgb(244, 246, 250), rgb(24, 26, 31)), mapBack = dyn(rgb(244, 246, 250), rgb(28, 31, 37))
+    static let card = dyn(.white, rgb(34, 37, 44)), cell = dyn(.white, rgb(46, 50, 59)), cardBorder = dyn(rgb(228, 233, 242), rgb(52, 57, 67))
+    static let border = dyn(rgb(228, 233, 242), rgb(56, 62, 73)), line = dyn(rgb(236, 240, 246), rgb(48, 53, 63))
+    static let blue = dyn(rgb(47, 101, 235), rgb(92, 140, 255)), blueHover = dyn(rgb(47, 101, 235), rgb(112, 156, 255))
+    static let bluePressed = dyn(rgb(47, 101, 235).blended(withFraction: 0.18, of: .black)!, rgb(70, 112, 220))
+    static let blueInk = dyn(rgb(31, 72, 180), rgb(170, 196, 255)), tint = dyn(rgb(232, 239, 253), rgb(37, 50, 80))
+    static let ink = dyn(rgb(24, 37, 57), rgb(232, 236, 242)), muted = dyn(rgb(109, 122, 141), rgb(160, 170, 186)), faint = dyn(rgb(150, 160, 175), rgb(118, 128, 144))
+    static let field = dyn(rgb(238, 241, 246), rgb(42, 46, 54)), hover = dyn(rgb(228, 233, 242), rgb(52, 58, 70)), selected = dyn(rgb(232, 239, 253), rgb(40, 48, 66))
+    static let disabledBack = dyn(rgb(238, 241, 246), rgb(38, 41, 48)), disabledInk = dyn(rgb(150, 160, 175), rgb(100, 108, 122))
+    static let green = dyn(rgb(24, 140, 82), rgb(84, 200, 140)), greenTint = dyn(rgb(226, 245, 234), rgb(30, 58, 45)), danger = dyn(rgb(200, 45, 45), rgb(240, 112, 96))
+    static let amber = dyn(rgb(176, 110, 10), rgb(232, 170, 70)), amberTint = dyn(rgb(252, 241, 220), rgb(62, 50, 30))
     // One colour per receiver in the screen maps: green, purple, orange, pink, amber.
     static let peers = [rgb(34, 160, 96), rgb(132, 86, 214), rgb(232, 120, 40), rgb(221, 72, 140), rgb(214, 160, 20)]
     static func peer(_ index: Int) -> NSColor { peers[index % peers.count] }
@@ -467,7 +479,7 @@ final class ShareCard: NSView {
     override var isFlipped: Bool { true }
     override func draw(_ dirtyRect: NSRect) {
         let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 14, yRadius: 14)
-        NSColor.white.setFill(); shape.fill(); ShareStyle.border.setStroke(); shape.lineWidth = 1; shape.stroke()
+        ShareStyle.card.setFill(); shape.fill(); ShareStyle.cardBorder.setStroke(); shape.lineWidth = 1; shape.stroke()
     }
 }
 // Small pill showing the connection state.
@@ -518,7 +530,7 @@ final class ShareScreenMap: NSView, NSViewToolTipOwner {
         for t in tiles {
             let r = NSRect(x: x0 + CGFloat(t.cell.x - xs.min()!) * (cw + gap), y: y0 + CGFloat(t.cell.y - ys.min()!) * (ch + gap), width: cw, height: ch)
             let path = NSBezierPath(roundedRect: r.insetBy(dx: 0.75, dy: 0.75), xRadius: 5, yRadius: 5); path.lineWidth = t.isSelf ? 2 : 1
-            if t.active { ShareStyle.blue.setFill(); path.fill() } else if !t.placeholder { NSColor.white.setFill(); path.fill() }
+            if t.active { ShareStyle.blue.setFill(); path.fill() } else if !t.placeholder { ShareStyle.cell.setFill(); path.fill() }
             if t.placeholder && !t.active { path.setLineDash([4, 3], count: 2, phase: 0) }
             (t.isSelf ? ShareStyle.ink : t.active ? ShareStyle.blue : t.placeholder ? ShareStyle.faint : ShareStyle.muted).setStroke(); path.stroke()
             let style = NSMutableParagraphStyle(); style.alignment = .center
@@ -550,7 +562,7 @@ final class ShareScreenMap: NSView, NSViewToolTipOwner {
     }
     // Grey rounded frame; 16:10 screens up to 76×48 with the name underneath; this one has a mouse outline.
     override func draw(_ dirtyRect: NSRect) {
-        ShareStyle.background.setFill(); NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10).fill()
+        ShareStyle.mapBack.setFill(); NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10).fill()
         guard !tiles.isEmpty else { return }
         if tiles.contains(where: { $0.number != nil }) { drawNumbered(); return }
         removeAllToolTips(); tips.removeAll()
@@ -563,7 +575,7 @@ final class ShareScreenMap: NSView, NSViewToolTipOwner {
         for t in tiles {
             let r = NSRect(x: x0 + CGFloat(t.cell.x - xs.min()!) * (cw + gap), y: y0 + CGFloat(t.cell.y - ys.min()!) * (ch + label + gap), width: cw, height: ch)
             let path = NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5); path.lineWidth = t.isSelf ? 1.5 : 1
-            if t.placeholder { path.setLineDash([4, 3], count: 2, phase: 0) } else { (t.isSelf ? ShareStyle.tint : NSColor.white).setFill(); path.fill() }
+            if t.placeholder { path.setLineDash([4, 3], count: 2, phase: 0) } else { (t.isSelf ? ShareStyle.tint : ShareStyle.cell).setFill(); path.fill() }
             (t.isSelf ? ShareStyle.blue : t.placeholder ? ShareStyle.faint : ShareStyle.border).setStroke(); path.stroke()
             if !t.tip.isEmpty { let tag = addToolTip(r, owner: self, userData: nil); tips[tag] = t.tip }
             if t.isSelf { ShareScreenMap.drawSelf(r, number: t.label, color: ShareStyle.ink) }
@@ -590,7 +602,11 @@ final class ShareScreenMap: NSView, NSViewToolTipOwner {
         let accent = t.color ?? ShareStyle.faint
         if t.isSelf { ShareStyle.tint.setFill(); shape.fill(); ShareStyle.blue.setStroke(); shape.stroke() }
         else if t.placeholder { shape.setLineDash([4, 3], count: 2, phase: 0); ShareStyle.faint.setStroke(); shape.stroke() }
-        else { NSColor.white.setFill(); shape.fill(); accent.setStroke(); shape.stroke() }
+        else if ShareStyle.isDark {
+            // Dark: card colour with 28% of the computer's colour, outline lightened 45% toward white.
+            ShareStyle.card.usingColorSpace(.sRGB)!.blended(withFraction: 0.28, of: accent)!.setFill(); shape.fill()
+            accent.blended(withFraction: 0.45, of: .white)!.setStroke(); shape.stroke()
+        } else { NSColor.white.setFill(); shape.fill(); accent.setStroke(); shape.stroke() }
         let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
         let color: NSColor = t.isSelf ? ShareStyle.blueInk : t.placeholder ? ShareStyle.faint : ShareStyle.ink
         let text = NSAttributedString(string: t.name, attributes: [.font: NSFont.systemFont(ofSize: fontSize, weight: .medium), .foregroundColor: color, .paragraphStyle: style])
@@ -653,7 +669,7 @@ final class ShareQuietButton: NSButton {
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
     override func draw(_ dirtyRect: NSRect) {
-        if hovering || isHighlighted { ShareStyle.border.setFill(); NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 7, yRadius: 7).fill() }
+        if hovering || isHighlighted { (isHighlighted ? ShareStyle.dyn(ShareStyle.border, ShareStyle.rgb(62, 70, 86)) : ShareStyle.hover).setFill(); NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 7, yRadius: 7).fill() }
         let style = NSMutableParagraphStyle(); style.alignment = .center
         let text = NSAttributedString(string: title, attributes: [.font: font ?? .systemFont(ofSize: 13), .foregroundColor: isEnabled ? ShareStyle.ink : ShareStyle.faint, .paragraphStyle: style])
         text.draw(in: NSRect(x: 4, y: (bounds.height - text.size().height) / 2, width: bounds.width - 8, height: text.size().height))
@@ -663,18 +679,24 @@ final class ShareQuietButton: NSButton {
 final class SharePrimaryButton: NSButton {
     override func draw(_ dirtyRect: NSRect) {
         let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 8, yRadius: 8)
-        (isEnabled ? (isHighlighted ? ShareStyle.blue.blended(withFraction: 0.18, of: .black)! : ShareStyle.blue) : ShareStyle.field).setFill(); shape.fill()
+        (isEnabled ? (isHighlighted ? ShareStyle.bluePressed : ShareStyle.blue) : ShareStyle.disabledBack).setFill(); shape.fill()
         let style = NSMutableParagraphStyle(); style.alignment = .center
-        let text = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: isEnabled ? NSColor.white : ShareStyle.faint, .paragraphStyle: style])
+        let text = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: isEnabled ? NSColor.white : ShareStyle.disabledInk, .paragraphStyle: style])
         text.draw(in: NSRect(x: 6, y: (bounds.height - text.size().height) / 2, width: bounds.width - 12, height: text.size().height))
     }
 }
-final class FlippedView: NSView { override var isFlipped: Bool { true } }
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+    // Background that follows light/dark: AppKit calls updateLayer again whenever the appearance changes.
+    var fill: NSColor? { didSet { wantsLayer = true; needsDisplay = true } }
+    override var wantsUpdateLayer: Bool { fill != nil }
+    override func updateLayer() { layer?.backgroundColor = fill?.cgColor }
+}
 // A row of the 全部電腦 list; blue when the mouse is on that computer, clickable when switching is possible.
 final class ShareListRow: NSView {
     var active = false, onClick: (() -> Void)?
     override var isFlipped: Bool { true }
-    override func draw(_ dirtyRect: NSRect) { if active { ShareStyle.tint.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill() } }
+    override func draw(_ dirtyRect: NSRect) { if active { ShareStyle.selected.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill() } }
     override func mouseUp(with event: NSEvent) { onClick?() }
     override func resetCursorRects() { if onClick != nil { addCursorRect(bounds, cursor: .pointingHand) } }
 }
@@ -702,13 +724,13 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     var window: NSWindow!
     var diagnostics: NSWindow?
     let emptyNearby = NSTextField(wrappingLabelWithString: "正在尋找附近的電腦…\n在另一台開啟程式，並選擇另一個角色。")
-    let blue = NSColor(srgbRed: 47/255, green: 101/255, blue: 235/255, alpha: 1), ink = NSColor(srgbRed: 24/255, green: 37/255, blue: 57/255, alpha: 1), muted = NSColor(srgbRed: 109/255, green: 122/255, blue: 141/255, alpha: 1)
+    let blue = ShareStyle.blue, ink = ShareStyle.ink, muted = ShareStyle.muted
     // role is the model of the 主控端／接收端 segment (kept as a hidden pop-up for older code paths and tests).
     let role = NSPopUpButton(), segment = NSSegmentedControl(labels: ["主控端", "接收端"], trackingMode: .selectOne, target: nil, action: nil)
     let peerLabel = NSTextField(labelWithString: ""), status = NSTextField(labelWithString: ""), roleLabel = NSTextField(labelWithString: "")
     let start = NSButton(title: "繼續共用", target: nil, action: nil), stop = NSButton(title: "暫停共用", target: nil, action: nil), search = ShareQuietButton(title: "重新搜尋", target: nil, action: nil), cancelSend = NSButton(title: "取消傳送", target: nil, action: nil), forget = NSButton(title: "解除配對", target: nil, action: nil), clear = NSButton(title: "清除檔案暫存", target: nil, action: nil)
     let badge = ShareBadge(), map = ShareScreenMap(), filter = NSSearchField(), nearbyCount = NSTextField(labelWithString: ""), nearbyScroll = NSScrollView(), nearbyList = FlippedView()
-    let body = FlippedView(), banner = NSView(), bannerText = NSTextField(labelWithString: "")
+    let body = FlippedView(), banner = FlippedView(), bannerText = NSTextField(labelWithString: "")
     // connections: core sessions currently up; dismissedUpdate: version whose banner was closed; announcedUpdate: version already notified.
     var connections = 0, dismissedUpdate = "", announcedUpdate = "", nearbySignature = ""
     // Host only: receivers whose core session is up (screen names) and the screen the mouse is on.
@@ -756,10 +778,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let W: CGFloat = 720, H: CGFloat = 624
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: W, height: H), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Barrier Share " + ShareApp.versionLabel; window.delegate = self; window.isReleasedWhenClosed = false
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H)); root.wantsLayer = true; root.layer?.backgroundColor = ShareStyle.background.cgColor
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H)); root.fill = ShareStyle.background
         window.contentView = root
         // Update banner above everything; the window grows by its height while it shows.
-        banner.frame = NSRect(x: 0, y: 0, width: W, height: 44); banner.wantsLayer = true; banner.layer?.backgroundColor = ShareStyle.tint.cgColor; banner.isHidden = true
+        banner.frame = NSRect(x: 0, y: 0, width: W, height: 44); banner.fill = ShareStyle.tint; banner.isHidden = true
         bannerText.textColor = ShareStyle.blueInk; bannerText.font = .systemFont(ofSize: 13); bannerText.lineBreakMode = .byTruncatingTail; bannerText.frame = NSRect(x: 24, y: 13, width: 500, height: 18); banner.addSubview(bannerText)
         let download = SharePrimaryButton(title: "下載更新", target: self, action: #selector(openUpdate)); download.frame = NSRect(x: 560, y: 7, width: 104, height: 30); banner.addSubview(download)
         let dismiss = NSButton(title: "✕", target: self, action: #selector(dismissUpdate)); dismiss.isBordered = false; dismiss.frame = NSRect(x: 670, y: 7, width: 30, height: 30); dismiss.toolTip = "稍後再說"; banner.addSubview(dismiss)
@@ -811,7 +833,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         if !test { UNUserNotificationCenter.current().delegate = self }
         do {
             if !test { let old = Bundle.main.bundleURL.deletingLastPathComponent(); try ShareSettings.importPairing(old, true, replace: false); try ShareSettings.importPairing(old, false, replace: false) }
-            options = try ShareSettings.load(); role.selectItem(at: options.host ? 0 : 1); segment.selectedSegment = options.host ? 0 : 1; roleChangedLabel()
+            options = try ShareSettings.load(); applyAppearance(); role.selectItem(at: options.host ? 0 : 1); segment.selectedSegment = options.host ? 0 : 1; roleChangedLabel()
             loading = false; try refreshRole()
             if !test { startLink(); retry = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in if let self = self, self.enabled && self.link == nil { self.startLink() } } }
             if !test { checkUpdate(); updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in self?.checkUpdate() } }
@@ -847,9 +869,28 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         frame.size.height += delta; frame.origin.y -= delta; window.setFrame(frame, display: true)
         (window.contentView as? FlippedView)?.frame.size.height = body.frame.maxY
     }
+    func appearanceMenu() -> NSMenu {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        for (title, value) in [("跟隨系統", "system"), ("淺色", "light"), ("深色", "dark")] {
+            let item = menu.addItem(withTitle: title, action: #selector(chooseAppearance(_:)), keyEquivalent: ""); item.target = self
+            item.representedObject = value; item.state = options.appearance == value ? .on : .off
+        }
+        return menu
+    }
+    @objc func chooseAppearance(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        options.appearance = value; applyAppearance(); do { try ShareSettings.save(options) } catch { showError(error) }
+    }
+    // nil follows macOS, so switching the system between light and dark updates the window at once.
+    func applyAppearance() {
+        // Self-test screenshots stay light unless the test picks dark itself.
+        if test && options.appearance == "system" { NSApp.appearance = NSAppearance(named: .aqua); return }
+        NSApp.appearance = options.appearance == "light" ? NSAppearance(named: .aqua) : options.appearance == "dark" ? NSAppearance(named: .darkAqua) : nil
+    }
     @objc func showMore(_ sender: NSButton) {
         let menu = NSMenu(); menu.autoenablesItems = false
         let clearItem = menu.addItem(withTitle: "清除暫存檔案", action: #selector(clearCache), keyEquivalent: ""); clearItem.target = self; clearItem.isEnabled = !enabled && core == nil
+        let look = menu.addItem(withTitle: "外觀", action: nil, keyEquivalent: ""); look.submenu = appearanceMenu()
         menu.addItem(withTitle: "關於 Barrier Share", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         let unpair = menu.addItem(withTitle: "解除配對…", action: peers.count > 1 ? nil : #selector(forgetPeer), keyEquivalent: ""); unpair.target = self
@@ -1079,7 +1120,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     func buildAdvanced(_ a: ShareAdvanced) -> (NSWindow, () -> ShareAdvanced, ShareModalCloser) {
         let W: CGFloat = 520, width: CGFloat = W + 48
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: 640), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "進階設定"
-        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: 640)); view.wantsLayer = true; view.layer?.backgroundColor = NSColor.white.cgColor; panel.contentView = view
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: 640)); view.fill = ShareStyle.card; panel.contentView = view
         var y: CGFloat = 18
         func label(_ text: String, _ size: CGFloat, _ weight: NSFont.Weight, _ color: NSColor, _ x: CGFloat, _ yy: CGFloat, _ w: CGFloat) -> NSTextField {
             let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: size, weight: weight); l.textColor = color; l.lineBreakMode = .byTruncatingTail; l.frame = NSRect(x: x, y: yy, width: w, height: size + 6); view.addSubview(l); return l
@@ -1140,7 +1181,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
         // Rows scroll; the buttons stay fixed underneath.
         let rowsHeight = buttonsY, visible = min(rowsHeight, 600)
-        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: visible + 76)); root.wantsLayer = true; root.layer?.backgroundColor = NSColor.white.cgColor
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: visible + 76)); root.fill = ShareStyle.card
         let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: visible)); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
         view.frame.size = NSSize(width: width, height: rowsHeight); scroll.documentView = view; root.addSubview(scroll)
         let footerRule = NSBox(frame: NSRect(x: 0, y: visible, width: width, height: 1)); footerRule.boxType = .custom; footerRule.borderWidth = 0; footerRule.fillColor = ShareStyle.border; root.addSubview(footerRule)
@@ -1303,7 +1344,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         closeConsent(); showWindow(); let id = message[1]; consentId = id
         let request = message[0] == "REQUEST"
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 372), styleMask: [.titled], backing: .buffered, defer: false)
-        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: 440, height: 372)); view.wantsLayer = true; view.layer?.backgroundColor = NSColor.white.cgColor; panel.contentView = view
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: 440, height: 372)); view.fill = ShareStyle.card; panel.contentView = view
         func put(_ v: NSView, _ r: NSRect) { v.frame = r; view.addSubview(v) }
         func label(_ text: String, _ size: CGFloat, _ weight: NSFont.Weight, _ color: NSColor, _ r: NSRect) {
             let l = NSTextField(wrappingLabelWithString: text); l.font = .systemFont(ofSize: size, weight: weight); l.textColor = color; l.alignment = .center; put(l, r)
@@ -1369,7 +1410,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let layoutView = ShareLayoutView(names: Dictionary(uniqueKeysWithValues: peers.map { ($0.fingerprint, $0.name) }), placement: placement, blue: blue); layoutView.colors = colors
         let width = layoutView.frame.width + 248, height = layoutView.frame.height + 140
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "排列螢幕"
-        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: height)); view.wantsLayer = true; view.layer?.backgroundColor = NSColor.white.cgColor; panel.contentView = view
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: height)); view.fill = ShareStyle.card; panel.contentView = view
         let title = NSTextField(labelWithString: "排列螢幕"); title.font = .systemFont(ofSize: 18, weight: .bold); title.frame = NSRect(x: 24, y: 18, width: 300, height: 24); view.addSubview(title)
         let hint = NSTextField(labelWithString: "拖曳電腦到這台的上下左右；相鄰的邊就是游標可以移過去的地方。螢幕大小不同時，可在右側選擇只相接上半段或下半段。"); hint.textColor = ShareStyle.muted; hint.font = .systemFont(ofSize: 12); hint.frame = NSRect(x: 24, y: 46, width: width - 48, height: 18); view.addSubview(hint)
         layoutView.frame.origin = NSPoint(x: 24, y: 76); view.addSubview(layoutView)
@@ -1520,6 +1561,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
 }
 
 func selfTest(_ directory: URL) throws {
+    NSApp.appearance = NSAppearance(named: .aqua)  // screenshots are compared in light mode; dark is checked separately
     let fm = FileManager.default; try fm.createDirectory(at: directory, withIntermediateDirectories: true)
     for name in ["PASS.txt", "FAIL.txt"] { try? fm.removeItem(at: directory.appendingPathComponent(name)) }
     let scratch = directory.appendingPathComponent("run-" + UUID().uuidString)
@@ -1654,6 +1696,15 @@ func selfTest(_ directory: URL) throws {
     view.cacheDisplay(in: view.bounds, to: bitmap)
     guard let image = bitmap.representation(using: .png, properties: [:]) else { throw ShareError.message("Cannot render PNG") }
     try image.write(to: directory.appendingPathComponent("gui-mac.png"))
+    // 外觀: three choices; dark repaints the window and is saved, then the test goes back to light.
+    guard app.appearanceMenu().items.map({ $0.title }) == ["跟隨系統", "淺色", "深色"], app.appearanceMenu().items[0].state == .on || app.options.appearance != "system" else { throw ShareError.message("Appearance menu wrong") }
+    let darkItem = app.appearanceMenu().items[2]; app.chooseAppearance(darkItem)
+    guard app.options.appearance == "dark", NSApp.appearance?.name == .darkAqua else { throw ShareError.message("Dark appearance not applied") }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.3)); app.window.displayIfNeeded()
+    let darkBitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!; view.cacheDisplay(in: view.bounds, to: darkBitmap)
+    guard let darkPixel = darkBitmap.colorAt(x: 4, y: 4)?.usingColorSpace(.sRGB), darkPixel.redComponent < 0.2 else { throw ShareError.message("Window not dark: \(String(describing: darkBitmap.colorAt(x: 4, y: 4)))") }
+    try darkBitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("gui-mac-dark.png"))
+    app.options.appearance = "light"; app.applyAppearance(); RunLoop.current.run(until: Date().addingTimeInterval(0.1))
     app.showUpdate(found); RunLoop.current.run(until: Date().addingTimeInterval(0.2))
     guard !app.banner.isHidden, app.bannerText.stringValue.contains("0.3.11") else { throw ShareError.message("Update banner did not show") }
     try snapshot(app.window.contentView, "gui-mac-update.png")
@@ -1732,7 +1783,6 @@ func selfTest(_ directory: URL) throws {
 signal(SIGPIPE, SIG_IGN)
 let application = NSApplication.shared
 application.setActivationPolicy(.regular)
-application.appearance = NSAppearance(named: .aqua)
 if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--self-test" {
     let path = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
     do { try selfTest(path); exit(0) }

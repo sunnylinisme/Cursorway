@@ -113,7 +113,10 @@ def run():
             assert not any(e[0]=='NUMBER' for e in receiver.history), 'Number sent before the host chose one'
             host.send('NUMBERS', rf+'=3,'+sf+'=x,bogus=4')
             n=receiver.wait('NUMBER'); assert n[1:]==[hf,'3'], n
-            print('PASS: receiver learns its switch number from the host',flush=True)
+            # With its place: the receiver sits left of the host; bad places are dropped.
+            host.send('NUMBERS', rf+'=2/-1/0,'+sf+'=5/9/9'); receiver.clear()
+            n=receiver.wait('NUMBER'); assert n[1:]==[hf,'2','-1,0'], n
+            print('PASS: receiver learns its switch number and place from the host',flush=True)
             assert sorted(e[1] for e in host.history if e[0]=='SAVED')==sorted([rf,sf])
             host.send('FORGET',sf); assert host.wait('REMOVED')[1]==sf
             assert (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().strip()==rf

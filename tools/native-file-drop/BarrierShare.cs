@@ -647,6 +647,18 @@ sealed class ShareScreenMap : Control
                 float w = Math.Min(r.Width * 0.45F, 18 * s), h = w * 0.62F, x = r.X + (r.Width - w) / 2, y = r.Y + (r.Height - h) / 2 - 2 * s;
                 g.DrawRectangle(pen, x, y, w, h); g.DrawLine(pen, x + w / 2, y + h, x + w / 2, y + h + 3 * s); g.DrawLine(pen, x + w / 4, y + h + 3 * s, x + w * 3 / 4, y + h + 3 * s);
             }
+            // A GPS "you are here" mark on the top-right corner shows which tile is this computer.
+            if (t.Self) {
+                float d = 19 * s, cx = r.Right - 3 * s, cy = r.Y + 3 * s, ring = d * 0.32F;
+                using (var back = new SolidBrush(Color.White)) g.FillEllipse(back, cx - d / 2, cy - d / 2, d, d);
+                using (var pen = new Pen(ShareStyle.Blue, 1.4F * s)) {
+                    g.DrawEllipse(pen, cx - ring, cy - ring, ring * 2, ring * 2);
+                    float a = ring, b = d / 2 - 0.5F * s;
+                    g.DrawLine(pen, cx, cy - b, cx, cy - a); g.DrawLine(pen, cx, cy + a, cx, cy + b);
+                    g.DrawLine(pen, cx - b, cy, cx - a, cy); g.DrawLine(pen, cx + a, cy, cx + b, cy);
+                }
+                using (var dot = new SolidBrush(ShareStyle.Blue)) g.FillEllipse(dot, cx - 2.2F * s, cy - 2.2F * s, 4.4F * s, 4.4F * s);
+            }
             if (!t.Icon) using (var f = new Font(Font.FontFamily, 11F, FontStyle.Bold))
                 TextRenderer.DrawText(g, t.Label, f, Rectangle.Round(r), t.Active ? Color.White : t.Waiting ? ShareStyle.Faint : ShareStyle.Ink, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         }
@@ -774,10 +786,16 @@ sealed class ShareWindow : Form
     string mouseAt;
     // Receiver: the switch number its host gave it (0: not known, e.g. an older host). Host: the list last sent to the link.
     int ownNumber; string sentNumbers;
+    // Receiver: where its host sits relative to it, from the host's arrangement (left until the host says).
+    Point hostCell = new Point(-1, 0);
     internal string NumberList()
     {
-        var numbers = ShareSettings.AssignedNumbers();
-        return String.Join(",", peers.Keys.Where(fp => numbers.ContainsKey(ShareSettings.ScreenName(fp))).Select(fp => fp + "=" + numbers[ShareSettings.ScreenName(fp)]).ToArray());
+        // <fingerprint>=<number>/<dx>/<dy>: the number and where the receiver sits relative to this host.
+        var numbers = ShareSettings.AssignedNumbers(); var cells = ShareSettings.Cells();
+        return String.Join(",", peers.Keys.Where(fp => numbers.ContainsKey(ShareSettings.ScreenName(fp))).Select(fp => {
+            string screen = ShareSettings.ScreenName(fp); Point c; string place = cells.TryGetValue(screen, out c) ? "/" + c.X + "/" + c.Y : "";
+            return fp + "=" + numbers[screen] + place;
+        }).ToArray());
     }
     // The host tells each receiver its number through the link helper, which passes it on at every connection.
     void SendNumbers()
@@ -1074,7 +1092,7 @@ sealed class ShareWindow : Form
         } else {
             bool up = online.Contains(ShareSettings.HostName);
             list.Add(new Machine { Screen = ShareSettings.ReceiverName, Name = "這台（" + Environment.MachineName + "）", Number = ownNumber, Cell = Point.Empty, Self = true, Online = true, Active = up && mouseAt == ShareSettings.ReceiverName, Where = "這台" });
-            if (peers.Count > 0) list.Add(new Machine { Screen = ShareSettings.HostName, Name = peers.Values.First(), Number = 1, Cell = new Point(-1, 0), Online = up, Active = up && mouseAt != ShareSettings.ReceiverName, Where = "主控端" });
+            if (peers.Count > 0) list.Add(new Machine { Screen = ShareSettings.HostName, Name = peers.Values.First(), Number = 1, Cell = hostCell, Online = up, Active = up && mouseAt != ShareSettings.ReceiverName, Where = "主控端（" + Side(hostCell) + "）" });
         }
         return list;
     }
@@ -1212,7 +1230,7 @@ sealed class ShareWindow : Form
     }
     void RefreshRole()
     {
-        ownNumber = 0; peers.Clear(); devices.Clear(); PeersChanged(); Save();
+        ownNumber = 0; hostCell = new Point(-1, 0); peers.Clear(); devices.Clear(); PeersChanged(); Save();
         ShareSettings.Init(Host);
         status.Text = enabled ? "正在啟用區網搜尋…" : "已暫停"; UpdateControls();
     }
@@ -1264,13 +1282,17 @@ sealed class ShareWindow : Form
                 ShareSettings.Platforms[f[1]] = f[2]; Save(); LogLine("對方系統：" + f[2] + " · " + f[1].Substring(10, 16));
                 if (Host && peers.ContainsKey(f[1]) && backend != null) StopBackend();
             }
-        } else if (f[0] == "NUMBER" && f.Length == 3) {
-            // A receiver's own switch number, as its host sent it on connecting (0.3.17+ hosts).
-            int n; if (!Host && peers.ContainsKey(f[1]) && Int32.TryParse(f[2], out n) && n >= 1 && n <= 9 && n != ownNumber) { ownNumber = n; UpdateControls(); }
+        } else if (f[0] == "NUMBER" && (f.Length == 3 || f.Length == 4)) {
+            // A receiver's own switch number and place, as its host sent them on connecting (0.3.17+ hosts).
+            int n, dx, dy; string[] at = f.Length == 4 ? f[3].Split(',') : new string[0];
+            if (!Host && peers.ContainsKey(f[1]) && Int32.TryParse(f[2], out n) && n >= 1 && n <= 9) {
+                var cell = at.Length == 2 && Int32.TryParse(at[0], out dx) && Int32.TryParse(at[1], out dy) && Math.Abs(dx) <= 2 && Math.Abs(dy) <= 2 && (dx != 0 || dy != 0) ? new Point(-dx, -dy) : hostCell;
+                if (n != ownNumber || cell != hostCell) { ownNumber = n; hostCell = cell; UpdateControls(); }
+            }
         } else if (f[0] == "GONE" && f.Length == 2) { if (devices.Remove(f[1])) RebuildNearby(); }
         else if ((f[0] == "SAVED" || f[0] == "PAIRED") && f.Length == 3) {
             // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
-            if (f[0] == "PAIRED") { StopBackend(); if (!Host) { peers.Clear(); ownNumber = 0; } }
+            if (f[0] == "PAIRED") { StopBackend(); if (!Host) { peers.Clear(); ownNumber = 0; hostCell = new Point(-1, 0); } }
             peers[f[1]] = Decode(f[2]); PeersChanged();
         }
         else if ((f[0] == "VERIFY" || f[0] == "REQUEST") && f.Length == 5) ShowConsent(f);
@@ -1279,7 +1301,7 @@ sealed class ShareWindow : Form
             if (peers.ContainsKey(f[1]) && (backend == null || (!Host && connectedAddress != f[3]))) { StopBackend(); address.Text = f[3]; Save(); StartBackend(); }
         } else if (f[0] == "REMOVED") {
             StopBackend(); if (f.Length == 2) { peers.Remove(f[1]); ShareSettings.Layout.Remove(f[1]); } else peers.Clear();
-            if (!Host && peers.Count == 0) ownNumber = 0;
+            if (!Host && peers.Count == 0) ownNumber = 0; hostCell = new Point(-1, 0);
             PeersChanged(); if (peers.Count == 0) peerLabel.Text = "已解除配對。"; Save();
             status.Text = peers.Count > 0 ? "已解除一台；其餘的會自動重新連線。" : Host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。";
         }
@@ -1468,7 +1490,7 @@ sealed class ShareWindow : Form
             if (list.Items.Count != 2 || !list.Items[1].Text.Contains("另一台電腦") || list.Items[1].BackColor != ShareStyle.Tint || !list.Items[0].Text.Contains("這台")) throw new Exception("全部電腦 list rows wrong");
         }
         capture("gui-card.png");
-        if (NumberList() != fp + "=2") throw new Exception("Host number list for the link is wrong: " + NumberList());
+        if (NumberList() != fp + "=2/1/0") throw new Exception("Host number list for the link is wrong: " + NumberList());
         // A role change while connected asks first; declining keeps the role.
         string asked = null; Confirm = (text, action) => { asked = text + "|" + action; return false; };
         segment.Selected = 1;
@@ -1516,8 +1538,9 @@ sealed class ShareWindow : Form
         if (Machines()[0].Number != 0 || !self.Icon || !self.Tip.Contains("號碼由主控端決定")) throw new Exception("Receiver guessed its own number");
         LinkLine("NUMBER\tv2:sha256:" + new string('f', 64) + "\t4");
         if (Machines()[0].Number != 0) throw new Exception("Receiver took a number from a computer it is not paired with");
-        LinkLine("NUMBER\t" + fp + "\t3");
+        LinkLine("NUMBER\t" + fp + "\t3\t-1,0");
         self = map.Tiles.First(t => t.Self);
+        if (map.Tiles.First(t => !t.Self).Cell != new Point(1, 0)) throw new Exception("Receiver did not place its host on the side the host arranged");
         if (self.Icon || self.Label != "3" || map.Tiles.First(t => !t.Self).Label != "1") throw new Exception("Receiver did not show the number its host sent");
         capture("gui-receiver-number.png");
         stop.PerformClick();

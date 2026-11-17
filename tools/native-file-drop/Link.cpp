@@ -77,6 +77,16 @@ static bool validName(const std::string& encoded) {
     decoded.resize(count);
     return !decoded.empty() && decoded.size() <= 128 && std::none_of(decoded.begin(), decoded.end(), [](unsigned char c) { return c < 32 || c == 127; }) && base64(decoded) == encoded;
 }
+static std::string slashed(std::string v) { std::replace(v.begin(), v.end(), ',', '/'); return v; }
+static bool validPlace(const std::string& v) {
+    // "<n>" or "<n>/<dx>/<dy>": switch number 1-9 and where the host placed the receiver (each -2..2).
+    if (v.empty() || v[0] < '1' || v[0] > '9') return false;
+    if (v.size() == 1) return true;
+    if (v[1] != '/') return false;
+    auto slash = v.find('/', 2); if (slash == std::string::npos) return false;
+    auto axis = [](const std::string& a) { return a == "0" || a == "1" || a == "2" || a == "-1" || a == "-2"; };
+    return axis(v.substr(2, slash - 2)) && axis(v.substr(slash + 1));
+}
 static bool validFingerprint(const std::string& fp) {
     return fp.size() == 74 && fp.compare(0, 10, "v2:sha256:") == 0 && std::all_of(fp.begin() + 10, fp.end(), [](char c) { return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'); });
 }
@@ -260,12 +270,18 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
         // the connection after SAVED, so a failed write or read here is ignored and changes nothing above.
         if (state.host) {
             std::string number; { std::lock_guard<std::mutex> lock(state.mutex); auto it = state.numbers.find(peer.fingerprint); if (it != state.numbers.end()) number = it->second; }
-            if (!number.empty()) try { session.write("NUMBER\t" + number); } catch (const std::exception&) {}
+            if (!number.empty()) try {
+                // On the wire: NUMBER <n> [<dx>,<dy>]
+                std::string place = number.size() > 1 ? number.substr(2) : ""; std::replace(place.begin(), place.end(), '/', ',');
+                session.write("NUMBER\t" + number.substr(0, 1) + (place.empty() ? "" : "\t" + place));
+            } catch (const std::exception&) {}
         } else {
             try {
                 session.deadline = Clock::now() + std::chrono::seconds(2);
                 auto line = fields(session.read());
-                if (line.size() == 2 && line[0] == "NUMBER" && line[1].size() == 1 && line[1][0] >= '1' && line[1][0] <= '9') emit("NUMBER\t" + peer.fingerprint + '\t' + line[1]);
+                // NUMBER <n> [<dx>,<dy>]: the position is where the host placed this receiver.
+                if ((line.size() == 2 || line.size() == 3) && line[0] == "NUMBER" && line[1].size() == 1 && validPlace(line[1] + (line.size() == 3 ? "/" + slashed(line[2]) : "")))
+                    emit("NUMBER\t" + peer.fingerprint + '\t' + line[1] + (line.size() == 3 ? "\t" + line[2] : ""));
             } catch (const std::exception&) {}
         }
     } catch (const std::exception& error) {
@@ -465,7 +481,7 @@ int main(int argc, char** argv) {
                     while (std::getline(items, item, ',')) {
                         auto equals = item.rfind('='); if (equals == std::string::npos) continue;
                         auto fp = item.substr(0, equals), n = item.substr(equals + 1);
-                        if (validFingerprint(fp) && n.size() == 1 && n[0] >= '1' && n[0] <= '9') numbers[fp] = n;
+                        if (validFingerprint(fp) && validPlace(n)) numbers[fp] = n;
                     }
                     std::lock_guard<std::mutex> lock(state.mutex); state.numbers = numbers;
                 }

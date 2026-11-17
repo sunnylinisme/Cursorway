@@ -267,6 +267,12 @@ static class ShareSettings
         if (a.WheelScale != 100) { yield return "--wheel-scale"; yield return a.WheelScale.ToString(); }
         if (a.WheelInvert) yield return "--wheel-invert";
     }
+    // Whether the host configuration differs from the file the running core last read.
+    public static bool ConfigChanged()
+    {
+        string path = Path.Combine(Profile(true), "windows-windows.conf");
+        try { return !File.Exists(path) || File.ReadAllText(path, Encoding.UTF8) != Config(true); } catch (IOException) { return true; }
+    }
     // Writes the host configuration in one step (a running core re-reads it when it changes).
     public static string WriteConfig()
     {
@@ -1503,6 +1509,9 @@ sealed class ShareWindow : Form
         if (backend == null) return;
         if (!Host) { StopBackend(); return; }
         try {
+            // Settings that do not change the core's file (or saving without changes) need nothing:
+            // the core only reloads, and confirms, when the contents differ.
+            if (!ShareSettings.ConfigChanged()) return;
             ShareSettings.WriteConfig();
             if (serviceLog != null) ShareService.Request("CONFIG\t" + Convert.ToBase64String(new UTF8Encoding(false).GetBytes(ShareSettings.Config(true))), 5000);
             reloadPending = true; reloadTimer.Stop(); reloadTimer.Start();
@@ -2433,7 +2442,11 @@ static class ShareProgram
                 if (core.MainWindowHandle != IntPtr.Zero) throw new Exception("Backend opened a console");
                 // Changed settings reach the running core without a restart: it re-reads its file and says so.
                 string log = Path.Combine(ShareSettings.Profile(true), "server.log"); long seen = File.Exists(log) ? new FileInfo(log).Length : 0;
-                ShareSettings.Advanced.BroadcastKey = !ShareSettings.Advanced.BroadcastKey; ShareSettings.WriteConfig();
+                // Saving without a change to the file must not count as a change (it would wait for a reload that never comes).
+                if (ShareSettings.ConfigChanged()) throw new Exception("Unchanged settings reported as a configuration change");
+                ShareSettings.Advanced.BroadcastKey = !ShareSettings.Advanced.BroadcastKey;
+                if (!ShareSettings.ConfigChanged()) throw new Exception("Changed settings not reported as a configuration change");
+                ShareSettings.WriteConfig();
                 string tail = ""; var until = DateTime.UtcNow.AddSeconds(6);
                 while (DateTime.UtcNow < until && !tail.Contains("reloaded configuration")) {
                     Thread.Sleep(250);

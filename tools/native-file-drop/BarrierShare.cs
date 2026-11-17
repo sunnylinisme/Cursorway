@@ -1455,7 +1455,7 @@ sealed class ShareWindow : Form
             // The other side no longer trusts this computer (a receiver paired elsewhere, or the host removed
             // this receiver); it is listed again under nearby computers.
             NearbyDevice device; string name = removedName ?? (devices.TryGetValue(f[1], out device) ? device.Name : "一台接收端");
-            status.Text = Host ? "「" + name + "」已改和其他主控端配對，已自動解除這裡的配對。" : "主控端「" + name + "」已解除配對，這裡也已自動解除。"; Diagnose(status.Text);
+            status.Text = Host ? "「" + name + "」已解除和這台的配對（或改和其他主控端配對），這裡也已自動解除。" : "主控端「" + name + "」已解除配對，這裡也已自動解除。"; Diagnose(status.Text);
         }
         else if (f[0] == "UNAVAILABLE" && f.Length == 3 && backend == null) { status.Text = "正在重新尋找並驗證已配對的電腦…"; LogLine(Decode(f[2])); }
         else if ((f[0] == "ERROR" || f[0] == "FATAL") && f.Length == 2) { if (f[0] == "FATAL") StopLink(); status.Text = Decode(f[1]); LogLine(status.Text); }

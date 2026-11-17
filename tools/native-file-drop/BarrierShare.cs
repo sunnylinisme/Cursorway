@@ -395,7 +395,7 @@ sealed class ShareAdvanced
     public string TargetList()
     {
         var items = (Targets ?? "").Split(new[] { ',', ' ', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-        foreach (string item in items) if (item.Length > 253 || !Regex.IsMatch(item, "^[A-Za-z0-9.-]+$")) throw new IOException("請輸入 IPv4 位址或電腦名稱，以逗號分隔：" + item);
+        foreach (string item in items) if (item.Length > 253 || !Regex.IsMatch(item, "^[A-Za-z0-9.-]+$")) throw new IOException("「" + item + "」不是有效的 IP 位址或電腦名稱");
         if (items.Length > 16) throw new IOException("最多輸入 16 個位址。");
         return String.Join(",", items);
     }
@@ -1856,8 +1856,20 @@ sealed class ShareWindow : Form
         row("滾輪速度", "另一台的滑鼠在這台捲動時的速度", wheel);
         var invert = check(a.WheelInvert); row("反轉滾輪方向", "Mac 自然捲動和 Windows 方向相反時開啟", invert);
         y += 16; section("連線");
-        var targets = new TextBox { Text = String.Join(Environment.NewLine, (a.Targets ?? "").Split(new[] { ',', ' ', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)), Multiline = true, ScrollBars = ScrollBars.Vertical, Font = new Font("Consolas", 9.5F), Size = new Size(200, 44) };
-        row("手動位址", "跨網段或 VPN 時填入對方 IP，一行一個", targets);
+        // A full-width field under its explanation: addresses are long and there may be several.
+        var targets = new TextBox { Text = String.Join(Environment.NewLine, (a.Targets ?? "").Split(new[] { ',', ' ', ';', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)),
+            Multiline = true, AcceptsReturn = true, ScrollBars = ScrollBars.None, WordWrap = false, Font = new Font(Font.FontFamily, 10F), BorderStyle = BorderStyle.FixedSingle,
+            BackColor = ShareStyle.Field, ForeColor = ShareStyle.Ink, AccessibleName = "手動位址" };
+        var targetError = new Label { ForeColor = ShareStyle.Danger, BackColor = Color.White, Font = new Font(Font.FontFamily, 8.5F), AutoEllipsis = true, Visible = false };
+        group.Controls.Add(new Label { Text = "手動位址", BackColor = Color.White, Bounds = new Rectangle(14, rowY + 8, W - 28, 22) });
+        group.Controls.Add(new Label { Text = "跨網段或 VPN 時填入對方的 IP 位址或電腦名稱，一行一個，例如 10.8.0.5 或 office-pc.local", BackColor = Color.White, ForeColor = ShareStyle.Faint,
+            Font = new Font(Font.FontFamily, 8.5F), Bounds = new Rectangle(14, rowY + 30, W - 28, 36) });
+        targets.Bounds = new Rectangle(14, rowY + 70, W - 28, 72); group.Controls.Add(targets);
+        targetError.Bounds = new Rectangle(14, rowY + 146, W - 28, 20); group.Controls.Add(targetError);
+        // A scroll bar only once there are more lines than the field shows.
+        Action fit = () => { var want = targets.Lines.Length > 3 ? ScrollBars.Vertical : ScrollBars.None; if (targets.ScrollBars != want) targets.ScrollBars = want; };
+        targets.TextChanged += delegate { targetError.Visible = false; fit(); }; fit();
+        rowY += 172; group.Height = rowY + 1; y = group.Bottom;
         y += 12;
         int buttonsY = y + 8;
         var reset = new ShareButton { Text = "恢復預設", Quiet = true, BackColor = Color.White, Bounds = new Rectangle(24, buttonsY, 100, 38) };
@@ -1885,8 +1897,9 @@ sealed class ShareWindow : Form
             Clipboard = clipboard.Checked, WheelScale = picked(wheel), WheelInvert = invert.Checked };
         var reader = read;
         ok.Click += delegate {
+            // A bad address is shown under the field (scrolled into view) instead of in a separate box.
             try { var value = reader(); value.TargetList(); dialog.DialogResult = DialogResult.OK; }
-            catch (IOException e) { MessageBox.Show(dialog, e.Message, "進階設定"); }
+            catch (IOException e) { targetError.Text = e.Message; targetError.Visible = true; dialog.ScrollControlIntoView(targetError); targets.Focus(); }
         };
         layout();
         ShareStyle.Theme(dialog); return dialog;
@@ -2504,6 +2517,11 @@ static class ShareProgram
                     margin(advanced, "Advanced settings");
                     if (readAdvanced().SwitchDelay != 250 || !readAdvanced().SwapModifiers) throw new Exception("Advanced dialog lost values: " + readAdvanced().SwitchDelay + " " + readAdvanced().SwapModifiers + " " + ShareSettings.Advanced.SwitchDelay);
                     using (var bitmap = new Bitmap(advanced.Width, advanced.Height)) { advanced.DrawToBitmap(bitmap, new Rectangle(Point.Empty, advanced.Size)); bitmap.Save(Path.Combine(directory, "gui-advanced.png")); }
+                    advanced.AutoScrollPosition = new Point(0, advanced.AutoScrollMinSize.Height); Application.DoEvents();
+                    using (var bitmap = new Bitmap(advanced.Width, advanced.Height)) { advanced.DrawToBitmap(bitmap, new Rectangle(Point.Empty, advanced.Size)); bitmap.Save(Path.Combine(directory, "gui-advanced-bottom.png")); }
+                    ShareStyle.Use(true); ShareStyle.Theme(advanced); Application.DoEvents();
+                    using (var bitmap = new Bitmap(advanced.Width, advanced.Height)) { advanced.DrawToBitmap(bitmap, new Rectangle(Point.Empty, advanced.Size)); bitmap.Save(Path.Combine(directory, "gui-advanced-dark.png")); }
+                    ShareStyle.Use(false); ShareStyle.Theme(advanced);
                     advanced.Close();
                 }
                 ShareSettings.Receivers = new List<string> { fa, fb, fc }; ShareSettings.Layout = new Dictionary<string, Point> { { fb, new Point(0, -1) } };

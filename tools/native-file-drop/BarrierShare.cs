@@ -1773,7 +1773,10 @@ sealed class ShareWindow : Form
     void Forget(string command, string question)
     {
         if (MessageBox.Show(this, question, "解除配對", MessageBoxButtons.OKCancel) != DialogResult.OK) return;
-        StopBackend(); Send(command);
+        // Removing one of several receivers keeps the others connected: REMOVED reloads the core without it.
+        bool one = command.StartsWith("FORGET\t") && Host && peers.Count > 1;
+        if (!one) StopBackend();
+        Send(command);
     }
     // Keeps the screen list, the paired label and the position controls in step with the paired computers.
     void PeersChanged()

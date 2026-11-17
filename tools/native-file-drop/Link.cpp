@@ -246,14 +246,14 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             if (state.host) {
                 require(hello.size() == 3 && hello[0] == "BPAIR1" && (hello[1] == "CHECK" || hello[1] == "FORGET") && validName(hello[2]), "Invalid check");
                 // A receiver (identity from the TLS session) removed this host: drop it here as well.
-                if (hello[1] == "FORGET") { unpaired(state, generation, fingerprint); throw QuietEnd(); }
+                if (hello[1] == "FORGET") { unpaired(state, generation, fingerprint); try { session.write("BDONE1"); } catch (const std::exception&) {} throw QuietEnd(); }
                 bool known; { std::lock_guard<std::mutex> lock(state.mutex); known = state.find(fingerprint) != nullptr; }
                 session.write(known ? "BREADY1\t" + state.name : std::string("BNOTPAIRED1"));
                 throw QuietEnd();
             }
             require(hello.size() == 3 && hello[0] == "BPAIR1" && (hello[1] == "PAIR" || hello[1] == "RESUME" || hello[1] == "FORGET") && validName(hello[2]), "Invalid pairing invitation");
             // Its host (identity from the TLS session) removed this receiver: drop the pairing right away.
-            if (hello[1] == "FORGET") { unpaired(state, generation, fingerprint); throw QuietEnd(); }
+            if (hello[1] == "FORGET") { unpaired(state, generation, fingerprint); try { session.write("BDONE1"); } catch (const std::exception&) {} throw QuietEnd(); }
             peer.fingerprint = fingerprint; peer.name = hello[2]; resume = hello[1] == "RESUME";
             if (resume) {
                 bool known; { std::lock_guard<std::mutex> lock(state.mutex); known = state.find(fingerprint) != nullptr; }
@@ -263,7 +263,13 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             session.write("BREADY1\t" + state.name);
         } else {
             require(fingerprint == peer.fingerprint, "Computer identity changed; search again");
-            if (forget) { session.write("BPAIR1\tFORGET\t" + state.name); throw QuietEnd(); }
+            if (forget) {
+                // Wait for the peer to confirm before closing: on Windows, closing with unread TLS data
+                // (such as session tickets) resets the connection and the notice can be lost.
+                session.write("BPAIR1\tFORGET\t" + state.name);
+                try { session.deadline = Clock::now() + std::chrono::seconds(3); session.read(); } catch (const std::exception&) {}
+                throw QuietEnd();
+            }
             if (check) {
                 // Receiver: has the host (identity checked above) dropped this pairing? Then drop it here too.
                 session.write("BPAIR1\tCHECK\t" + state.name);

@@ -231,12 +231,27 @@ static void runSession(State& state, SSL_CTX* context, Socket accepted, Peer pee
             auto hello = fields(session.read());
             require(hello.size() == 3 && hello[0] == "BPAIR1" && (hello[1] == "PAIR" || hello[1] == "RESUME") && validName(hello[2]), "Invalid pairing invitation");
             peer.fingerprint = fingerprint; peer.name = hello[2]; resume = hello[1] == "RESUME";
-            if (resume) { std::lock_guard<std::mutex> lock(state.mutex); require(state.find(fingerprint) != nullptr, "This computer is not paired; send a new invitation"); }
+            if (resume) {
+                bool known; { std::lock_guard<std::mutex> lock(state.mutex); known = state.find(fingerprint) != nullptr; }
+                // Tell a host this receiver no longer follows (it paired with another host) so it can drop the pairing.
+                if (!known) { try { session.write("BNOTPAIRED1"); } catch (const std::exception&) {} throw std::runtime_error("This computer is not paired; send a new invitation"); }
+            }
             session.write("BREADY1\t" + state.name);
         } else {
             require(fingerprint == peer.fingerprint, "Computer identity changed; search again");
             session.write("BPAIR1\t" + std::string(resume ? "RESUME" : "PAIR") + '\t' + state.name);
-            auto ready = fields(session.read()); require(ready.size() == 2 && ready[0] == "BREADY1" && validName(ready[1]), "Invalid pairing response"); peer.name = ready[1];
+            auto ready = fields(session.read());
+            if (resume && ready.size() == 1 && ready[0] == "BNOTPAIRED1") {
+                // The receiver (its identity checked above) paired with another host: forget it here too,
+                // so it shows up again as a computer that can be invited.
+                std::lock_guard<std::mutex> lock(state.mutex);
+                if (state.generation == generation && state.find(peer.fingerprint)) {
+                    state.saved.erase(std::remove_if(state.saved.begin(), state.saved.end(), [&](const Peer& p) { return p.fingerprint == peer.fingerprint; }), state.saved.end());
+                    storeSaved(state); emit("REMOVED\t" + peer.fingerprint); emit("UNPAIRED\t" + peer.fingerprint);
+                }
+                throw std::runtime_error("This computer paired with another host");
+            }
+            require(ready.size() == 2 && ready[0] == "BREADY1" && validName(ready[1]), "Invalid pairing response"); peer.name = ready[1];
         }
         if (!resume) {
             requestId = nonce(); { std::lock_guard<std::mutex> lock(state.mutex); state.approvalId = requestId; state.decision = 0; }

@@ -1442,10 +1442,18 @@ sealed class ShareWindow : Form
         else if (f[0] == "CONNECT" && f.Length == 4) {
             if (peers.ContainsKey(f[1]) && (backend == null || (!Host && connectedAddress != f[3]))) { StopBackend(); address.Text = f[3]; Save(); StartBackend(); }
         } else if (f[0] == "REMOVED") {
-            StopBackend(); if (f.Length == 2) { peers.Remove(f[1]); ShareSettings.Layout.Remove(f[1]); } else peers.Clear();
-            if (!Host && peers.Count == 0) ownNumber = 0; hostCell = new Point(-1, 0);
+            // A host losing one receiver keeps the others connected: the core drops it on reloading its file.
+            bool keep = Host && f.Length == 2 && peers.Count > 1;
+            if (!keep) StopBackend();
+            if (f.Length == 2) { peers.Remove(f[1]); ShareSettings.Layout.Remove(f[1]); ShareSettings.Numbers.Remove(f[1]); } else peers.Clear();
+            if (!Host && peers.Count == 0) { ownNumber = 0; hostCell = new Point(-1, 0); }
             PeersChanged(); if (peers.Count == 0) peerLabel.Text = "已解除配對。"; Save();
-            status.Text = peers.Count > 0 ? "已解除一台；其餘的會自動重新連線。" : Host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。";
+            status.Text = peers.Count > 0 ? "已解除一台；其餘的保持連線。" : Host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。";
+            if (keep) ApplyConfig();
+        } else if (f[0] == "UNPAIRED" && f.Length == 2) {
+            // The receiver paired with another host; it is listed again under nearby computers.
+            NearbyDevice device; string name = devices.TryGetValue(f[1], out device) ? device.Name : "一台接收端";
+            status.Text = "「" + name + "」已改和其他主控端配對，已自動解除這裡的配對。"; Diagnose(status.Text);
         }
         else if (f[0] == "UNAVAILABLE" && f.Length == 3 && backend == null) { status.Text = "正在重新尋找並驗證已配對的電腦…"; LogLine(Decode(f[2])); }
         else if ((f[0] == "ERROR" || f[0] == "FATAL") && f.Length == 2) { if (f[0] == "FATAL") StopLink(); status.Text = Decode(f[1]); LogLine(status.Text); }
@@ -2114,7 +2122,8 @@ sealed class ShareLayoutEditor : Form
             number.SelectedIndexChanged += delegate { if (number.SelectedIndex >= 0 && number.Tag == null) Choose(fp, number.SelectedIndex == 0 ? 0 : number.SelectedIndex + 1); };
             numberBoxes[fp] = number; legend.Controls.Add(number);
         }
-        legend.AutoScroll = true; legend.Scroll += delegate { legend.Invalidate(); };
+        // The drop-downs move with the scroll; the drawn names and labels must be redrawn with them (wheel included).
+        legend.AutoScroll = true; legend.Scroll += delegate { legend.Invalidate(); }; legend.MouseWheel += delegate { legend.Invalidate(); };
         reset.Click += delegate {
             // The automatic placement: the saved arrangement set aside for a moment.
             var saved = ShareSettings.Layout; ShareSettings.Layout = new Dictionary<string, Point>();

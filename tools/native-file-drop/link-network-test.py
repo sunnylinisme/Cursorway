@@ -141,6 +141,11 @@ def run():
             assert not any(e[0]=='CONNECT' for e in host.history+receiver.history), 'Revoked pair reconnected'
             assert not (rp/'Peer.txt').exists() and not (rp/'SSL/Fingerprints/TrustedServers.txt').read_text().strip()
             print('PASS: forgetting a peer blocks automatic reconnect and clears trust',flush=True)
+            # The host learns on its next attempt that the receiver no longer follows it (as when it pairs
+            # with another host) and drops the pairing too, so the receiver can be invited again.
+            assert host.wait('UNPAIRED')[1]==rf and any(e[0]=='REMOVED' and e[1:]==[rf] for e in host.history), host.history
+            assert rf not in (hp/'SSL/Fingerprints/TrustedClients.txt').read_text().split()
+            print('PASS: a host drops a receiver that paired elsewhere',flush=True)
         finally:
             if host: host.stop()
             if receiver: receiver.stop()

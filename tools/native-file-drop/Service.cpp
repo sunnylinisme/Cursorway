@@ -172,7 +172,12 @@ HANDLE userToken(DWORD session) {
     HANDLE token = nullptr, primary = nullptr;
     if (!WTSQueryUserToken(session, &token)) return nullptr;
     DuplicateTokenEx(token, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary);
-    CloseHandle(token); return primary;
+    CloseHandle(token);
+    // UI access lets the core move the mouse and type into windows running as administrator
+    // (installers, regedit, an elevated terminal); without it Windows blocks that input (UIPI)
+    // and the pointer freezes while such a window is in front. Only SYSTEM can set it.
+    if (primary) { DWORD uiAccess = 1; SetTokenInformation(primary, TokenUIAccess, &uiAccess, sizeof(uiAccess)); }
+    return primary;
 }
 bool running(const PROCESS_INFORMATION& p) { DWORD code = 0; return p.hProcess && GetExitCodeProcess(p.hProcess, &code) && code == STILL_ACTIVE; }
 bool coreRunning() { return running(core); }

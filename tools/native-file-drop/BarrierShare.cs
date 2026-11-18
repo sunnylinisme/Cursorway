@@ -22,7 +22,15 @@ using System.Xml.Linq;
 
 static class ShareSettings
 {
-    public static string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "BarrierShare");
+    public static string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Cursorway");
+    // Settings and pairing lived in LocalAppData\BarrierShare before the rename. Move them once, before
+    // anything reads them; if that fails (a file in use), keep using the old folder this time.
+    public static void MoveFromOldName()
+    {
+        string old = Path.Combine(Path.GetDirectoryName(Root), "BarrierShare");
+        if (Directory.Exists(Root) || !Directory.Exists(old)) return;
+        try { Directory.Move(old, Root); } catch (Exception) { Root = old; }
+    }
     public static string Bin = AppDomain.CurrentDomain.BaseDirectory;
     public static readonly string[] Directions = { "right", "left", "up", "down" };
     public static string Position = "right";
@@ -328,7 +336,7 @@ static class ShareUpdate
             string name = tag as string, link = url as string; Version version;
             string prefix = name == null ? null : Prefixes.FirstOrDefault(p => name.StartsWith(p, StringComparison.Ordinal));
             if (prefix == null || link == null || !Version.TryParse(name.Substring(prefix.Length), out version)) continue;
-            if (!link.StartsWith("https://github.com/sunnylinisme/barrier/releases/")) continue;
+            if (!link.StartsWith("https://github.com/sunnylinisme/barrier/releases/") && !link.StartsWith("https://github.com/sunnylinisme/cursorway/releases/")) continue;
             version = new Version(version.Major, version.Minor, Math.Max(0, version.Build));
             if (version > current && (best == null || version > best.Version)) best = new Found { Version = version, Url = link };
         }
@@ -971,7 +979,7 @@ sealed class ShareWindow : Form
     public ShareWindow(bool selfTest = false)
     {
         SuspendLayout();
-        testing = selfTest; Text = "Barrier Share " + ShareUpdate.Label;
+        testing = selfTest; Text = "Cursorway " + ShareUpdate.Label;
         Font = new Font("Microsoft JhengHei UI", 11F); AutoScaleDimensions=Dpi96; AutoScaleMode=AutoScaleMode.Dpi;
         ClientSize = new Size(720, 608); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen; Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
@@ -1061,7 +1069,7 @@ sealed class ShareWindow : Form
             trayArrange.Visible = Host; trayArrange.Enabled = peers.Count > 0;
             ShareStyle.Theme(menu);
         };
-        menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Barrier Share " + ShareUpdate.Label; tray.ContextMenuStrip = menu; tray.Visible = !testing;
+        menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Cursorway " + ShareUpdate.Label; tray.ContextMenuStrip = menu; tray.Visible = !testing;
         tray.DoubleClick += delegate { ShowWindow(); };
         tray.BalloonTipClicked += delegate { if (balloonOpensUpdate) OpenUpdate(); };
         start.Click += delegate {
@@ -1105,7 +1113,7 @@ sealed class ShareWindow : Form
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
             // On sign-out or shutdown the service keeps the core running for the sign-in screen.
             if (e.CloseReason == CloseReason.WindowsShutDown) { closing = true; keepServiceCore = true; }
-            if (!closing && !testing) { e.Cancel = true; Hide(); Balloon(1500, "Barrier Share", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
+            if (!closing && !testing) { e.Cancel = true; Hide(); Balloon(1500, "Cursorway", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
             closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); autoPaste.Dispose(); popup.Dismiss(); popup.Dispose(); tray.Dispose();
         };
     }
@@ -1208,7 +1216,7 @@ sealed class ShareWindow : Form
     {
         var menu = new ContextMenuStrip { Font = new Font(Font.FontFamily, 10F) };
         menu.Items.Add("清除暫存檔案", null, delegate { ClearCache(); }).Enabled = clear.Enabled;
-        menu.Items.Add("關於 Barrier Share", null, delegate { MessageBox.Show(this, "Barrier Share\r\n" + ShareUpdate.Details + "\r\n\r\n以 Barrier 為基礎，在區域網路共用鍵盤、滑鼠與剪貼簿。", "關於 Barrier Share"); });
+        menu.Items.Add("關於 Cursorway", null, delegate { MessageBox.Show(this, "Cursorway（原 Barrier Share）\r\n" + ShareUpdate.Details + "\r\n\r\n以 Barrier 為基礎，在區域網路共用鍵盤、滑鼠與剪貼簿。", "關於 Cursorway"); });
         var look = new ToolStripMenuItem("外觀");
         foreach (var choice in new[] { new[] { "system", "跟隨系統" }, new[] { "light", "淺色" }, new[] { "dark", "深色" } }) {
             string value = choice[0];
@@ -1334,7 +1342,7 @@ sealed class ShareWindow : Form
     }
     bool AskRoleChange(string text, string action)
     {
-        using (var dialog = new Form { Text = "Barrier Share", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false,
+        using (var dialog = new Form { Text = "Cursorway", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false,
             Font = new Font(Font.FontFamily, 10F), BackColor = Color.White, ClientSize = new Size(440, 168), AutoScaleDimensions = ShareWindow.Dpi96, AutoScaleMode = AutoScaleMode.Dpi }) {
             dialog.Controls.Add(new Label { Text = text, Bounds = new Rectangle(22, 18, 396, 90), ForeColor = ShareStyle.Ink });
             var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(196, 116, 100, 34), DialogResult = DialogResult.Cancel };
@@ -1352,8 +1360,8 @@ sealed class ShareWindow : Form
         Task.Factory.StartNew(() => ShareUpdate.Check()).ContinueWith(task => {
             if (closing || !IsHandleCreated) return;
             try { BeginInvoke((Action)delegate { bool manual = manualUpdateCheck; manualUpdateCheck = false;
-                if (task.Status == TaskStatus.RanToCompletion) { if (manual) announcedUpdate = null; ShowUpdate(task.Result); if (manual && task.Result == null) Balloon(3000, "Barrier Share", "已是最新版本（" + ShareUpdate.Label + "）。", ToolTipIcon.Info); }
-                else { LogLine("檢查更新失敗：" + task.Exception.GetBaseException().Message); if (manual) Balloon(3000, "Barrier Share", "無法檢查更新，請確認網路連線。", ToolTipIcon.Warning); } }); }
+                if (task.Status == TaskStatus.RanToCompletion) { if (manual) announcedUpdate = null; ShowUpdate(task.Result); if (manual && task.Result == null) Balloon(3000, "Cursorway", "已是最新版本（" + ShareUpdate.Label + "）。", ToolTipIcon.Info); }
+                else { LogLine("檢查更新失敗：" + task.Exception.GetBaseException().Message); if (manual) Balloon(3000, "Cursorway", "無法檢查更新，請確認網路連線。", ToolTipIcon.Warning); } }); }
             catch (InvalidOperationException) { }
         });
     }
@@ -1361,11 +1369,11 @@ sealed class ShareWindow : Form
     {
         if (found == null) { SetBanner(false); return; }
         updateUrl = found.Url; string version = found.Version.ToString();
-        bannerText.Text = "有新版 " + version + " · 安裝時會自動關閉並重新開啟 Barrier Share";
+        bannerText.Text = "有新版 " + version + " · 安裝時會自動關閉並重新開啟 Cursorway";
         SetBanner(dismissedUpdate != version);
         if (announcedUpdate != version && !testing) {
             announcedUpdate = version;
-            tray.ShowBalloonTip(5000, "Barrier Share 有新版 " + version, "點這裡下載更新，安裝時會自動重新開啟。", ToolTipIcon.Info); balloonOpensUpdate = true;
+            tray.ShowBalloonTip(5000, "Cursorway 有新版 " + version, "點這裡下載更新，安裝時會自動重新開啟。", ToolTipIcon.Info); balloonOpensUpdate = true;
         }
     }
     void Save() { try { ShareSettings.Save(Host, address.Text.Trim()); } catch (Exception e) { Error(e); } }
@@ -1630,7 +1638,7 @@ sealed class ShareWindow : Form
     internal void ShowDiagnostics()
     {
         if (diagnostics == null) {
-            diagnostics = new Form { Text="Barrier Share · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18, 18, 18, 22), BackColor=Color.White, AutoScaleDimensions=ShareWindow.Dpi96, AutoScaleMode=AutoScaleMode.Dpi };
+            diagnostics = new Form { Text="Cursorway · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18, 18, 18, 22), BackColor=Color.White, AutoScaleDimensions=ShareWindow.Dpi96, AutoScaleMode=AutoScaleMode.Dpi };
             details.Dock=DockStyle.Fill; diagnostics.Controls.Add(details);
             // A gap above the button and the window padding below it keep it off the log and the window edge.
             var bar = new Panel { Dock=DockStyle.Bottom, Height=50, BackColor=Color.White };
@@ -2009,7 +2017,7 @@ sealed class ShareAutoPaste : IDisposable
     {
         if (Target != IntPtr.Zero || window == IntPtr.Zero) return;
         var root = GetAncestor(window, 2 /* GA_ROOT */); if (root != IntPtr.Zero) window = root;
-        if (Own(window)) { Log("前景是 Barrier Share 自己的視窗，略過"); return; }
+        if (Own(window)) { Log("前景是 Cursorway 自己的視窗，略過"); return; }
         Target = window; var h = Requested; if (h != null) h();
     }
     public void Start()
@@ -2369,7 +2377,9 @@ static class ShareProgram
         if (args.Length == 0 && ShareElevation.Relaunch()) return 0;
         bool created;
         using (var mutex = new Mutex(true, "Local\\BarrierShare.Desktop", out created)) {
-            if (!created) { MessageBox.Show("Barrier Share 已在執行，請從右下角圖示開啟。", "Barrier Share"); return 0; }
+            if (!created) { MessageBox.Show("Cursorway 已在執行，請從右下角圖示開啟。", "Cursorway"); return 0; }
+            // The only running copy: move the pre-rename settings folder before anything opens it.
+            ShareSettings.MoveFromOldName();
             using (var quit = new EventWaitHandle(false, EventResetMode.AutoReset, QuitEvent))
             using (var window = new ShareWindow()) {
                 if (args.Length == 2 && args[0] == "--startup-test") {
@@ -2387,6 +2397,15 @@ static class ShareProgram
     static int SelfTest(string directory)
     {
         try {
+            // The pre-rename settings folder moves to the new name once, with its contents; an existing new folder wins.
+            string renameTest = Path.Combine(directory, "改名搬移");
+            Directory.CreateDirectory(Path.Combine(renameTest, "BarrierShare", "profile-server", "SSL"));
+            File.WriteAllText(Path.Combine(renameTest, "BarrierShare", "profile-server", "SSL", "Barrier.pem"), "pairing");
+            ShareSettings.Root = Path.Combine(renameTest, "Cursorway"); ShareSettings.MoveFromOldName();
+            if (ShareSettings.Root != Path.Combine(renameTest, "Cursorway") || Directory.Exists(Path.Combine(renameTest, "BarrierShare"))
+                || File.ReadAllText(Path.Combine(renameTest, "Cursorway", "profile-server", "SSL", "Barrier.pem")) != "pairing") throw new Exception("Old settings folder was not moved to the new name");
+            Directory.CreateDirectory(Path.Combine(renameTest, "BarrierShare")); ShareSettings.MoveFromOldName();
+            if (!Directory.Exists(Path.Combine(renameTest, "BarrierShare")) || !File.Exists(Path.Combine(renameTest, "Cursorway", "profile-server", "SSL", "Barrier.pem"))) throw new Exception("An existing new settings folder was replaced");
             ShareSettings.Root = Path.Combine(directory, "新設定");
             ShareSettings.Position = "up"; ShareSettings.Save(false, "192.168.7.4");
             bool host; string address; ShareSettings.Load(out host, out address);
@@ -2527,6 +2546,9 @@ static class ShareProgram
                 "{\"tag_name\":\"windows-v0.3.10\",\"html_url\":\"https://example.com/elsewhere\",\"draft\":false,\"prerelease\":false}," +
                 "{\"tag_name\":\"v0.5.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/v0.5.0\",\"draft\":true,\"prerelease\":false}," +
                 "{\"tag_name\":\"v0.3.11\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/v0.3.11\",\"draft\":false,\"prerelease\":false}]";
+            // After the repository is renamed, releases link to /cursorway/; other repositories stay rejected.
+            var renamed = ShareUpdate.Newer("[{\"tag_name\":\"v0.3.30\",\"html_url\":\"https://github.com/sunnylinisme/cursorway/releases/tag/v0.3.30\",\"draft\":false,\"prerelease\":false},{\"tag_name\":\"v0.3.40\",\"html_url\":\"https://github.com/someone/cursorway/releases/tag/v0.3.40\",\"draft\":false,\"prerelease\":false}]", new Version(0, 3, 20));
+            if (renamed == null || renamed.Version != new Version(0, 3, 30)) throw new Exception("Update check does not follow the renamed repository");
             var found = ShareUpdate.Newer(releases, new Version(0, 3, 7));
             if (found == null || found.Version != new Version(0, 3, 11) || !found.Url.EndsWith("/v0.3.11")) throw new Exception("Update selection ignored platform, draft or origin rules");
             var legacy = ShareUpdate.Newer(releases.Replace("\"v0.3.11\"", "\"x0.3.11\""), new Version(0, 3, 7));

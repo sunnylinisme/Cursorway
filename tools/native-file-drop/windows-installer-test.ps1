@@ -3,7 +3,9 @@
 param(
     [Parameter(Mandatory = $true)][string]$InstallerPath,
     [Parameter(Mandatory = $true)][string]$PackageDir,
-    [Parameter(Mandatory = $true)][string]$TestRoot
+    [Parameter(Mandatory = $true)][string]$TestRoot,
+    # An installer released before the rename (Barrier Share); upgrading from it must leave one installation.
+    [string]$PreviousInstaller = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -19,16 +21,29 @@ $workspace = [IO.Path]::GetFullPath($env:GITHUB_WORKSPACE).TrimEnd('\') + '\'
 if (-not $TestRoot.StartsWith($workspace, [StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $TestRoot)) {
     throw 'TestRoot must be a new directory inside the CI workspace.'
 }
-$profile = Join-Path $env:LOCALAPPDATA 'BarrierShare'
+# Settings start in the pre-rename folder; the app moves them to Cursorway the first time it starts.
+$profileOld = Join-Path $env:LOCALAPPDATA 'BarrierShare'
+$profileNew = Join-Path $env:LOCALAPPDATA 'Cursorway'
+$profile = $profileOld
+function Get-Profile {
+    if ((Test-Path -LiteralPath $profileOld) -and (Test-Path -LiteralPath $profileNew)) { throw 'Both the old and the new settings folder exist.' }
+    if (Test-Path -LiteralPath $profileNew) { return $profileNew } else { return $profileOld }
+}
+$programFilesNew = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Cursorway'
 # 0.3.9 installs for all users (administrator) with the Barrier Share service.
 $uninstallKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1'
 $machineKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1'
 $shortcuts = @(
+    (Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Cursorway.lnk'),
+    (Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Cursorway.lnk')
+)
+# Shortcuts from before the rename must not remain next to the new ones.
+$oldShortcuts = @(
     (Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Barrier Share.lnk'),
     (Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Barrier Share.lnk')
 )
 if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Refusing to replace an existing Barrier Share service.' }
-foreach ($path in @($profile, $uninstallKey, $machineKey) + $shortcuts) {
+foreach ($path in @($profileOld, $profileNew, $programFilesNew, $uninstallKey, $machineKey) + $shortcuts + $oldShortcuts) {
     if (Test-Path -LiteralPath $path) { throw "Refusing to alter an existing profile, installation or shortcut: $path" }
 }
 $installDir = Join-Path $TestRoot '安裝測試 with spaces\Barrier Share'
@@ -50,14 +65,14 @@ function Invoke-TestProcess([string]$File, [string[]]$Arguments, [int]$TimeoutSe
     } finally { $process.Dispose() }
 }
 function Get-ProfileHashes {
-    $result = @{}
-    foreach ($file in Get-ChildItem -LiteralPath $profile -File -Recurse) {
-        $result[[IO.Path]::GetRelativePath($profile, $file.FullName)] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+    $result = @{}; $current = Get-Profile
+    foreach ($file in Get-ChildItem -LiteralPath $current -File -Recurse) {
+        $result[[IO.Path]::GetRelativePath($current, $file.FullName)] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
     }
     return $result
 }
 function Assert-Profile([hashtable]$Expected) {
-    if (-not (Test-Path -LiteralPath $profile)) { throw 'Installer removed the existing profile.' }
+    if (-not (Test-Path -LiteralPath (Get-Profile))) { throw 'Installer removed the existing profile.' }
     $actual = Get-ProfileHashes
     if ($actual.Count -ne $Expected.Count) { throw 'Installer changed the profile file inventory.' }
     foreach ($name in $Expected.Keys) {
@@ -83,7 +98,7 @@ function Assert-Installed {
     $entry = Get-ItemProperty -LiteralPath $uninstallKey
     $fileVersion = [Version][Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $installDir 'BarrierShare.exe')).FileVersion
     $expectedVersion = '{0}.{1}.{2}' -f $fileVersion.Major, $fileVersion.Minor, $fileVersion.Build
-    if (-not $entry.DisplayName.StartsWith('Barrier Share') -or $entry.DisplayVersion -ne $expectedVersion -or $entry.InstallLocation.TrimEnd('\') -ine $installDir.TrimEnd('\')) {
+    if (-not $entry.DisplayName.StartsWith('Cursorway') -or $entry.DisplayVersion -ne $expectedVersion -or $entry.InstallLocation.TrimEnd('\') -ine $installDir.TrimEnd('\')) {
         throw 'Per-user uninstall metadata does not match the installed application.'
     }
     $uninstaller = Join-Path $installDir 'unins000.exe'
@@ -112,15 +127,42 @@ function Assert-Installed {
             }
         }
     } finally { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($shell) }
+    foreach ($path in $oldShortcuts) { if (Test-Path -LiteralPath $path) { throw "A shortcut from before the rename remains: $path" } }
+    # One installation only: no second uninstall entry under another key for this app.
+    $entries = @(Get-ChildItem 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue |
+        ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath } | Where-Object { $_.PSObject.Properties['DisplayName'] -and ($_.DisplayName -like 'Cursorway*' -or $_.DisplayName -like 'Barrier Share*') })
+    if ($entries.Count -ne 1) { throw "Expected one installation entry, found $($entries.Count): $(($entries | ForEach-Object DisplayName) -join ', ')" }
 }
 
 Set-Content -LiteralPath (Join-Path $profile 'settings.xml') -Value '<settings host="true" address="" position="left" />' -Encoding utf8
 Set-Content -LiteralPath (Join-Path $profile 'preserve-marker.txt') -Value ('before install ' + [Guid]::NewGuid()) -Encoding utf8
 $beforeInstall = Get-ProfileHashes
 $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$installDir", '/TASKS=desktopicon')
-Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$(Join-Path $TestRoot 'install.log')")
-Assert-Installed
-Assert-Profile $beforeInstall
+if ($PreviousInstaller) {
+    # Upgrade from a release made before the rename: install it, then the new installer without /DIR.
+    # The new version must stay in the previous folder, replace its shortcuts and keep settings and pairing.
+    Invoke-TestProcess (Resolve-Path -LiteralPath $PreviousInstaller).Path ($arguments + "/LOG=$(Join-Path $TestRoot 'install-previous.log')")
+    foreach ($path in $oldShortcuts) { if (-not (Test-Path -LiteralPath $path)) { throw "The previous release did not create its shortcut: $path" } }
+    Assert-Profile $beforeInstall
+    # Stand-in for the service's state (the service rewrites it from the profile on every start).
+    New-Item -ItemType Directory -Force -Path (Join-Path $installDir 'state\upgrade-test') | Out-Null
+    Set-Content -LiteralPath (Join-Path $installDir 'state\upgrade-test\marker.txt') -Value 'state from before the rename' -Encoding utf8
+    $oldDir = $installDir
+    Invoke-TestProcess $InstallerPath (@('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=desktopicon') + "/LOG=$(Join-Path $TestRoot 'upgrade.log')")
+    # The installation moves to Program Files\Cursorway; the old folder is gone once its state was copied.
+    $installDir = $programFilesNew
+    if (Test-Path -LiteralPath $oldDir) { throw "Upgrade left the old installation folder: $oldDir" }
+    if ((Get-Content -LiteralPath (Join-Path $installDir 'state\upgrade-test\marker.txt') -Raw).Trim() -ne 'state from before the rename') { throw 'Upgrade did not carry the service state over.' }
+    $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$installDir", '/TASKS=desktopicon')
+    Assert-Installed
+    Assert-Profile $beforeInstall
+    if (@(Get-CimInstance Win32_Service | Where-Object { $_.DisplayName -like 'Cursorway*' -or $_.DisplayName -like 'Barrier Share*' }).Count -ne 1) { throw 'Expected one service after the upgrade.' }
+    Write-Output '::notice title=Upgrade::from the previous release: moved to Program Files\Cursorway, old folder removed, state kept, one entry, one service, new shortcuts only, profile kept'
+} else {
+    Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$(Join-Path $TestRoot 'install.log')")
+    Assert-Installed
+    Assert-Profile $beforeInstall
+}
 
 # The service starts a host core with the winlogon token of the console session, from data sent
 # over its pipe, and stops it again. The core then also serves the sign-in screen and UAC prompts.
@@ -134,9 +176,10 @@ function Invoke-Service([string]$Line) {
         return [Text.Encoding]::UTF8.GetString($reply.ToArray()).Split("`t")
     } finally { $pipe.Dispose() }
 }
-function Get-FirewallPrograms { @(Get-NetFirewallRule -DisplayName 'Barrier Share' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | ForEach-Object { [IO.Path]::GetFileName($_.Program) } | Sort-Object) }
+function Get-FirewallPrograms { @(Get-NetFirewallRule -DisplayName 'Cursorway' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | ForEach-Object { [IO.Path]::GetFileName($_.Program) } | Sort-Object) }
 if ((Get-FirewallPrograms) -join ',' -ne 'barrier-link.exe,barrierc.exe,barriers.exe') { throw "Installer did not allow the programs through the firewall: $((Get-FirewallPrograms) -join ',')" }
-foreach ($rule in Get-NetFirewallRule -DisplayName 'Barrier Share') {
+if (Get-NetFirewallRule -DisplayName 'Barrier Share' -ErrorAction SilentlyContinue) { throw 'A firewall rule from before the rename remains.' }
+foreach ($rule in Get-NetFirewallRule -DisplayName 'Cursorway') {
     if ([string]$rule.Profile -ne 'Domain, Private') { throw "Firewall rule profile is $($rule.Profile), expected Domain, Private." }
     if (@(($rule | Get-NetFirewallAddressFilter).RemoteAddress) -join ',' -ne 'Any') { throw 'Firewall rule limits remote addresses; manual addresses across subnets would be blocked.' }
 }
@@ -194,11 +237,12 @@ if ($reply[0] -ne 'ERROR') { throw 'Service accepted a relative profile folder.'
 $startupRoot = Join-Path $TestRoot '已安裝啟動 startup'
 Invoke-TestProcess $shortcuts[0] @('--startup-test', $startupRoot) 45 $true
 if (-not (Test-Path -LiteralPath (Join-Path $startupRoot 'STARTUP-PASS.txt'))) { throw 'Installed Start Menu shortcut did not pass normal startup/discovery checks.' }
+if ((Test-Path -LiteralPath $profileOld) -or -not (Test-Path -LiteralPath $profileNew)) { throw 'The app did not move LocalAppData\BarrierShare to LocalAppData\Cursorway on its first start.' }
 Assert-Profile $beforeInstall
 
 # Reinstall over existing files exercises the updater path without inventing an older release.
-Set-Content -LiteralPath (Join-Path $profile 'preserve-marker.txt') -Value ('before reinstall ' + [Guid]::NewGuid()) -Encoding utf8
-Set-Content -LiteralPath (Join-Path $profile 'settings.xml') -Value '<settings host="false" address="192.168.1.2" position="up" />' -Encoding utf8
+Set-Content -LiteralPath (Join-Path (Get-Profile) 'preserve-marker.txt') -Value ('before reinstall ' + [Guid]::NewGuid()) -Encoding utf8
+Set-Content -LiteralPath (Join-Path (Get-Profile) 'settings.xml') -Value '<settings host="false" address="192.168.1.2" position="up" />' -Encoding utf8
 $beforeReinstall = Get-ProfileHashes
 Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$(Join-Path $TestRoot 'reinstall.log')")
 Assert-Installed
@@ -210,7 +254,7 @@ foreach ($file in Get-ChildItem -LiteralPath $PackageDir -File -Recurse) {
 if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Uninstall left the Barrier Share service.' }
 if (@(Get-FirewallPrograms).Count -ne 0) { throw 'Uninstall left the firewall rules.' }
 if (Test-Path -LiteralPath (Join-Path $installDir 'state')) { throw 'Uninstall left the service state folder.' }
-foreach ($path in @($uninstallKey, $machineKey) + $shortcuts) {
+foreach ($path in @($uninstallKey, $machineKey) + $shortcuts + $oldShortcuts) {
     if (Test-Path -LiteralPath $path) { throw "Uninstall left registration or shortcut: $path" }
 }
 Assert-Profile $beforeReinstall
@@ -250,5 +294,5 @@ if (-not $second.WaitForExit(1000)) { throw 'Uninstall left the app running.' }
 if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Uninstall left the launch-at-sign-in entry.' }
 if (Test-Path -LiteralPath $app) { throw 'Uninstall could not remove the app that was running.' }
 
-Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Administrator silent installation with the Barrier Share service (runs the core as the signed-in user, switches to SYSTEM for a secure desktop and back, stops it; rejects incomplete data) to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration; updating over a running background copy closes it through the quit signal and starts it again; uninstall closes a running copy and removes the launch-at-sign-in entry. This is a same-version reinstall, not an old-release migration test.' -Encoding utf8
+Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Administrator silent installation with the Barrier Share service (runs the core as the signed-in user, switches to SYSTEM for a secure desktop and back, stops it; rejects incomplete data) to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration; updating over a running background copy closes it through the quit signal and starts it again; uninstall closes a running copy and removes the launch-at-sign-in entry. With -PreviousInstaller it first upgrades from a release made before the rename (one folder, one entry, new shortcuts only, profile kept).' -Encoding utf8
 Get-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt')

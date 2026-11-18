@@ -7,10 +7,10 @@ Cursorway（原名 Barrier Share）— Windows／Mac 共用鍵盤滑鼠與雙向
 
 搜尋與配對
 1. 停止舊版連線程式，再開啟新版。
-   Windows：開啟 BarrierShare-Setup-0.3.14-x64.exe 安裝，再從開始功能表開啟 Barrier Share。
-   安裝需要系統管理員權限（會詢問一次「是否允許」），裝在 Program Files，並安裝「Barrier Share」背景服務。
+   Windows：開啟 Cursorway-Setup-x.y.z-x64.exe 安裝，再從開始功能表開啟 Cursorway。從 Barrier Share 升級時會自動搬到 Program Files\Cursorway，配對和設定都會保留。
+   安裝需要系統管理員權限（會詢問一次「是否允許」），裝在 Program Files，並安裝「Cursorway」背景服務。
    安裝程式會自動關閉執行中的舊版並移除 0.3.8 以前的個人安裝，裝完再開啟；配對及設定都會保留。
-   也可使用可攜 ZIP，解壓後雙擊 BarrierShare.exe。
+   也可使用可攜 ZIP（Cursorway-x.y.z-x64-portable.zip），解壓後雙擊 BarrierShare.exe。
    Mac：解壓縮後將 Cursorway.app 放到「應用程式」，再開啟（0.3.20 以前叫 Barrier Share.app）。
    Mac 測試版未公證，若被阻擋，請在「系統設定 → 隱私權與安全性」允許開啟。
 2. 有實體滑鼠鍵盤的那台選「主控端」，另一台選「接收端」。
@@ -22,7 +22,13 @@ Cursorway（原名 Barrier Share）— Windows／Mac 共用鍵盤滑鼠與雙向
    主控端可配對多台接收端，用「排列螢幕」決定位置；接收端一次跟隨一台主控端。角色不限制檔案複製方向。
 5. Mac 首次需允許「區域網路」、「輔助使用」及「輸入監控」。若系統列出 barriers／barrierc，也需允許。
    按「權限設定」可開啟設定；必要時重開程式。
-   Windows 安裝程式會自動允許 Barrier Share 使用私人／網域網路；若網路被設為「公用」，請改成「私人」。
+   Windows 安裝程式會自動允許 Cursorway 使用私人／網域網路；若網路被設為「公用」，請改成「私人」。
+
+0.3.21 更新（Windows）
+- 程式改名為 Cursorway。視窗標題、系統匣、開始功能表、桌面捷徑、安裝程式和背景服務都改用新名稱；下載檔名改成 Cursorway-Setup-x.y.z-x64.exe 和 Cursorway-x.y.z-x64-portable.zip。
+- 從 Barrier Share 升級：直接執行新的安裝程式。程式會搬到 Program Files\Cursorway，舊的 Program Files\Barrier Share 會在搬好後刪除；開始功能表和桌面只留 Cursorway 的捷徑，控制台只有一個安裝項目。
+- 設定資料夾從 %LOCALAPPDATA%\BarrierShare 自動搬到 Cursorway（第一次開啟時）；配對和設定都會保留。
+- 「進階設定」的「切走時保留這台的視窗焦點」在 Windows 主控端改為真正生效，各項說明也重寫得更清楚。
 
 0.3.21 更新（Mac）
 - 程式改名為 Cursorway。App 改叫 Cursorway.app，視窗標題、選單和通知也一起改名。
@@ -30,7 +36,7 @@ Cursorway（原名 Barrier Share）— Windows／Mac 共用鍵盤滑鼠與雙向
 - 設定資料夾也從 ~/Library/Application Support/BarrierShare 自動搬到 Cursorway；配對、設定和「輔助使用」「輸入監控」權限都會保留。
 
 0.3.20 更新（Windows）
-- 當接收端時，主控端的滑鼠也能操作安裝程式這類以系統管理員身分執行的視窗，不需要用系統管理員身分開啟 Barrier Share（只適用安裝版）。
+- 當接收端時，主控端的滑鼠也能操作安裝程式這類以系統管理員身分執行的視窗，不需要用系統管理員身分開啟 Cursorway（只適用安裝版）。
 - 修正顯示比例 150% 等設定下主視窗跑版的問題。
 
 0.3.20 更新（Mac）
@@ -262,7 +268,7 @@ Mac 更新沿用固定簽章身分；從臨時簽章切換時仍可能需要重�
 關閉視窗後仍在系統匣／Mac 選單列執行，選「結束」才停止。
 接收檔案暫存會保留供貼上；按「暫停」後可按「清除暫存」。
 清除會使尚未貼上的接收檔案失效，已貼到其他資料夾的檔案不受影響。
-Windows 設定：%LOCALAPPDATA%\BarrierShare
+Windows 設定：%LOCALAPPDATA%\Cursorway（舊版的 %LOCALAPPDATA%\BarrierShare 會在第一次開啟時自動搬過來）
 Mac 設定：~/Library/Application Support/Cursorway（0.3.20 以前是 BarrierShare，升級時自動搬過去）
 日誌位於上述資料夾的 profile-server/server.log 或 profile/windows.log（Mac 為 mac.log）。
 

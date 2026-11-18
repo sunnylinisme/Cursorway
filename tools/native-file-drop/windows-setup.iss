@@ -12,15 +12,17 @@
 ; No finish page to forget: the app starts on its own and setup closes.
 DisableFinishedPage=yes
 AppId=org.barriershare.desktop
-AppName=Barrier Share
+AppName=Cursorway
 AppVersion={#AppVersion}
-AppPublisher=Barrier Share contributors
+AppPublisher=Cursorway contributors
 AppPublisherURL=https://github.com/sunnylinisme/barrier
 AppSupportURL=https://github.com/sunnylinisme/barrier
-DefaultDirName={autopf}\Barrier Share
-DefaultGroupName=Barrier Share
+; Installs from before the rename (Program Files\Barrier Share) move here; see MoveOldFolder.
+DefaultDirName={autopf}\Cursorway
+UsePreviousAppDir=no
+DefaultGroupName=Cursorway
 DisableProgramGroupPage=yes
-; Administrator rights install the Barrier Share service, which lets the other computer
+; Administrator rights install the Cursorway service, which lets the other computer
 ; control the sign-in screen, the lock screen and UAC prompts.
 PrivilegesRequired=admin
 ArchitecturesAllowed=x64os
@@ -32,9 +34,9 @@ RestartApplications=no
 WizardStyle=modern
 ShowLanguageDialog=auto
 OutputDir={#OutputDir}
-OutputBaseFilename=BarrierShare-Setup-{#AppVersion}-x64
+OutputBaseFilename=Cursorway-Setup-{#AppVersion}-x64
 SetupIconFile={#AddBackslash(SourcePath)}icons\BarrierShare.ico
-UninstallDisplayName=Barrier Share
+UninstallDisplayName=Cursorway
 UninstallDisplayIcon={app}\BarrierShare.exe
 VersionInfoVersion={#AppVersion}.0
 Compression=lzma2
@@ -45,8 +47,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "chinesetraditional"; MessagesFile: "{#AddBackslash(SourcePath)}installer-languages\ChineseTraditional.isl"
 
 [CustomMessages]
-english.CloseFailed=Barrier Share could not be closed. Choose Exit from its notification-area icon and run Setup again.
-chinesetraditional.CloseFailed=無法自動關閉 Barrier Share。請從右下角系統匣的圖示選擇「結束」，再重新執行安裝程式。
+english.CloseFailed=Cursorway could not be closed. Choose Exit from its notification-area icon and run Setup again.
+chinesetraditional.CloseFailed=無法自動關閉 Cursorway。請從右下角系統匣的圖示選擇「結束」，再重新執行安裝程式。
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
@@ -63,9 +65,14 @@ Source: "{#PackageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\COMMIT.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\licenses\*.txt"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
+[InstallDelete]
+; Shortcuts from before the rename, so the Start menu and desktop show one entry.
+Type: files; Name: "{autoprograms}\Barrier Share.lnk"
+Type: files; Name: "{autodesktop}\Barrier Share.lnk"
+
 [Icons]
-Name: "{autoprograms}\Barrier Share"; Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\Barrier Share"; Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\Cursorway"; Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\Cursorway"; Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Registry]
 ; The app writes this value when "launch at sign-in" is ticked; uninstall removes it without ever creating it.
@@ -77,7 +84,7 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: WasRunning
 Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Flags: nowait skipifsilent runasoriginaluser; Check: not WasRunning
 
-; Settings and pairing live in LocalAppData\BarrierShare and are kept. The service's copy of them
+; Settings and pairing live in LocalAppData\Cursorway (moved from LocalAppData\BarrierShare) and are kept. The service's copy of them
 ; (pairing identity, screen settings, logs, received files) lives in {app}\state and goes with the app.
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\state"
@@ -89,6 +96,8 @@ const
   QuitEventName = 'Local\BarrierShare.Quit';
 var
   Running: Boolean;
+  { Where the app was installed before this setup ran (another folder before the rename). }
+  OldDir: String;
 
 function OpenEvent(Access: Cardinal; Inherit: Integer; Name: String): Cardinal; external 'OpenEventW@kernel32.dll stdcall';
 function SetEvent(Handle: Cardinal): Integer; external 'SetEvent@kernel32.dll stdcall';
@@ -170,6 +179,7 @@ end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
+  if not RegQueryStringValue(HKLM, 'Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1', 'Inno Setup: App Path', OldDir) then OldDir := '';
   CloseBarrierShare();
   if CheckForMutexes(AppMutexName) then begin
     Result := ExpandConstant('{cm:CloseFailed}');
@@ -191,6 +201,7 @@ end;
 procedure RemoveFirewallRules();
 begin
   Netsh('advfirewall firewall delete rule name="Barrier Share"');
+  Netsh('advfirewall firewall delete rule name="Cursorway"');
 end;
 
 { Without rules Windows asks on first use, and a core the service starts gets no prompt at all,
@@ -204,7 +215,28 @@ begin
   SetArrayLength(Names, 3);
   Names[0] := 'barriers.exe'; Names[1] := 'barrierc.exe'; Names[2] := 'barrier-link.exe';
   for I := 0 to 2 do
-    Netsh('advfirewall firewall add rule name="Barrier Share" dir=in action=allow profile=private,domain program="' + ExpandConstant('{app}\') + Names[I] + '"');
+    Netsh('advfirewall firewall add rule name="Cursorway" dir=in action=allow profile=private,domain program="' + ExpandConstant('{app}\') + Names[I] + '"');
+end;
+
+{ An install from before the rename lived in another folder: bring the service's state over (the
+  service and the app are stopped by now), and remove the old folder only once that copy succeeded.
+  Pairing and settings themselves live in LocalAppData; the app moves that folder when it starts. }
+procedure MoveOldFolder();
+var
+  NewDir: String;
+  Code: Integer;
+begin
+  NewDir := ExpandConstant('{app}');
+  if (OldDir = '') or (CompareText(RemoveBackslashUnlessRoot(OldDir), RemoveBackslashUnlessRoot(NewDir)) = 0) or not DirExists(OldDir) then exit;
+  Log('Moving the installation from ' + OldDir + ' to ' + NewDir);
+  if DirExists(OldDir + '\state') then begin
+    { robocopy succeeds with exit codes below 8; /COPY:DATS keeps the folders' permissions. }
+    if not Exec(ExpandConstant('{sys}\robocopy.exe'), '"' + OldDir + '\state" "' + NewDir + '\state" /E /COPY:DATS /R:1 /W:1 /NP /NFL /NDL', '', SW_HIDE, ewWaitUntilTerminated, Code) or (Code >= 8) then begin
+      Log('Copying the service state failed (robocopy ' + IntToStr(Code) + '); keeping ' + OldDir);
+      exit;
+    end;
+  end;
+  if DelTree(OldDir, True, True, True) then Log('Removed ' + OldDir) else Log('Could not remove all of ' + OldDir);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -212,12 +244,13 @@ var
   Binary: String;
 begin
   if CurStep <> ssPostInstall then exit;
+  MoveOldFolder();
   AddFirewallRules();
   { sc takes binPath= as one argument; the quotes the service manager needs around a path with
     spaces are escaped inside it. }
   Binary := '\"' + ExpandConstant('{app}\barrier-service.exe') + '\"';
-  if Sc('create BarrierShare binPath= "' + Binary + '" start= auto DisplayName= "Barrier Share"') <> 0 then
-    Sc('config BarrierShare binPath= "' + Binary + '" start= auto');
+  if Sc('create BarrierShare binPath= "' + Binary + '" start= auto DisplayName= "Cursorway"') <> 0 then
+    Sc('config BarrierShare binPath= "' + Binary + '" start= auto DisplayName= "Cursorway"');
   Sc('description BarrierShare "Lets the paired computer control the sign-in screen, lock screen and UAC prompts."');
   Sc('failure BarrierShare reset= 86400 actions= restart/5000/restart/5000/restart/30000');
   Sc('start BarrierShare');

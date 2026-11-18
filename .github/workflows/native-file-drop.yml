@@ -176,7 +176,7 @@ jobs:
             # Upgrade from the last release made before the rename (public download, no token needed).
             $previous = "$PWD/build/previous-setup.exe"
             Invoke-WebRequest -UseBasicParsing "https://github.com/sunnylinisme/barrier/releases/download/v0.3.20/BarrierShare-Setup-0.3.20-x64.exe" -OutFile $previous
-            & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath "$PWD/build/Cursorway-Setup-0.3.20-x64.exe" -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test" -PreviousInstaller $previous
+            & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath "$PWD/build/Cursorway-Setup-0.3.21-x64.exe" -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test" -PreviousInstaller $previous
           } catch {
             # Annotations are readable on the checks page without signing in; logs and artifacts are not.
             $reason = ("$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" -replace "`r?`n", ' ')
@@ -201,7 +201,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: barriershare-windows-setup
-          path: build/Cursorway-Setup-0.3.20-x64.exe
+          path: build/Cursorway-Setup-0.3.21-x64.exe
           if-no-files-found: error
           retention-days: 30
       - uses: actions/upload-artifact@v4

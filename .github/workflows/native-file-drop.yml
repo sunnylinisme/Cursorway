@@ -208,8 +208,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   release:
+    # The Mac app is built, tested and signed on the Mac by release-macos.sh, which puts the
+    # signed ZIP in the draft; GitHub's Mac runners are often unavailable, so only Windows gates it.
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [macos, windows]
+    needs: [windows]
     runs-on: ubuntu-latest
     permissions:
       contents: write

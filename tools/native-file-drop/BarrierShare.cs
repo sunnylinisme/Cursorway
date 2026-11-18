@@ -886,7 +886,7 @@ sealed class ShareWindow : Form
     readonly Dictionary<string, NearbyDevice> devices = new Dictionary<string, NearbyDevice>();
     readonly System.Windows.Forms.Timer retry = new System.Windows.Forms.Timer { Interval = 3000 };
     readonly bool testing;
-    readonly List<ShareCard> cards = new List<ShareCard>();
+    readonly List<ShareCard> cards = new List<ShareCard>(); readonly List<Rectangle> cardRects = new List<Rectangle>();
     Process backend, link;
     // Set while the service runs the core; its log file is followed instead of the process output.
     // While the service runs the core: its log as the signed-in user (own profile), as SYSTEM
@@ -933,29 +933,46 @@ sealed class ShareWindow : Form
     readonly ShareAutoPaste autoPaste = new ShareAutoPaste();
     // Set by --background (sign-in launch): start in the notification area without showing the window.
     public bool StartHidden;
+    // Test only: lay the window out as if Windows were scaled by this factor (positions and sizes, not fonts).
+    internal static float LayoutScale = 1F;
+    internal static SizeF Dpi96 { get { return new SizeF(96F / LayoutScale, 96F / LayoutScale); } }
     bool Host { get { return role.SelectedIndex == 0; } }
     protected override void SetVisibleCore(bool value)
     {
         if (value && StartHidden && !IsHandleCreated) { StartHidden = false; CreateHandle(); base.SetVisibleCore(false); BeginInvoke((Action)Startup); return; }
         base.SetVisibleCore(value);
     }
+    // Test: at a layout scale k, card contents sit at k times their 96-dpi offsets and the list's overlay matches the list.
+    internal string ScaledLayoutProblem()
+    {
+        float k = CurrentAutoScaleDimensions.Height / 96F * LayoutScale;
+        Func<int, int, bool> near = (actual, logical) => Math.Abs(actual - logical * k) <= 2;
+        if (!near(badge.Top, 102 - 84) || !near(title.Top, 130 - 84) || !near(status.Top, 164 - 84) || !near(stop.Top, 208 - 84))
+            return "card contents shifted: badge " + badge.Top + ", title " + title.Top + ", status " + status.Top + ", buttons " + stop.Top + " (scale " + k + ")";
+        if (filter.Parent != body || search.Parent != body) return "controls below the card were put inside it";
+        UpdateControls();
+        if (emptyNearby.Bounds != nearby.Bounds) return "empty-state box " + emptyNearby.Bounds + " does not cover the list " + nearby.Bounds;
+        return null;
+    }
     // Lets the installer close a running copy cleanly so cursors and both helpers are restored.
     public void Quit() { if (IsHandleCreated) BeginInvoke((Action)delegate { closing = true; Close(); }); }
     void At(Control c, int x, int y, int width, int height)
     {
+        // Positions are in 96-dpi units. A card is scaled as soon as it is added (at 150% its Bounds are
+        // already 1.5x), so controls inside it are placed against the card's unscaled rectangle.
         var bounds = new Rectangle(x,y,width,height);
-        if (!(c is ShareCard)) foreach (var card in cards) if (card.Bounds.Contains(bounds)) {
-            c.SetBounds(x-card.Left,y-card.Top,width,height); card.Controls.Add(c); c.BringToFront(); return;
+        if (!(c is ShareCard)) for (int i = 0; i < cards.Count; ++i) if (cardRects[i].Contains(bounds)) {
+            c.SetBounds(x-cardRects[i].Left,y-cardRects[i].Top,width,height); cards[i].Controls.Add(c); c.BringToFront(); return;
         }
         c.Bounds=bounds; body.Controls.Add(c); c.BringToFront();
-        if (c is ShareCard) { c.TabIndex=cards.Count; cards.Add((ShareCard)c); }
+        if (c is ShareCard) { c.TabIndex=cards.Count; cards.Add((ShareCard)c); cardRects.Add(bounds); }
     }
     void LabelAt(string text, int x, int y, int width) { At(new Label { Text = text }, x, y, width, 26); }
     public ShareWindow(bool selfTest = false)
     {
         SuspendLayout();
         testing = selfTest; Text = "Barrier Share " + ShareUpdate.Label;
-        Font = new Font("Microsoft JhengHei UI", 11F); AutoScaleDimensions=new SizeF(96F,96F); AutoScaleMode=AutoScaleMode.Dpi;
+        Font = new Font("Microsoft JhengHei UI", 11F); AutoScaleDimensions=Dpi96; AutoScaleMode=AutoScaleMode.Dpi;
         ClientSize = new Size(720, 608); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen; Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         // An update banner sits above everything; the window grows by its height while it shows.
@@ -1078,6 +1095,9 @@ sealed class ShareWindow : Form
         Microsoft.Win32.SystemEvents.UserPreferenceChanged += systemChanged;
         FormClosed += delegate { Microsoft.Win32.SystemEvents.UserPreferenceChanged -= systemChanged; };
         Shown += delegate {
+            // The scroll size was given in 96-dpi units; scale it like everything else.
+            float k = CurrentAutoScaleDimensions.Height / 96F * LayoutScale;
+            body.AutoScrollMinSize = new Size((int)(720 * k), (int)(608 * k));
             var available=Screen.FromControl(this).WorkingArea;
             if (Width>available.Width || Height>available.Height) { Size=new Size(Math.Min(Width,available.Width),Math.Min(Height,available.Height)); Location=available.Location; }
             Startup();
@@ -1315,7 +1335,7 @@ sealed class ShareWindow : Form
     bool AskRoleChange(string text, string action)
     {
         using (var dialog = new Form { Text = "Barrier Share", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false,
-            Font = new Font(Font.FontFamily, 10F), BackColor = Color.White, ClientSize = new Size(440, 168), AutoScaleDimensions = new SizeF(96F, 96F), AutoScaleMode = AutoScaleMode.Dpi }) {
+            Font = new Font(Font.FontFamily, 10F), BackColor = Color.White, ClientSize = new Size(440, 168), AutoScaleDimensions = ShareWindow.Dpi96, AutoScaleMode = AutoScaleMode.Dpi }) {
             dialog.Controls.Add(new Label { Text = text, Bounds = new Rectangle(22, 18, 396, 90), ForeColor = ShareStyle.Ink });
             var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(196, 116, 100, 34), DialogResult = DialogResult.Cancel };
             var ok = new ShareButton { Text = action, Primary = true, BackColor = Color.White, Bounds = new Rectangle(306, 116, 112, 34), DialogResult = DialogResult.OK };
@@ -1361,7 +1381,8 @@ sealed class ShareWindow : Form
         cancelSend.Visible = transferring; everyone.Visible = !transferring && peers.Count > 0;
         int unpaired = devices.Keys.Count(k => !peers.ContainsKey(k));
         emptyNearby.Text = filter.TextLength > 0 && unpaired > 0 ? "找不到符合的電腦" : !enabled ? "搜尋已暫停\r\n繼續共用後，會重新尋找附近電腦。" : peers.Count > 0 ? "沒有其他尚未配對的電腦\r\n已配對的電腦在上方「全部電腦」。" : Host ? "正在尋找接收端…\r\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端。\r\n請在另一台選擇「主控端」，發出配對邀請。";
-        nearby.Visible = nearby.Items.Count > 0; emptyNearby.Visible = !nearby.Visible;
+        // The empty-state box covers the list exactly (taken from the list, which scales correctly at any DPI).
+        emptyNearby.Bounds = nearby.Bounds; nearby.Visible = nearby.Items.Count > 0; emptyNearby.Visible = !nearby.Visible;
         nearbyCount.Text = unpaired > 0 ? unpaired + " 台尚未配對" : "";
         filter.Visible = unpaired > 6 || filter.TextLength > 0;
         var selected = SelectedDevice;
@@ -1467,7 +1488,7 @@ sealed class ShareWindow : Form
     {
         CloseConsent(); Show(); Activate(); consentId = message[1]; string id = consentId;
         bool request = message[0] == "REQUEST";
-        var dialog = new Form { Text = request ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(440, 372), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
+        var dialog = new Form { Text = request ? "收到配對邀請" : "核對配對碼", ClientSize = new Size(440, 372), BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions=ShareWindow.Dpi96, AutoScaleMode=AutoScaleMode.Dpi };
         consent = dialog;
         var left = new ComputerMark { BackColor = Color.White, Bounds = new Rectangle(150, 22, 44, 44) };
         var joint = new Label { Text = "⟷", ForeColor = ShareStyle.Faint, Font = new Font(Font.FontFamily, 14F), TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(198, 28, 44, 32) };
@@ -1609,7 +1630,7 @@ sealed class ShareWindow : Form
     internal void ShowDiagnostics()
     {
         if (diagnostics == null) {
-            diagnostics = new Form { Text="Barrier Share · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18, 18, 18, 22), BackColor=Color.White, AutoScaleDimensions=new SizeF(96F,96F), AutoScaleMode=AutoScaleMode.Dpi };
+            diagnostics = new Form { Text="Barrier Share · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18, 18, 18, 22), BackColor=Color.White, AutoScaleDimensions=ShareWindow.Dpi96, AutoScaleMode=AutoScaleMode.Dpi };
             details.Dock=DockStyle.Fill; diagnostics.Controls.Add(details);
             // A gap above the button and the window padding below it keep it off the log and the window edge.
             var bar = new Panel { Dock=DockStyle.Bottom, Height=50, BackColor=Color.White };
@@ -1811,7 +1832,7 @@ sealed class ShareWindow : Form
     // Grouped rows: a name and a short explanation on the left, the control on the right.
     internal Form BuildAdvanced(ShareAdvanced a, out Func<ShareAdvanced> read)
     {
-        var dialog = new Form { Text = "進階設定", ClientSize = new Size(568, 600), AutoScroll = true, BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions = new SizeF(96F, 96F), AutoScaleMode = AutoScaleMode.Dpi };
+        var dialog = new Form { Text = "進階設定", ClientSize = new Size(568, 600), AutoScroll = true, BackColor = Color.White, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 10F), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MaximizeBox = false, MinimizeBox = false, AutoScaleDimensions = ShareWindow.Dpi96, AutoScaleMode = AutoScaleMode.Dpi };
         const int W = 520; int y = 16;
         dialog.Controls.Add(new Label { Text = "進階設定", Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), Bounds = new Rectangle(24, y, W, 28) }); y += 30;
         dialog.Controls.Add(new Label { Text = Host ? "由這台（主控端）套用到所有螢幕；儲存後立即生效，不會斷線。" : "切換設定只在主控端生效；這台目前是接收端。", ForeColor = ShareStyle.Muted, Bounds = new Rectangle(24, y, W, 22) }); y += 32;
@@ -2040,7 +2061,7 @@ sealed class ShareTransferPopup : Form
         // so a paste pressed during the transfer would land in this window. WS_EX_TOPMOST is set instead.
         FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; StartPosition = FormStartPosition.Manual;
         BackColor = Color.White; ForeColor = ShareStyle.Ink; Font = new Font(font.FontFamily, 10F);
-        AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi; ClientSize = new Size(340, 96);
+        AutoScaleDimensions = ShareWindow.Dpi96; AutoScaleMode = AutoScaleMode.Dpi; ClientSize = new Size(340, 96);
         title.Font = new Font(font.FontFamily, 11F, FontStyle.Bold); title.Bounds = new Rectangle(16, 10, 308, 24);
         detail.ForeColor = ShareStyle.Muted; detail.Bounds = new Rectangle(16, 36, 308, 22); detail.AutoEllipsis = true;
         bar.Bounds = new Rectangle(16, 66, 196, 14);
@@ -2115,7 +2136,7 @@ sealed class ShareLayoutEditor : Form
     {
         Text = "排列螢幕"; Font = new Font(font.FontFamily, 10F); BackColor = Color.White; ForeColor = ShareStyle.Ink;
         FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent; MaximizeBox = MinimizeBox = false;
-        AutoScaleDimensions = new SizeF(96F, 96F); AutoScaleMode = AutoScaleMode.Dpi;
+        AutoScaleDimensions = ShareWindow.Dpi96; AutoScaleMode = AutoScaleMode.Dpi;
         int width = Cell * (Span * 2 + 1), height = Tall * (Span * 2 + 1);
         ClientSize = new Size(width + 248 + SystemInformation.VerticalScrollBarWidth, height + 168);
         Controls.Add(new Label { Text = "排列螢幕", Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), Bounds = new Rectangle(24, 14, width, 28) });
@@ -2323,6 +2344,26 @@ static class ShareProgram
     {
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
         if (args.Length == 2 && args[0] == "--self-test") return SelfTest(args[1]);
+        if (args.Length == 3 && args[0] == "--layout-scale") {
+            // Renders the main window laid out at another scale, to find controls placed outside the scaling.
+            ShareWindow.LayoutScale = float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture);
+            using (var window = new ShareWindow(true)) {
+                window.Show(); Application.DoEvents();
+                using (var bitmap = new Bitmap(window.Width, window.Height)) { window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, window.Size)); bitmap.Save(args[2]); }
+                var info = new StringBuilder("client " + window.ClientSize + "\n");
+                foreach (Control c in window.Controls) foreach (Control d in c.Controls.Cast<Control>().Concat(c.Controls.Cast<Control>().SelectMany(x => x.Controls.Cast<Control>())))
+                    info.Append(d.GetType().Name + " '" + d.Text + "' " + d.Bounds + " in " + d.Parent.GetType().Name + "\n");
+                File.WriteAllText(args[2] + ".txt", info.ToString());
+                Action<Form, string> shot = (form, name) => { form.Show(); Application.DoEvents(); using (var b = new Bitmap(form.Width, form.Height)) { form.DrawToBitmap(b, new Rectangle(Point.Empty, form.Size)); b.Save(args[2] + "." + name + ".png"); } form.Close(); };
+                Func<ShareAdvanced> read; shot(window.BuildAdvanced(ShareSettings.Advanced, out read), "advanced");
+                string fa = "v2:sha256:" + new string('a', 64), fb = "v2:sha256:" + new string('b', 64);
+                ShareSettings.Receivers = new List<string> { fa, fb };
+                shot(new ShareLayoutEditor(new Dictionary<string, string> { { fa, "書房 Windows" }, { fb, "MacBook Air" } }, window.Font), "layout");
+                ShareSettings.Receivers = new List<string>();
+                window.Close();
+            }
+            return 0;
+        }
         // An elevated window cannot be controlled by the other computer: the core injects input with the
         // user's normal rights and Windows blocks that for higher-integrity windows. Start again unelevated.
         if (args.Length == 0 && ShareElevation.Relaunch()) return 0;
@@ -2491,6 +2532,17 @@ static class ShareProgram
             var legacy = ShareUpdate.Newer(releases.Replace("\"v0.3.11\"", "\"x0.3.11\""), new Version(0, 3, 7));
             if (legacy == null || !legacy.Url.EndsWith("/windows-v0.3.9")) throw new Exception("Update selection dropped legacy Windows releases");
             if (ShareUpdate.Newer(releases, new Version(0, 3, 11)) != null || ShareUpdate.Newer("{\"message\":\"rate limited\"}", ShareUpdate.Current) != null) throw new Exception("Update reported without a newer release");
+            // Laid out at 150%: everything keeps its place relative to the card (a card scales as soon as it is added).
+            ShareWindow.LayoutScale = 1.5F;
+            try {
+                using (var scaled = new ShareWindow(true)) {
+                    scaled.Show(); Application.DoEvents();
+                    string problem = scaled.ScaledLayoutProblem();
+                    using (var bitmap = new Bitmap(scaled.Width, scaled.Height)) { scaled.DrawToBitmap(bitmap, new Rectangle(Point.Empty, scaled.Size)); bitmap.Save(Path.Combine(directory, "gui-scaled-150.png")); }
+                    if (problem != null) throw new Exception("Main window at 150%: " + problem);
+                    scaled.Close();
+                }
+            } finally { ShareWindow.LayoutScale = 1F; }
             using (var window = new ShareWindow(true)) {
                 window.Show(); Application.DoEvents(); window.TestDiscovery(directory);
                 window.ShowUpdate(found); Application.DoEvents();

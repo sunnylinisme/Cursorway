@@ -1,4 +1,4 @@
-name: Barrier Share desktop
+name: Cursorway desktop
 on:
   pull_request:
     paths: ['src/**', 'tools/native-file-drop/**', 'CMakeLists.txt', '.github/workflows/native-file-drop.yml']
@@ -232,8 +232,10 @@ jobs:
           version="${TAG#v}"
           grep -q "#define AppVersion \"$version\"" tools/native-file-drop/windows-setup.iss || { echo "Tag $TAG does not match windows-setup.iss"; exit 1; }
           grep -q "CFBundleShortVersionString='$version'" tools/native-file-drop/package-macos.sh || { echo "Tag $TAG does not match package-macos.sh"; exit 1; }
-          test -f "release/BarrierShare-Setup-$version-x64.exe"
-          mv release/barrier-cross-drop-windows-x64.zip "release/BarrierShare-$version-x64-portable.zip"
+          # Downloads are named Cursorway-*; the Windows build may still produce BarrierShare-Setup-*.
+          setup=$(ls release/*Setup-$version-x64.exe | head -1); test -f "$setup"
+          [ "$setup" = "release/Cursorway-Setup-$version-x64.exe" ] || mv "$setup" "release/Cursorway-Setup-$version-x64.exe"
+          mv release/barrier-cross-drop-windows-x64.zip "release/Cursorway-$version-x64-portable.zip"
           # release-macos.sh creates the draft with the signed Mac ZIP right after pushing the tag.
           for attempt in $(seq 1 20); do
             draft=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || true)
@@ -241,8 +243,8 @@ jobs:
             sleep 30
           done
           [ "$draft" = "true" ] || { echo "No draft release for $TAG; run release-macos.sh on the Mac first"; exit 1; }
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -qx "BarrierShare-$version-macos-arm64.zip" || { echo "Draft $TAG has no Mac ZIP"; exit 1; }
-          gh release upload "$TAG" "release/BarrierShare-Setup-$version-x64.exe" "release/BarrierShare-$version-x64-portable.zip" --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' | grep -qx "Cursorway-$version-macos-arm64.zip" || { echo "Draft $TAG has no Mac ZIP"; exit 1; }
+          gh release upload "$TAG" "release/Cursorway-Setup-$version-x64.exe" "release/Cursorway-$version-x64-portable.zip" --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
   test-build:
     # Every passing Windows build of this repository's PR branch replaces the files of the
@@ -269,11 +271,12 @@ jobs:
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           version=$(sed -n 's/^#define AppVersion "\(.*\)"/\1/p' tools/native-file-drop/windows-setup.iss)
-          test -f "release/BarrierShare-Setup-$version-x64.exe"
-          mv release/barrier-cross-drop-windows-x64.zip "release/BarrierShare-$version-x64-portable.zip"
-          printf '測試版，不是正式發布：%s（commit %s）。\n\n只給驗收用，程式的新版通知不會提示這個版本。\n- Windows：下載 BarrierShare-Setup-%s-x64.exe 直接執行（安裝版），或可攜 ZIP。\n- Mac 測試版在 Mac 本機用固定簽章建置，不放在這裡。\n\nCI：%s\n' \
+          setup=$(ls release/*Setup-$version-x64.exe | head -1); test -f "$setup"
+          [ "$setup" = "release/Cursorway-Setup-$version-x64.exe" ] || mv "$setup" "release/Cursorway-Setup-$version-x64.exe"
+          mv release/barrier-cross-drop-windows-x64.zip "release/Cursorway-$version-x64-portable.zip"
+          printf '測試版，不是正式發布：%s（commit %s）。\n\n只給驗收用，程式的新版通知不會提示這個版本。\n- Windows：下載 Cursorway-Setup-%s-x64.exe 直接執行（安裝版），或可攜 ZIP。\n- Mac 測試版在 Mac 本機用固定簽章建置，不放在這裡。\n\nCI：%s\n' \
             "$version" "${SHA:0:8}" "$version" "$RUN" > notes.txt
           gh release delete test-build --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
-          gh release create test-build "release/BarrierShare-Setup-$version-x64.exe" "release/BarrierShare-$version-x64-portable.zip" \
+          gh release create test-build "release/Cursorway-Setup-$version-x64.exe" "release/Cursorway-$version-x64-portable.zip" \
             --repo "$GITHUB_REPOSITORY" --target "$SHA" --prerelease --latest=false \
-            --title "Barrier Share $version 測試版（${SHA:0:8}）" --notes-file notes.txt
+            --title "Cursorway $version 測試版（${SHA:0:8}）" --notes-file notes.txt

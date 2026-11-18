@@ -1,4 +1,4 @@
-Barrier Share — Windows／Mac 雙向複製通用測試版
+Cursorway（原名 Barrier Share）— Windows／Mac 共用鍵盤滑鼠與雙向複製
 
 支援 Windows 10（1903 以上）／11 x64，以及 Apple Silicon Mac（macOS 15 以上）。
 一次連接兩台，可自由搭配作主控端或接收端；兩台使用搜尋配對版，並在同一區網。
@@ -11,7 +11,7 @@ Barrier Share — Windows／Mac 雙向複製通用測試版
    安裝需要系統管理員權限（會詢問一次「是否允許」），裝在 Program Files，並安裝「Barrier Share」背景服務。
    安裝程式會自動關閉執行中的舊版並移除 0.3.8 以前的個人安裝，裝完再開啟；配對及設定都會保留。
    也可使用可攜 ZIP，解壓後雙擊 BarrierShare.exe。
-   Mac：解壓縮後將 Barrier Share.app 放到「應用程式」，再開啟。
+   Mac：解壓縮後將 Cursorway.app 放到「應用程式」，再開啟（0.3.20 以前叫 Barrier Share.app）。
    Mac 測試版未公證，若被阻擋，請在「系統設定 → 隱私權與安全性」允許開啟。
 2. 有實體滑鼠鍵盤的那台選「主控端」，另一台選「接收端」。
    兩邊都會自動搜尋同一區網內有開啟程式的電腦。主控端從「附近電腦」選接收端，按「邀請配對」。
@@ -23,6 +23,11 @@ Barrier Share — Windows／Mac 雙向複製通用測試版
 5. Mac 首次需允許「區域網路」、「輔助使用」及「輸入監控」。若系統列出 barriers／barrierc，也需允許。
    按「權限設定」可開啟設定；必要時重開程式。
    Windows 安裝程式會自動允許 Barrier Share 使用私人／網域網路；若網路被設為「公用」，請改成「私人」。
+
+0.3.21 更新（Mac）
+- 程式改名為 Cursorway。App 改叫 Cursorway.app，視窗標題、選單和通知也一起改名。
+- 從 Barrier Share 升級：把 Cursorway.app 放到「應用程式」後開啟，舊的 Barrier Share.app 會自動移到垃圾桶。
+- 設定資料夾也從 ~/Library/Application Support/BarrierShare 自動搬到 Cursorway；配對、設定和「輔助使用」「輸入監控」權限都會保留。
 
 0.3.20 更新（Windows）
 - 當接收端時，主控端的滑鼠也能操作安裝程式這類以系統管理員身分執行的視窗，不需要用系統管理員身分開啟 Barrier Share（只適用安裝版）。
@@ -258,7 +263,7 @@ Mac 更新沿用固定簽章身分；從臨時簽章切換時仍可能需要重�
 接收檔案暫存會保留供貼上；按「暫停」後可按「清除暫存」。
 清除會使尚未貼上的接收檔案失效，已貼到其他資料夾的檔案不受影響。
 Windows 設定：%LOCALAPPDATA%\BarrierShare
-Mac 設定：~/Library/Application Support/BarrierShare
+Mac 設定：~/Library/Application Support/Cursorway（0.3.20 以前是 BarrierShare，升級時自動搬過去）
 日誌位於上述資料夾的 profile-server/server.log 或 profile/windows.log（Mac 為 mac.log）。
 
 正式啟動驗證：實際開啟 Windows 正式視窗，確認主控／接收角色都啟動搜尋服務並回應 UDP 查詢。

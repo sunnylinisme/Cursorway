@@ -6,7 +6,7 @@ export BARRIER_CODESIGN_IDENTITY
 if [ "$BARRIER_CODESIGN_IDENTITY" = "-" ]; then
     echo "WARNING: ad-hoc test build; macOS privacy grants may not survive updates." >&2
 fi
-APP="$BUILD/Barrier Share.app"
+APP="$BUILD/Cursorway.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Helpers" "$APP/Contents/Resources/licenses" "$APP/Contents/Frameworks"
 xcrun swiftc -swift-version 5 -target "$(uname -m)-apple-macos15.0" -O \
     -framework AppKit -framework ApplicationServices -framework ServiceManagement \
@@ -26,8 +26,8 @@ app = pathlib.Path(sys.argv[1]).resolve()
 contents = app / 'Contents'
 extra = dict(BarrierShareTestBuild=sys.argv[2]) if sys.argv[2] else {}
 with (contents / 'Info.plist').open('wb') as out:
-    plistlib.dump(dict(**extra, CFBundleIdentifier='org.barriershare.desktop', CFBundleName='Barrier Share',
-        CFBundleDisplayName='Barrier Share', CFBundleExecutable='BarrierShare', CFBundlePackageType='APPL',
+    plistlib.dump(dict(**extra, CFBundleIdentifier='org.barriershare.desktop', CFBundleName='Cursorway',
+        CFBundleDisplayName='Cursorway', CFBundleExecutable='BarrierShare', CFBundlePackageType='APPL',
         CFBundleVersion='21', CFBundleShortVersionString='0.3.20', CFBundleIconFile='BarrierShare.icns', LSMinimumSystemVersion='15.0',
         NSHighResolutionCapable=True, NSPrincipalClass='NSApplication',
         NSLocalNetworkUsageDescription='搜尋同一區域網路的電腦，經雙方同意後配對，共用鍵鼠與複製檔案。'), out)

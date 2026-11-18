@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build, sign and verify the Mac app, then start the shared vX.Y.Z release of Barrier Share.
+# Build, sign and verify the Mac app, then start the shared vX.Y.Z release of Cursorway (formerly Barrier Share).
 #
 #   BARRIER_CODESIGN_IDENTITY='Apple Development: NAME (TEAMID)' sh tools/native-file-drop/release-macos.sh
 #
@@ -16,7 +16,8 @@ set -eu
 if [ "$BARRIER_CODESIGN_IDENTITY" = "-" ]; then
     echo "An ad-hoc signature cannot be released: macOS would drop the granted permissions." >&2; exit 1
 fi
-OLD_APP="${OLD_APP:-/Applications/Barrier Share.app}"
+# The installed app is Cursorway.app from 0.3.21 on, Barrier Share.app before.
+if [ -z "${OLD_APP:-}" ]; then OLD_APP="/Applications/Cursorway.app"; [ -d "$OLD_APP" ] || OLD_APP="/Applications/Barrier Share.app"; fi
 BUILD="${BUILD:-build-release}"
 
 version=$(sed -n "s/.*CFBundleShortVersionString='\([0-9.]*\)'.*/\1/p" tools/native-file-drop/package-macos.sh)
@@ -34,11 +35,11 @@ for platform in Windows Mac; do
 done
 cat >> "$notes" <<EOF
 下載
-- Windows 10/11 x64：BarrierShare-Setup-$version-x64.exe（安裝版，需要系統管理員權限；含背景服務，登入畫面與 UAC 也能跨台操作；會自動關閉並重新開啟執行中的舊版，保留配對及設定）或 BarrierShare-$version-x64-portable.zip（免安裝）
-- Apple Silicon Mac（macOS 15+）：BarrierShare-$version-macos-arm64.zip；解壓縮後將 Barrier Share.app 放到「應用程式」取代舊版，更新前先結束舊程式
+- Windows 10/11 x64：Cursorway-Setup-$version-x64.exe（安裝版，需要系統管理員權限；含背景服務，登入畫面與 UAC 也能跨台操作；會自動關閉並重新開啟執行中的舊版，保留配對及設定）或 Cursorway-$version-x64-portable.zip（免安裝）
+- Apple Silicon Mac（macOS 15+）：Cursorway-$version-macos-arm64.zip；解壓縮後將 Cursorway.app 放到「應用程式」，第一次開啟時會把舊的 Barrier Share.app 移到垃圾桶，更新前先結束舊程式
 EOF
 
-echo "== Building Barrier Share for Mac $version"
+echo "== Building Cursorway for Mac $version"
 rm -rf "$BUILD"
 cmake -S . -B "$BUILD" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DBARRIER_BUILD_GUI=OFF -DBARRIER_BUILD_INSTALLER=OFF -DBARRIER_BUILD_TESTS=OFF \
@@ -50,17 +51,17 @@ BARRIER_RELEASE=1 sh tools/native-file-drop/package-macos.sh "$BUILD"
 
 echo "== Checking the update keeps the signing identity of $OLD_APP"
 if [ -d "$OLD_APP" ]; then
-    python3 tools/native-file-drop/verify-macos-update.py "$OLD_APP" "$BUILD/Barrier Share.app"
+    python3 tools/native-file-drop/verify-macos-update.py "$OLD_APP" "$BUILD/Cursorway.app"
 else
     echo "No installed app at $OLD_APP; set OLD_APP to the previous release to compare." >&2; exit 1
 fi
 
-zip="$BUILD/BarrierShare-$version-macos-arm64.zip"
+zip="$BUILD/Cursorway-$version-macos-arm64.zip"
 mv "$BUILD/barrier-cross-drop-macos-arm64.zip" "$zip"
 echo "== Publishing $tag"
-git tag -a "$tag" -m "Barrier Share $version"
+git tag -a "$tag" -m "Cursorway $version"
 git push origin "$tag"
-gh release create "$tag" "$zip" --draft --title "Barrier Share $version" --notes-file "$notes" --verify-tag
+gh release create "$tag" "$zip" --draft --title "Cursorway $version" --notes-file "$notes" --verify-tag
 rm -f "$notes"
 echo "Draft created. The $tag build in GitHub Actions adds the Windows files and publishes it:"
 echo "  gh run list --branch $tag"

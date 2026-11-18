@@ -88,7 +88,21 @@ enum ShareError: Error, LocalizedError {
 }
 final class ShareSettings {
     static let directions = ["right", "left", "up", "down"]
-    static var root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("BarrierShare", isDirectory: true)
+    // Settings, pairing certificates and trust live in ~/Library/Application Support/Cursorway
+    // (BarrierShare before 0.3.21; moved there by migrateRoot when the app starts).
+    static let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static var root = folder(in: support)
+    static func folder(in base: URL) -> URL {
+        let new = base.appendingPathComponent("Cursorway", isDirectory: true), old = base.appendingPathComponent("BarrierShare", isDirectory: true)
+        return !FileManager.default.fileExists(atPath: new.path) && FileManager.default.fileExists(atPath: old.path) ? old : new
+    }
+    // Moves BarrierShare to Cursorway once (a rename, so certificates and pairings come along).
+    // Leaves things as they are when Cursorway already exists or the move fails; returns the folder to use.
+    @discardableResult static func migrateRoot(in base: URL = support) -> URL {
+        let new = base.appendingPathComponent("Cursorway", isDirectory: true), old = base.appendingPathComponent("BarrierShare", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: new.path) && FileManager.default.fileExists(atPath: old.path) { try? FileManager.default.moveItem(at: old, to: new) }
+        return folder(in: base)
+    }
     static var bin: URL {
         if Bundle.main.bundleURL.pathExtension == "app" { return Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers", isDirectory: true) }
         return Bundle.main.executableURL!.deletingLastPathComponent()
@@ -279,6 +293,8 @@ enum ShareUpdate {
     static let releases = URL(string: "https://api.github.com/repos/sunnylinisme/barrier/releases?per_page=30")!
     // Shared vX.Y.Z releases carry both platforms; mac-vX.Y.Z is the pre-0.3.9 Mac-only form.
     static let prefixes = ["v", "mac-v"]
+    // The repository is being renamed from barrier to cursorway; GitHub redirects the old API address.
+    static let origins = ["https://github.com/sunnylinisme/barrier/releases/", "https://github.com/sunnylinisme/cursorway/releases/"]
     struct Release: Decodable { let tag_name: String; let html_url: String; let draft: Bool?; let prerelease: Bool? }
     static func parts(_ text: String) -> [Int]? {
         let pieces = text.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
@@ -292,7 +308,7 @@ enum ShareUpdate {
         var best: ([Int], URL)?
         for release in list where release.draft != true && release.prerelease != true {
             guard let prefix = prefixes.first(where: { release.tag_name.hasPrefix($0) }), let version = parts(String(release.tag_name.dropFirst(prefix.count))), let url = URL(string: release.html_url),
-                  release.html_url.hasPrefix("https://github.com/sunnylinisme/barrier/releases/") else { continue }
+                  origins.contains(where: { release.html_url.hasPrefix($0) }) else { continue }
             if version.lexicographicallyPrecedes(current) || version == current { continue }
             if best == nil || best!.0.lexicographicallyPrecedes(version) { best = (version, url) }
         }
@@ -323,7 +339,7 @@ final class ShareTransferPanel {
     let title = NSTextField(labelWithString: ""), detail = NSTextField(labelWithString: ""), bar = NSProgressIndicator(), cancel = NSButton(title: "取消傳送", target: nil, action: nil)
     var active = false, pending: DispatchWorkItem?, closing: DispatchWorkItem?, note = ""
     init(target: AnyObject, cancelAction: Selector) {
-        panel.title = "Barrier Share"; panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
+        panel.title = "Cursorway"; panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]; panel.becomesKeyOnlyIfNeeded = true
         title.font = .systemFont(ofSize: 13, weight: .semibold); title.frame = NSRect(x: 16, y: 62, width: 308, height: 18)
         detail.font = .systemFont(ofSize: 12); detail.textColor = .secondaryLabelColor; detail.frame = NSRect(x: 16, y: 40, width: 220, height: 16)
@@ -756,7 +772,18 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     var receiving = false, autoPaste = ShareAutoPaste(), pasteMonitor: Any?, lastProgress = ""
     let test: Bool
     init(test: Bool = false) { self.test = test; super.init() }
+    // Cursorway.app replaces "Barrier Share.app" (same bundle id, settings and permissions). An old copy left
+    // in Applications would still start at login, so it goes to the Trash (recoverable) once the new app runs.
+    static func retireOldApp(_ folder: URL = URL(fileURLWithPath: "/Applications"), running: URL = Bundle.main.bundleURL) -> URL? {
+        let old = folder.appendingPathComponent("Barrier Share.app")
+        guard old.standardizedFileURL != running.standardizedFileURL, Bundle(url: old)?.bundleIdentifier == Bundle.main.bundleIdentifier ?? "org.barriershare.desktop",
+              FileManager.default.fileExists(atPath: old.path) else { return nil }
+        var trashed: NSURL?; try? FileManager.default.trashItem(at: old, resultingItemURL: &trashed); return trashed as URL?
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before anything reads settings or starts barrier-link: BarrierShare → Cursorway.
+        if !test { ShareSettings.root = ShareSettings.migrateRoot() }
+        if !test, let moved = ShareApp.retireOldApp() { log("已把舊的 Barrier Share.app 移到垃圾桶：\(moved.path)") }
         buildWindow()
         // ⌘V while files are still arriving: paste them as soon as they are complete.
         pasteMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -776,7 +803,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     }
     func buildWindow() {
         let menu = NSMenu(), appMenu = NSMenu(), appItem = NSMenuItem()
-        appMenu.addItem(withTitle: "關於 Barrier Share", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Barrier Share", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem)
+        appMenu.addItem(withTitle: "關於 Cursorway", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Cursorway", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem)
         // Edit menu so ⌘A / ⌘C work in the diagnostics log (and other text) as in any Mac app.
         let editItem = NSMenuItem(), editMenu = NSMenu(title: "編輯")
         editMenu.addItem(withTitle: "拷貝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
@@ -784,7 +811,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         editItem.submenu = editMenu; menu.addItem(editItem); NSApp.mainMenu = menu
         let W: CGFloat = 720, H: CGFloat = 624
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: W, height: H), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "Barrier Share " + ShareApp.versionLabel; window.delegate = self; window.isReleasedWhenClosed = false
+        window.title = "Cursorway " + ShareApp.versionLabel; window.delegate = self; window.isReleasedWhenClosed = false
         let root = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H)); root.fill = ShareStyle.background
         window.contentView = root
         // Update banner above everything; the window grows by its height while it shows.
@@ -835,7 +862,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             icon.size = NSSize(width: 18, height: 18); icon.isTemplate = false
             tray.button?.image = icon; tray.button?.imageScaling = .scaleProportionallyDown; tray.button?.title = ""
         } else { tray.button?.title = "⇄" }
-        tray.button?.toolTip = "Barrier Share"; let trayMenu = NSMenu()
+        tray.button?.toolTip = "Cursorway"; let trayMenu = NSMenu()
         trayMenu.delegate = self; trayMenu.autoenablesItems = false; tray.menu = trayMenu
         if !test { UNUserNotificationCenter.current().delegate = self }
         do {
@@ -898,7 +925,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let menu = NSMenu(); menu.autoenablesItems = false
         let clearItem = menu.addItem(withTitle: "清除暫存檔案", action: #selector(clearCache), keyEquivalent: ""); clearItem.target = self; clearItem.isEnabled = !enabled && core == nil
         let look = menu.addItem(withTitle: "外觀", action: nil, keyEquivalent: ""); look.submenu = appearanceMenu()
-        menu.addItem(withTitle: "關於 Barrier Share", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "關於 Cursorway", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         let unpair = menu.addItem(withTitle: "解除配對…", action: peers.count > 1 ? nil : #selector(forgetPeer), keyEquivalent: ""); unpair.target = self
         unpair.attributedTitle = NSAttributedString(string: "解除配對…", attributes: [.foregroundColor: ShareStyle.danger, .font: NSFont.menuFont(ofSize: 0)])
@@ -1017,7 +1044,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
                 if !options.advanced.clipboard { peerLabel.stringValue += " · 剪貼簿未共用" }
             } else if enabled && (status.stringValue.hasPrefix("滑鼠在") || status.stringValue.hasPrefix("正在控制") || status.stringValue.hasPrefix("正在搜尋接收端")) {
                 status.stringValue = peers.count == 1 ? "正在等待 \(peers[0].name) 連線…" : "正在等待接收端連線…"
-                peerLabel.stringValue = "對方需要開著 Barrier Share，並在同一個網路"
+                peerLabel.stringValue = "對方需要開著 Cursorway（或舊版 Barrier Share），並在同一個網路"
             }
         } else if options.host {
             tiles.append(.init(cell: ShareSettings.step(options.position), name: "接收端", placeholder: true))
@@ -1027,7 +1054,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     @objc func toggleLogin() {
         do { try ShareLogin.set(autostart.state == .on) } catch { showError(error) }
         autostart.state = ShareLogin.enabled ? .on : .off
-        if autostart.state == .off && SMAppService.mainApp.status == .requiresApproval { status.stringValue = "請到「系統設定 › 一般 › 登入項目」允許 Barrier Share。" }
+        if autostart.state == .off && SMAppService.mainApp.status == .requiresApproval { status.stringValue = "請到「系統設定 › 一般 › 登入項目」允許 Cursorway。" }
     }
     func updateControls() {
         transferring = transferring && core != nil
@@ -1104,7 +1131,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     func showUpdate(_ found: (version: String, url: URL)?) {
         guard let found = found else { setBanner(false); return }
         updateURL = found.url; bannerVersion = found.version
-        bannerText.stringValue = "有新版 \(found.version) · 安裝時會自動關閉並重新開啟 Barrier Share"
+        bannerText.stringValue = "有新版 \(found.version) · 安裝時會自動關閉並重新開啟 Cursorway"
         setBanner(dismissedUpdate != found.version)
         // While the window is closed a system notification announces it once per version.
         if announcedUpdate != found.version && !test && !window.isVisible {
@@ -1112,7 +1139,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             let center = UNUserNotificationCenter.current()
             center.requestAuthorization(options: [.alert]) { granted, _ in
                 guard granted else { return }
-                let content = UNMutableNotificationContent(); content.title = "Barrier Share 有新版 \(found.version)"; content.body = "點這裡下載更新，安裝時會自動重新開啟。"
+                let content = UNMutableNotificationContent(); content.title = "Cursorway 有新版 \(found.version)"; content.body = "點這裡下載更新，安裝時會自動重新開啟。"
                 content.userInfo = ["url": found.url.absoluteString]
                 center.add(UNNotificationRequest(identifier: "update-" + found.version, content: content, trigger: nil))
             }
@@ -1546,7 +1573,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     func startBackend() {
         guard core == nil && enabled && !test else { return }
         if !AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: !promptedPermissions] as CFDictionary) {
-            promptedPermissions = true; status.stringValue = "配對已完成；請允許 Barrier Share 的「輔助使用」及「輸入監控」，之後會自動連線。"; return
+            promptedPermissions = true; status.stringValue = "配對已完成；請允許 Cursorway 的「輔助使用」及「輸入監控」，之後會自動連線。"; return
         }
         do {
             let process = try ShareSettings.command(options), output = Pipe(); process.standardOutput = output; process.standardError = output; core = process; corePipe = output; pendingCore.removeAll()
@@ -1597,7 +1624,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             log("App 路徑：\(Bundle.main.bundleURL.path)")
         }
         if diagnostics == nil {
-            let panel = NSWindow(contentRect:NSRect(x:0,y:0,width:760,height:400),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false); panel.title="Barrier Share · 診斷紀錄"; panel.delegate=self; panel.isReleasedWhenClosed=false
+            let panel = NSWindow(contentRect:NSRect(x:0,y:0,width:760,height:400),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false); panel.title="Cursorway · 診斷紀錄"; panel.delegate=self; panel.isReleasedWhenClosed=false
             let copyAll = NSButton(title: "全部複製", target: self, action: #selector(copyDiagnostics)); copyAll.bezelStyle = .rounded
             copyAll.frame = NSRect(x: panel.contentView!.bounds.width - 142, y: 18, width: 120, height: 32); copyAll.autoresizingMask = [.minXMargin, .maxYMargin]; panel.contentView!.addSubview(copyAll)
             var area = panel.contentView!.bounds.insetBy(dx:18,dy:18); area.origin.y += 42; area.size.height -= 42
@@ -1709,6 +1736,26 @@ func selfTest(_ directory: URL) throws {
     """.utf8)
     guard let found = ShareUpdate.newer(releases, current: [0, 3, 4]), found.version == "0.3.11", found.url.absoluteString.hasSuffix("/v0.3.11") else { throw ShareError.message("Update selection ignored platform, draft or origin rules") }
     guard let legacy = ShareUpdate.newer(Data(String(decoding: releases, as: UTF8.self).replacingOccurrences(of: "\"v0.3.11\"", with: "\"x0.3.11\"").utf8), current: [0, 3, 4]), legacy.url.absoluteString.hasSuffix("/mac-v0.3.9") else { throw ShareError.message("Update selection dropped legacy Mac releases") }
+    // After the rename the release pages live under /cursorway/.
+    let renamed = Data(String(decoding: releases, as: UTF8.self).replacingOccurrences(of: "/barrier/releases/tag/v0.3.11", with: "/cursorway/releases/tag/v0.3.11").utf8)
+    guard ShareUpdate.newer(renamed, current: [0, 3, 4])?.url.absoluteString == "https://github.com/sunnylinisme/cursorway/releases/tag/v0.3.11" else { throw ShareError.message("Renamed repository release ignored") }
+    // Settings folder: BarrierShare moves to Cursorway with its contents; an existing Cursorway is never overwritten.
+    let support = directory.appendingPathComponent("support", isDirectory: true); try? FileManager.default.removeItem(at: support)
+    try FileManager.default.createDirectory(at: support.appendingPathComponent("BarrierShare/profile/SSL", isDirectory: true), withIntermediateDirectories: true)
+    try Data("pem".utf8).write(to: support.appendingPathComponent("BarrierShare/profile/SSL/Barrier.pem"))
+    guard ShareSettings.folder(in: support).lastPathComponent == "BarrierShare", ShareSettings.migrateRoot(in: support).lastPathComponent == "Cursorway",
+          (try? String(contentsOf: support.appendingPathComponent("Cursorway/profile/SSL/Barrier.pem"), encoding: .utf8)) == "pem",
+          !FileManager.default.fileExists(atPath: support.appendingPathComponent("BarrierShare").path) else { throw ShareError.message("Settings folder not moved to Cursorway") }
+    try FileManager.default.createDirectory(at: support.appendingPathComponent("BarrierShare", isDirectory: true), withIntermediateDirectories: true)
+    guard ShareSettings.migrateRoot(in: support).lastPathComponent == "Cursorway", FileManager.default.fileExists(atPath: support.appendingPathComponent("BarrierShare").path),
+          (try? String(contentsOf: support.appendingPathComponent("Cursorway/profile/SSL/Barrier.pem"), encoding: .utf8)) == "pem" else { throw ShareError.message("Existing Cursorway folder was overwritten") }
+    try FileManager.default.removeItem(at: support)
+    // An old "Barrier Share.app" beside the new Cursorway.app is moved to the Trash; other apps are left alone.
+    let apps = directory.appendingPathComponent("apps", isDirectory: true); try? FileManager.default.removeItem(at: apps)
+    try FileManager.default.createDirectory(at: apps.appendingPathComponent("Barrier Share.app/Contents", isDirectory: true), withIntermediateDirectories: true)
+    try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "com.example.other"], format: .xml, options: 0).write(to: apps.appendingPathComponent("Barrier Share.app/Contents/Info.plist"))
+    guard ShareApp.retireOldApp(apps, running: Bundle.main.bundleURL) == nil, FileManager.default.fileExists(atPath: apps.appendingPathComponent("Barrier Share.app").path) else { throw ShareError.message("Retired an unrelated app") }
+    try FileManager.default.removeItem(at: apps)
     guard ShareUpdate.newer(releases, current: [0, 3, 11]) == nil, ShareUpdate.newer(Data("{\"message\":\"rate limited\"}".utf8), current: [0, 0, 0]) == nil else { throw ShareError.message("Update reported without a newer release") }
     NSApp.finishLaunching()
     let app = ShareApp(test: true); app.buildWindow(); app.options.host = true; app.role.selectItem(at: 0); try app.refreshRole()

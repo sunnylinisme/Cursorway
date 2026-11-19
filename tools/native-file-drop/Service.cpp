@@ -260,12 +260,24 @@ void apply() {
     bool secure = !desktop.empty() && _stricmp(desktop.c_str(), "Default") != 0;
     bool asSystem = !signedIn || secure;
     if (coreRunning() && session == coreSession && asSystem == coreSystem) { failures = 0; return; }
-    if (core.hProcess && !coreRunning() && coreUiAccess && GetTickCount64() - coreStartedAt < 3000) {
-        DWORD code = 0; GetExitCodeProcess(core.hProcess, &code);
-        userUiAccess = false;
-        logLine(command.directory, "core with UI access ended at once (exit " + std::to_string(code) + "); running it without UI access");
-    }
     static ULONGLONG retryAt = 0;
+    static unsigned quickExits = 0;
+    if (core.hProcess && !coreRunning()) {
+        DWORD code = 0; GetExitCodeProcess(core.hProcess, &code);
+        ULONGLONG ran = GetTickCount64() - coreStartedAt;
+        char hex[16]; std::snprintf(hex, sizeof(hex), "0x%08lX", static_cast<unsigned long>(code));
+        if (ran < 3000) {
+            // A core that ends at once is started again after a growing pause (up to 10 s), not four times a second.
+            ++quickExits; retryAt = GetTickCount64() + 1000ull * (quickExits < 10 ? quickExits : 10);
+            if (quickExits <= 3 || quickExits % 20 == 0)
+                logLine(command.directory, "core ended after " + std::to_string(ran) + " ms (exit " + std::to_string(code) + " / " + hex + ", " + std::to_string(quickExits) + " in a row)");
+            if (coreUiAccess) { userUiAccess = false; logLine(command.directory, "running the core without UI access from now on"); }
+        } else {
+            quickExits = 0;
+            logLine(command.directory, "core ended after " + std::to_string(ran / 1000) + " s (exit " + std::to_string(code) + " / " + hex + ")");
+        }
+        CloseHandle(core.hProcess); CloseHandle(core.hThread); core = PROCESS_INFORMATION{};
+    }
     if (coreRunning() || GetTickCount64() >= retryAt) {
         try { startCore(session, asSystem, !signedIn ? "nobody signed in" : secure ? "input desktop " + desktop : "input desktop " + (desktop.empty() ? std::string("Default") : desktop)); }
         catch (const std::exception& e) {

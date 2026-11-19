@@ -247,7 +247,7 @@ static class ShareSettings
         // Old saved extra options can no longer be seen or fixed, so a bad one is skipped rather than stopping the core.
         List<string> extra;
         try { extra = a.ExtraLines().ToList(); }
-        catch (IOException e) { extra = new List<string>(); if (Warn != null) Warn("已略過舊的自訂 Barrier 選項：" + e.Message); }
+        catch (IOException e) { extra = new List<string>(); if (Warn != null) Warn("已略過舊的自訂進階選項：" + e.Message); }
         foreach (string line in extra) b.Append(" " + line + "\n");
         return b.Append("end\n").ToString();
     }
@@ -1351,9 +1351,9 @@ sealed class ShareWindow : Form
             ShowInTaskbar = false, StartPosition = FormStartPosition.CenterParent, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Font = Font, BackColor = ShareStyle.Background, Padding = new Padding(20, 16, 20, 16) }) {
             var flow = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = ShareStyle.Background };
-            flow.Controls.Add(new Label { Text = "Cursorway（原 Barrier Share）", AutoSize = true, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, Font.Size + 2, FontStyle.Bold), Margin = new Padding(0, 0, 0, 6) });
+            flow.Controls.Add(new Label { Text = "Cursorway", AutoSize = true, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, Font.Size + 2, FontStyle.Bold), Margin = new Padding(0, 0, 0, 6) });
             flow.Controls.Add(new Label { Text = "版本 " + ShareUpdate.Label, AutoSize = true, ForeColor = ShareStyle.Muted, Margin = new Padding(0, 0, 0, 10) });
-            flow.Controls.Add(new Label { Text = "以 Barrier 為基礎，在區域網路共用鍵盤、滑鼠與剪貼簿。", AutoSize = true, ForeColor = ShareStyle.Ink, Margin = new Padding(0, 0, 0, 10) });
+            flow.Controls.Add(new Label { Text = "在區域網路的電腦之間共用鍵盤、滑鼠與剪貼簿。", AutoSize = true, ForeColor = ShareStyle.Ink, Margin = new Padding(0, 0, 0, 10) });
             var link = new LinkLabel { Text = Project, AutoSize = true, LinkColor = ShareStyle.Blue, ActiveLinkColor = ShareStyle.Blue, VisitedLinkColor = ShareStyle.Blue, Margin = new Padding(0, 0, 0, 14) };
             link.LinkClicked += delegate { try { Process.Start(new ProcessStartInfo(Project) { UseShellExecute = true }); } catch (Exception e) { Error(e); } };
             flow.Controls.Add(link);

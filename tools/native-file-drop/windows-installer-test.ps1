@@ -147,6 +147,10 @@ if ($PreviousInstaller) {
     # Stand-in for the service's state (the service rewrites it from the profile on every start).
     New-Item -ItemType Directory -Force -Path (Join-Path $installDir 'state\upgrade-test') | Out-Null
     Set-Content -LiteralPath (Join-Path $installDir 'state\upgrade-test\marker.txt') -Value 'state from before the rename' -Encoding utf8
+    # Launch at sign-in as the old app wrote it (value BarrierShare, pointing at BarrierShare.exe).
+    $upgradeRun = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    foreach ($name in 'BarrierShare', 'Cursorway') { if ($null -ne (Get-ItemProperty -LiteralPath $upgradeRun -Name $name -ErrorAction SilentlyContinue)) { throw "Refusing to alter an existing launch-at-sign-in entry: $name" } }
+    Set-ItemProperty -LiteralPath $upgradeRun -Name BarrierShare -Value ('"' + (Join-Path $installDir 'BarrierShare.exe') + '" --background')
     $oldDir = $installDir
     Invoke-TestProcess $InstallerPath (@('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/TASKS=desktopicon') + "/LOG=$(Join-Path $TestRoot 'upgrade.log')")
     # The installation moves to Program Files\Cursorway; the old folder is gone once its state was copied.
@@ -157,6 +161,18 @@ if ($PreviousInstaller) {
     Assert-Installed
     Assert-Profile $beforeInstall
     if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Upgrade left the service from before the rename.' }
+    & sc.exe query BarrierShare | Out-Null
+    if ($LASTEXITCODE -ne 1060) { throw "sc query BarrierShare still finds a service (exit $LASTEXITCODE)." }
+    $service = Get-CimInstance Win32_Service -Filter "Name='Cursorway'"
+    if (-not $service -or -not $service.PathName.Contains((Join-Path $installDir 'cursorway-service.exe'))) { throw 'Upgrade did not install the Cursorway service from the new folder.' }
+    if ($null -ne (Get-ItemProperty -LiteralPath $upgradeRun -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Upgrade left the old launch-at-sign-in entry.' }
+    $run = (Get-ItemProperty -LiteralPath $upgradeRun -Name Cursorway -ErrorAction SilentlyContinue).Cursorway
+    if ($run -ne ('"' + (Join-Path $installDir 'Cursorway.exe') + '" --background')) { throw "Upgrade did not move launch at sign-in to Cursorway.exe: $run" }
+    Remove-ItemProperty -LiteralPath $upgradeRun -Name Cursorway
+    foreach ($program in @(Get-NetFirewallRule -DisplayName 'Cursorway' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | ForEach-Object { $_.Program })) {
+        if (-not $program.StartsWith($installDir + '\', [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $program)) { throw "Firewall rule points at a missing or old program: $program" }
+    }
+    if (@(Get-NetFirewallRule -DisplayName 'Barrier Share' -ErrorAction SilentlyContinue).Count -ne 0) { throw 'Upgrade left the old firewall rules.' }
     foreach ($name in 'BarrierShare.exe', 'barriers.exe', 'barrierc.exe', 'barrier-pair.exe', 'barrier-link.exe', 'barrier-service.exe') {
         if (Test-Path -LiteralPath (Join-Path $installDir $name)) { throw "Upgrade left a program from before the rename: $name" }
     }

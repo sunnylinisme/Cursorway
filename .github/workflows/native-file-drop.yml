@@ -174,15 +174,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=Installer compile::ISCC exited with $LASTEXITCODE"; exit $LASTEXITCODE }
           try {
             # Upgrade from the last release made before the rename (public download, no token needed).
-            $previous = "$PWD/build/previous-setup.exe"
-            Invoke-WebRequest -UseBasicParsing "https://github.com/sunnylinisme/barrier/releases/download/v0.3.20/BarrierShare-Setup-0.3.20-x64.exe" -OutFile $previous
-            & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath "$PWD/build/Cursorway-Setup-0.3.21-x64.exe" -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test" -PreviousInstaller $previous
+            # 0.3.20: Program Files\Barrier Share, service BarrierShare. 0.3.21: Program Files\Cursorway with the old program
+            # and service names. Each run starts clean; the settings folder the previous run kept is removed in between.
+            $setup = Get-ChildItem build -Filter 'Cursorway-Setup-*-x64.exe' | Select-Object -First 1
+            foreach ($release in @('v0.3.20/BarrierShare-Setup-0.3.20-x64.exe', 'v0.3.21/Cursorway-Setup-0.3.21-x64.exe')) {
+              $tag = $release.Split('/')[0]
+              $previous = "$PWD/build/previous-$tag.exe"
+              Invoke-WebRequest -UseBasicParsing "https://github.com/sunnylinisme/barrier/releases/download/$release" -OutFile $previous
+              Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Cursorway", "$env:LOCALAPPDATA\BarrierShare" -ErrorAction SilentlyContinue
+              Write-Output "::group::Upgrade from $tag"
+              & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath $setup.FullName -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test-$tag" -PreviousInstaller $previous
+              Write-Output "::endgroup::"
+            }
           } catch {
             # Annotations are readable on the checks page without signing in; logs and artifacts are not.
             $reason = ("$($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" -replace "`r?`n", ' ')
             Write-Output "::error title=Installer test::$reason"
             Write-Output "::notice title=Installer failure::$reason"
-            foreach ($log in Get-ChildItem build/installer-test -Filter *.log -ErrorAction SilentlyContinue) {
+            foreach ($log in Get-ChildItem build/installer-test* -Recurse -Filter *.log -ErrorAction SilentlyContinue) {
               $tail = (Get-Content -LiteralPath $log.FullName -Tail 12) -join '%0A'
               Write-Output "::notice title=$($log.Name)::$tail"
             }
@@ -193,9 +202,9 @@ jobs:
         with:
           name: windows-installer-test
           path: |
-            build/installer-test/*.txt
-            build/installer-test/*.log
-            build/installer-test/**/STARTUP-*.txt
+            build/installer-test*/*.txt
+            build/installer-test*/*.log
+            build/installer-test*/**/STARTUP-*.txt
           if-no-files-found: ignore
           retention-days: 7
       - uses: actions/upload-artifact@v4

@@ -290,10 +290,11 @@ final class ShareSettings {
 
 // Looks up the newest published Mac release; only the public release list is requested, nothing is sent.
 enum ShareUpdate {
-    static let releases = URL(string: "https://api.github.com/repos/sunnylinisme/barrier/releases?per_page=30")!
+    static let project = "https://github.com/sunnylinisme/Cursorway"
+    static let releases = URL(string: "https://api.github.com/repos/sunnylinisme/Cursorway/releases?per_page=30")!
     // Shared vX.Y.Z releases carry both platforms; mac-vX.Y.Z is the pre-0.3.9 Mac-only form.
     static let prefixes = ["v", "mac-v"]
-    // The repository is being renamed from barrier to cursorway; GitHub redirects the old API address.
+    // The repository was renamed from barrier to Cursorway; release pages may use either name, in any case.
     static let origins = ["https://github.com/sunnylinisme/barrier/releases/", "https://github.com/sunnylinisme/cursorway/releases/"]
     struct Release: Decodable { let tag_name: String; let html_url: String; let draft: Bool?; let prerelease: Bool? }
     static func parts(_ text: String) -> [Int]? {
@@ -308,7 +309,7 @@ enum ShareUpdate {
         var best: ([Int], URL)?
         for release in list where release.draft != true && release.prerelease != true {
             guard let prefix = prefixes.first(where: { release.tag_name.hasPrefix($0) }), let version = parts(String(release.tag_name.dropFirst(prefix.count))), let url = URL(string: release.html_url),
-                  origins.contains(where: { release.html_url.hasPrefix($0) }) else { continue }
+                  origins.contains(where: { release.html_url.lowercased().hasPrefix($0) }) else { continue }
             if version.lexicographicallyPrecedes(current) || version == current { continue }
             if best == nil || best!.0.lexicographicallyPrecedes(version) { best = (version, url) }
         }
@@ -803,7 +804,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     }
     func buildWindow() {
         let menu = NSMenu(), appMenu = NSMenu(), appItem = NSMenuItem()
-        appMenu.addItem(withTitle: "關於 Cursorway", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Cursorway", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem)
+        appMenu.addItem(withTitle: "關於 Cursorway", action: #selector(ShareApp.showAbout), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Cursorway", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem)
         // Edit menu so ⌘A / ⌘C work in the diagnostics log (and other text) as in any Mac app.
         let editItem = NSMenuItem(), editMenu = NSMenu(title: "編輯")
         editMenu.addItem(withTitle: "拷貝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
@@ -921,11 +922,18 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         if test && options.appearance == "system" { NSApp.appearance = NSAppearance(named: .aqua); return }
         NSApp.appearance = options.appearance == "light" ? NSAppearance(named: .aqua) : options.appearance == "dark" ? NSAppearance(named: .darkAqua) : nil
     }
+    // 關於: version (no commit) and a link to the GitHub project.
+    static func aboutOptions() -> [NSApplication.AboutPanelOptionKey: Any] {
+        let link = NSMutableAttributedString(string: ShareUpdate.project, attributes: [.link: URL(string: ShareUpdate.project)!, .font: NSFont.systemFont(ofSize: 11)])
+        let style = NSMutableParagraphStyle(); style.alignment = .center; link.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: link.length))
+        return [.applicationName: "Cursorway", .applicationVersion: ShareApp.versionLabel, .version: "", .credits: link]
+    }
+    @objc func showAbout() { NSApp.activate(ignoringOtherApps: true); NSApp.orderFrontStandardAboutPanel(options: ShareApp.aboutOptions()) }
     @objc func showMore(_ sender: NSButton) {
         let menu = NSMenu(); menu.autoenablesItems = false
         let clearItem = menu.addItem(withTitle: "清除暫存檔案", action: #selector(clearCache), keyEquivalent: ""); clearItem.target = self; clearItem.isEnabled = !enabled && core == nil
         let look = menu.addItem(withTitle: "外觀", action: nil, keyEquivalent: ""); look.submenu = appearanceMenu()
-        menu.addItem(withTitle: "關於 Cursorway", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "關於 Cursorway", action: #selector(showAbout), keyEquivalent: "").target = self
         menu.addItem(.separator())
         let unpair = menu.addItem(withTitle: "解除配對…", action: peers.count > 1 ? nil : #selector(forgetPeer), keyEquivalent: ""); unpair.target = self
         unpair.attributedTitle = NSAttributedString(string: "解除配對…", attributes: [.foregroundColor: ShareStyle.danger, .font: NSFont.menuFont(ofSize: 0)])
@@ -1739,6 +1747,12 @@ func selfTest(_ directory: URL) throws {
     // After the rename the release pages live under /cursorway/.
     let renamed = Data(String(decoding: releases, as: UTF8.self).replacingOccurrences(of: "/barrier/releases/tag/v0.3.11", with: "/cursorway/releases/tag/v0.3.11").utf8)
     guard ShareUpdate.newer(renamed, current: [0, 3, 4])?.url.absoluteString == "https://github.com/sunnylinisme/cursorway/releases/tag/v0.3.11" else { throw ShareError.message("Renamed repository release ignored") }
+    let capital = Data(String(decoding: renamed, as: UTF8.self).replacingOccurrences(of: "/cursorway/", with: "/Cursorway/").utf8)
+    guard ShareUpdate.newer(capital, current: [0, 3, 4])?.url.absoluteString == "https://github.com/sunnylinisme/Cursorway/releases/tag/v0.3.11" else { throw ShareError.message("Capitalised repository release ignored") }
+    // 關於 links to the project and shows no commit.
+    let about = ShareApp.aboutOptions()
+    guard (about[.credits] as? NSAttributedString)?.string == "https://github.com/sunnylinisme/Cursorway", (about[.version] as? String) == "",
+          !((about[.applicationVersion] as? String) ?? "").contains(ShareApp.testCommit.isEmpty ? "\u{0}" : ShareApp.testCommit) else { throw ShareError.message("About panel wrong") }
     // Settings folder: BarrierShare moves to Cursorway with its contents; an existing Cursorway is never overwritten.
     let support = directory.appendingPathComponent("support", isDirectory: true); try? FileManager.default.removeItem(at: support)
     try FileManager.default.createDirectory(at: support.appendingPathComponent("BarrierShare/profile/SSL", isDirectory: true), withIntermediateDirectories: true)

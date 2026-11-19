@@ -4,7 +4,7 @@
 
 把滑鼠移到螢幕邊緣，就會跑到另一台電腦；在一台按複製，到另一台直接貼上。一台主控端可以接多台接收端。
 
-**[下載最新版](https://github.com/sunnylinisme/barrier/releases/latest)**
+**[下載最新版](https://github.com/sunnylinisme/Cursorway/releases/latest)**
 
 | 系統 | 檔案 |
 |---|---|

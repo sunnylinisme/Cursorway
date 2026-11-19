@@ -173,13 +173,13 @@ jobs:
           & $compiler /Qp "/DPackageDir=$PWD\build\package" "/DOutputDir=$PWD\build" "$PWD\tools\native-file-drop\windows-setup.iss"
           if ($LASTEXITCODE -ne 0) { Write-Output "::error title=Installer compile::ISCC exited with $LASTEXITCODE"; exit $LASTEXITCODE }
           try {
-            # Upgrade from 0.3.21 (public download, no token needed): Program Files\Cursorway with the old program
-            # and service names. The Barrier Share releases (0.3.20 and earlier) were removed from GitHub.
+            # Upgrade from the oldest release still on GitHub (public download, no token needed). Releases before
+            # 0.3.25 were removed; the setup still migrates Barrier Share leftovers, which the test plants.
             $setup = Get-ChildItem build -Filter 'Cursorway-Setup-*-x64.exe' | Select-Object -First 1
-            foreach ($release in @('v0.3.21/Cursorway-Setup-0.3.21-x64.exe')) {
+            foreach ($release in @('v0.3.25/Cursorway-Setup-0.3.25-x64.exe')) {
               $tag = $release.Split('/')[0]
               $previous = "$PWD/build/previous-$tag.exe"
-              Invoke-WebRequest -UseBasicParsing "https://github.com/sunnylinisme/barrier/releases/download/$release" -OutFile $previous
+              Invoke-WebRequest -UseBasicParsing "https://github.com/sunnylinisme/Cursorway/releases/download/$release" -OutFile $previous
               Remove-Item -Recurse -Force "$env:LOCALAPPDATA\Cursorway", "$env:LOCALAPPDATA\BarrierShare", "$env:ProgramFiles\Cursorway" -ErrorAction SilentlyContinue
               Write-Output "::group::Upgrade from $tag"
               & tools/native-file-drop/windows-installer-test.ps1 -InstallerPath $setup.FullName -PackageDir "$PWD/build/package" -TestRoot "$PWD/build/installer-test-$tag" -PreviousInstaller $previous

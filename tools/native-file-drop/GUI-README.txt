@@ -24,6 +24,16 @@ Cursorway（原名 Barrier Share）— Windows／Mac 共用鍵盤滑鼠與雙向
    按「權限設定」可開啟設定；必要時重開程式。
    Windows 安裝程式會自動允許 Cursorway 使用私人／網域網路；若網路被設為「公用」，請改成「私人」。
 
+0.3.22 更新（Windows）
+- 程式、背景服務和開機啟動項目都改用 Cursorway 的名稱（Cursorway.exe、Cursorway 服務），舊的 Barrier Share 服務和程式會在升級時自動移除。
+- 「關於」顯示版本號和 GitHub 專案網址。
+- GitHub 專案改名為 sunnylinisme/Cursorway，更新檢查改到新網址。0.3.21 收不到這次的更新通知，請到 GitHub 下載安裝；之後的版本會恢復通知。
+
+0.3.22 更新（Mac）
+- App 內的程式改用 Cursorway 的名稱（Cursorway、cursorway-server 等），「輔助使用」和「輸入監控」權限會保留。
+- 「關於」顯示版本號和 GitHub 專案網址。
+- GitHub 專案改名為 sunnylinisme/Cursorway，更新檢查改到新網址。0.3.21 收不到這次的更新通知，請到 GitHub 下載安裝；之後的版本會恢復通知。
+
 0.3.21 更新（Windows）
 - 程式改名為 Cursorway。視窗標題、系統匣、開始功能表、桌面捷徑、安裝程式和背景服務都改用新名稱；下載檔名改成 Cursorway-Setup-x.y.z-x64.exe 和 Cursorway-x.y.z-x64-portable.zip。
 - 從 Barrier Share 升級：直接執行新的安裝程式。程式會搬到 Program Files\Cursorway，舊的 Program Files\Barrier Share 會在搬好後刪除；開始功能表和桌面只留 Cursorway 的捷徑，控制台只有一個安裝項目。

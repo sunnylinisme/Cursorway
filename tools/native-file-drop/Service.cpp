@@ -236,7 +236,20 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
     std::wstring bin = moduleDirectory(), profile = asSystem ? command.directory : command.userProfile, log = asSystem ? command.log : command.userLog;
     std::wstring line = quote(bin + (command.host ? L"\\cursorway-server.exe" : L"\\cursorway-client.exe")) + L" -f --no-tray --file-clipboard --profile-dir " + quote(profile) +
         L" --log " + quote(log) + L" --name " + command.name;
-    line += command.host ? L" -c " + quote(profile + L"\\windows-windows.conf") : command.wheel + L" " + command.address;
+    // The host reads the configuration the service keeps (it arrives with START and CONFIG), never
+    // the copy in the user's folder: on one computer the user's core could not open that file.
+    line += command.host ? L" -c " + quote(command.directory + L"\\windows-windows.conf") : command.wheel + L" " + command.address;
+    if (!asSystem) {
+        // Note whether the signed-in user's core can open its profile folder (for the log only).
+        if (ImpersonateLoggedOnUser(token)) {
+            for (const std::wstring& path : { profile + L"\\SSL\\Barrier.pem", log, profile + L"\\windows-windows.conf", command.directory + L"\\windows-windows.conf" }) {
+                HANDLE probe = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+                if (probe == INVALID_HANDLE_VALUE) logLine(command.directory, "as the user, cannot open " + narrow(path) + " (error " + std::to_string(GetLastError()) + ")");
+                else CloseHandle(probe);
+            }
+            RevertToSelf();
+        }
+    }
     STARTUPINFOW startup{sizeof(startup)}; startup.lpDesktop = const_cast<wchar_t*>(L"winsta0\\default");
     // What the core prints before its log file is open (bad arguments, a missing file) goes to
     // core-output.txt in the service's folder, which the user can read.

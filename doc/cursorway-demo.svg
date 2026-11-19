@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" role="img" aria-label="Cursorway 示範：滑鼠移過螢幕邊緣到另一台電腦、跨電腦複製貼上檔案、用快捷鍵切換電腦">
+<style>
+  * { font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", "Segoe UI", "Noto Sans TC", sans-serif; }
+  .bg { fill: #0f1420; }
+  .bezel { fill: #1b2232; stroke: #2c3548; stroke-width: 2; }
+  .screen-win { fill: #12355e; }
+  .screen-mac { fill: #2a1f4a; }
+  .label { fill: #8b97ad; font-size: 15px; }
+  .file-name { fill: #e9eef7; font-size: 13px; }
+  .badge rect { fill: #ffffff; }
+  .badge text { fill: #0f1420; font-size: 18px; font-weight: 700; }
+  .caption { fill: #e9eef7; font-size: 22px; font-weight: 600; }
+  .title { fill: #ffffff; font-size: 20px; font-weight: 700; letter-spacing: .5px; }
+  .muted { fill: #8b97ad; font-size: 14px; }
+
+  /* one 14 s story, looping */
+  .cursor   { animation: cursor 14s infinite; }
+  .glow-l   { animation: glowL 14s infinite; }
+  .glow-r   { animation: glowR 14s infinite; }
+  .select   { animation: select 14s infinite; }
+  .copy     { animation: copy 14s infinite; }
+  .paste    { animation: paste 14s infinite; }
+  .macfile  { animation: macfile 14s infinite; }
+  .bar      { animation: bar 14s infinite; transform-box: fill-box; transform-origin: left center; }
+  .done     { animation: done 14s infinite; }
+  .hotkey   { animation: hotkey 14s infinite; }
+  .cap1     { animation: cap1 14s infinite; }
+  .cap2     { animation: cap2 14s infinite; }
+  .cap3     { animation: cap3 14s infinite; }
+  .trail    { animation: trail 14s infinite; }
+
+  @keyframes cursor {
+    0%   { transform: translate(190px, 230px); }
+    6%   { transform: translate(190px, 230px); animation-timing-function: ease-in; }
+    15%  { transform: translate(442px, 205px); animation-timing-function: linear; }
+    19%  { transform: translate(600px, 200px); animation-timing-function: ease-out; }
+    25%  { transform: translate(720px, 225px); }
+    27%  { transform: translate(720px, 225px); animation-timing-function: ease-in-out; }
+    35%  { transform: translate(140px, 262px); }
+    41%  { transform: translate(140px, 262px); animation-timing-function: ease-in-out; }
+    50%  { transform: translate(705px, 236px); }
+    66%  { transform: translate(705px, 236px); animation-timing-function: ease-in-out; }
+    70%  { transform: translate(780px, 175px); }
+    74%  { transform: translate(780px, 175px); animation-timing-function: step-end; }
+    75%  { transform: translate(290px, 175px); }
+    90%  { transform: translate(290px, 175px); animation-timing-function: ease-in-out; }
+    100% { transform: translate(190px, 230px); }
+  }
+  /* which computer the keyboard and mouse are on */
+  @keyframes glowL { 0%,16% { opacity: 1 } 17%,30% { opacity: 0 } 31%,45% { opacity: 1 } 46%,74% { opacity: 0 } 75%,100% { opacity: 1 } }
+  @keyframes glowR { 0%,16% { opacity: 0 } 17%,30% { opacity: 1 } 31%,45% { opacity: 0 } 46%,74% { opacity: 1 } 75%,100% { opacity: 0 } }
+  @keyframes trail { 0%,13% { opacity: 0 } 15%,19% { opacity: .9 } 22%,100% { opacity: 0 } }
+
+  @keyframes select { 0%,35% { opacity: 0 } 36%,52% { opacity: 1 } 53%,100% { opacity: 0 } }
+  @keyframes copy   { 0%,36% { opacity: 0; transform: translateY(8px) } 37%,42% { opacity: 1; transform: none } 44%,100% { opacity: 0 } }
+  @keyframes paste  { 0%,51% { opacity: 0; transform: translateY(8px) } 52%,57% { opacity: 1; transform: none } 59%,100% { opacity: 0 } }
+  @keyframes macfile { 0%,53% { opacity: 0; transform: scale(.6) } 56%,96% { opacity: 1; transform: scale(1) } 100% { opacity: 0 } }
+  @keyframes bar    { 0%,54% { transform: scaleX(0) } 64%,100% { transform: scaleX(1) } }
+  @keyframes done   { 0%,64% { opacity: 0 } 65%,96% { opacity: 1 } 100% { opacity: 0 } }
+  @keyframes hotkey { 0%,70% { opacity: 0; transform: translateY(10px) } 71%,82% { opacity: 1; transform: none } 85%,100% { opacity: 0 } }
+
+  @keyframes cap1 { 0%,1% { opacity: 0 } 3%,26% { opacity: 1 } 28%,100% { opacity: 0 } }
+  @keyframes cap2 { 0%,28% { opacity: 0 } 30%,66% { opacity: 1 } 68%,100% { opacity: 0 } }
+  @keyframes cap3 { 0%,68% { opacity: 0 } 70%,94% { opacity: 1 } 97%,100% { opacity: 0 } }
+</style>
+
+<rect class="bg" width="960" height="520" rx="18"/>
+<text class="title" x="40" y="44">Cursorway</text>
+<text class="muted" x="148" y="44">一組鍵盤滑鼠，兩台電腦</text>
+
+<!-- Windows desktop monitor -->
+<g>
+  <rect class="glow-l" x="34" y="72" width="420" height="270" rx="16" fill="none" stroke="#4da3ff" stroke-width="4" opacity="1"/>
+  <rect class="bezel" x="40" y="78" width="408" height="258" rx="12"/>
+  <rect class="screen-win" x="52" y="90" width="384" height="234" rx="4"/>
+  <path d="M52 90 L436 90 L436 180 Q260 250 52 205 Z" fill="#1d4f8a" opacity=".55"/>
+  <rect x="52" y="304" width="384" height="20" fill="#0c2340" opacity=".85"/>
+  <g fill="#4da3ff"><rect x="226" y="309" width="5" height="5"/><rect x="232" y="309" width="5" height="5"/><rect x="226" y="315" width="5" height="5"/><rect x="232" y="315" width="5" height="5"/></g>
+  <rect x="210" y="336" width="68" height="22" fill="#2c3548"/>
+  <rect x="176" y="356" width="136" height="8" rx="4" fill="#2c3548"/>
+  <text class="label" x="244" y="390" text-anchor="middle">書房 Windows · 主控端</text>
+
+  <!-- file on the Windows desktop -->
+  <rect class="select" x="98" y="214" width="76" height="86" rx="8" fill="#4da3ff" fill-opacity=".28" stroke="#4da3ff"/>
+  <g transform="translate(118 222)">
+    <path d="M0 0 H26 L36 10 V46 H0 Z" fill="#f4f6fb"/>
+    <path d="M26 0 V10 H36" fill="#cfd6e4"/>
+    <rect x="6" y="28" width="24" height="10" rx="2" fill="#e5484d"/>
+    <text x="18" y="36" font-size="8" font-weight="700" fill="#fff" text-anchor="middle">PDF</text>
+  </g>
+  <text class="file-name" x="136" y="290" text-anchor="middle">報告.pdf</text>
+
+  <g class="copy badge" style="transform-box: fill-box">
+    <rect x="104" y="160" width="118" height="38" rx="10"/>
+    <text x="163" y="186" text-anchor="middle">Ctrl + C</text>
+  </g>
+</g>
+
+<!-- MacBook -->
+<g>
+  <rect class="glow-r" x="506" y="72" width="420" height="270" rx="16" fill="none" stroke="#b18cff" stroke-width="4" opacity="0"/>
+  <rect class="bezel" x="512" y="78" width="408" height="258" rx="12"/>
+  <rect class="screen-mac" x="524" y="90" width="384" height="234" rx="4"/>
+  <path d="M524 324 Q700 170 908 210 V324 Z" fill="#4a2f7a" opacity=".6"/>
+  <rect x="524" y="90" width="384" height="14" fill="#1a1430" opacity=".9"/>
+  <rect x="660" y="300" width="112" height="18" rx="6" fill="#ffffff" opacity=".18"/>
+  <path d="M488 336 H944 L932 352 H500 Z" fill="#2c3548"/>
+  <text class="label" x="716" y="390" text-anchor="middle">MacBook · 接收端</text>
+
+  <!-- pasted file on the Mac -->
+  <g class="macfile" style="transform-box: fill-box; transform-origin: center">
+    <g transform="translate(686 196)">
+      <path d="M0 0 H26 L36 10 V46 H0 Z" fill="#f4f6fb"/>
+      <path d="M26 0 V10 H36" fill="#cfd6e4"/>
+      <rect x="6" y="28" width="24" height="10" rx="2" fill="#e5484d"/>
+      <text x="18" y="36" font-size="8" font-weight="700" fill="#fff" text-anchor="middle">PDF</text>
+    </g>
+    <text class="file-name" x="704" y="264" text-anchor="middle">報告.pdf</text>
+    <rect x="664" y="272" width="80" height="6" rx="3" fill="#ffffff" opacity=".2"/>
+    <rect class="bar" x="664" y="272" width="80" height="6" rx="3" fill="#3ccf8e"/>
+  </g>
+  <g class="done">
+    <circle cx="752" cy="200" r="11" fill="#3ccf8e"/>
+    <path d="M746 200 l4 4 l8 -8" stroke="#0f1420" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+
+  <g class="paste badge" style="transform-box: fill-box">
+    <rect x="664" y="138" width="100" height="38" rx="10"/>
+    <text x="714" y="164" text-anchor="middle">⌘ + V</text>
+  </g>
+</g>
+
+<!-- the shared edge -->
+<g class="trail">
+  <rect x="446" y="150" width="68" height="110" rx="10" fill="url(#edge)"/>
+</g>
+<defs>
+  <linearGradient id="edge" x1="0" x2="1">
+    <stop offset="0" stop-color="#4da3ff" stop-opacity="0"/>
+    <stop offset=".5" stop-color="#ffffff" stop-opacity=".35"/>
+    <stop offset="1" stop-color="#b18cff" stop-opacity="0"/>
+  </linearGradient>
+</defs>
+
+<!-- shortcut -->
+<g class="hotkey badge" style="transform-box: fill-box">
+  <rect x="356" y="404" width="248" height="42" rx="12"/>
+  <text x="480" y="432" text-anchor="middle">Ctrl + Alt + 1</text>
+</g>
+
+<!-- captions -->
+<text class="caption cap1" x="480" y="482" text-anchor="middle">滑鼠移到螢幕邊緣，直接跑到另一台電腦</text>
+<text class="caption cap2" x="480" y="482" text-anchor="middle">在 Windows 複製檔案，到 Mac 直接貼上</text>
+<text class="caption cap3" x="480" y="482" text-anchor="middle">按快捷鍵，馬上跳回指定的電腦</text>
+
+<!-- cursor (drawn last, on top) -->
+<g class="cursor">
+  <path d="M0 0 L0 22 L6 16.5 L10.5 26 L14 24.4 L9.6 15.2 L17 15 Z" fill="#ffffff" stroke="#0f1420" stroke-width="1.6" stroke-linejoin="round"/>
+</g>
+</svg>

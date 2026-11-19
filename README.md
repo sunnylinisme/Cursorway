@@ -4,6 +4,8 @@
 
 把滑鼠移到螢幕邊緣，就會跑到另一台電腦；在一台按複製，到另一台直接貼上。一台主控端可以接多台接收端。
 
+<p align="center"><img src="doc/cursorway-demo.svg" width="760" alt="Cursorway 示範：滑鼠移過螢幕邊緣到 Mac、在 Windows 複製檔案到 Mac 貼上、按 Ctrl+Alt+1 跳回 Windows"></p>
+
 **[下載最新版](https://github.com/sunnylinisme/Cursorway/releases/latest)**
 
 | 系統 | 檔案 |

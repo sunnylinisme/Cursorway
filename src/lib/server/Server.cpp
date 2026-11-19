@@ -17,6 +17,7 @@
  */
 
 #include <chrono>
+#include <algorithm>
 #include "server/Server.h"
 #include "barrier/NativeFileProtocol.h"
 #include "barrier/ProtocolUtil.h"
@@ -471,6 +472,13 @@ Server::switchScreen(BaseClientProxy* dst,
 	m_edgeBlock.clear();
 	auto switchStarted = std::chrono::steady_clock::now();
 
+	// remember where the cursor was on the screen it leaves, for a later shortcut switch back
+	// (Barrier recorded it only on shortcut switches, so after crossing an edge a shortcut went to
+	// a stale spot such as the top-left corner)
+	if (dst != m_active) {
+		m_active->setJumpCursorPos(m_x, m_y);
+	}
+
 	// record new position
 	m_x       = x;
 	m_y       = y;
@@ -541,11 +549,15 @@ Server::jumpToScreen(BaseClientProxy* newScreen)
 	// record the current cursor position on the active screen
 	m_active->setJumpCursorPos(m_x, m_y);
 
-	// a shortcut switch puts the cursor in the middle of the target screen, where it is easy to find
-	// (the last position there, which Barrier used, was often a corner or the screen's origin)
-	SInt32 sx, sy, sw, sh;
+	// return to where the cursor last was on the target screen (recorded on every switch, see
+	// switchScreen), moved in from the edges so the cursor does not leave again at once. The middle
+	// of the whole desktop would fall between two monitors on a computer with more than one.
+	SInt32 x, y, sx, sy, sw, sh;
+	newScreen->getJumpCursorPos(x, y);
 	newScreen->getShape(sx, sy, sw, sh);
-	SInt32 x = sx + sw / 2, y = sy + sh / 2;
+	SInt32 inset = (std::max<SInt32>)(1, (std::min)(sw, sh) / 20);
+	x = (std::max)(sx + inset, (std::min)(x, sx + sw - 1 - inset));
+	y = (std::max)(sy + inset, (std::min)(y, sy + sh - 1 - inset));
 
 	switchScreen(newScreen, x, y, false);
 }

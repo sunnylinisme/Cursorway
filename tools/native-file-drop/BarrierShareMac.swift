@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 import AppKit
+import CryptoKit
+import Security
 import ApplicationServices
 import Foundation
 import ServiceManagement
@@ -296,7 +298,19 @@ enum ShareUpdate {
     static let prefixes = ["v", "mac-v"]
     // The repository was renamed from barrier to Cursorway; release pages may use either name, in any case.
     static let origins = ["https://github.com/sunnylinisme/barrier/releases/", "https://github.com/sunnylinisme/cursorway/releases/"]
-    struct Release: Decodable { let tag_name: String; let html_url: String; let draft: Bool?; let prerelease: Bool? }
+    struct Asset: Decodable { let name: String; let size: Int64; let digest: String?; let browser_download_url: String }
+    struct Release: Decodable { let tag_name: String; let html_url: String; let draft: Bool?; let prerelease: Bool?; let assets: [Asset]? }
+    // The Mac ZIP of a release: Cursorway-X.Y.Z-macos-arm64.zip from this repository, with its size and (when GitHub lists it) SHA-256.
+    struct Zip { let url: URL; let size: Int64; let sha256: String? }
+    struct Found { let version: String; let url: URL; let zip: Zip? }
+    static let downloads = "https://github.com/sunnylinisme/cursorway/releases/download/"
+    static func zip(_ release: Release, _ version: String) -> Zip? {
+        guard let asset = release.assets?.first(where: { $0.name == "Cursorway-\(version)-macos-arm64.zip" }), asset.size > 0,
+              asset.browser_download_url.lowercased().hasPrefix(downloads), let url = URL(string: asset.browser_download_url) else { return nil }
+        var sha: String?
+        if let digest = asset.digest?.lowercased(), digest.hasPrefix("sha256:") { sha = String(digest.dropFirst(7)) }
+        return Zip(url: url, size: asset.size, sha256: sha)
+    }
     static func parts(_ text: String) -> [Int]? {
         let pieces = text.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
         guard (1...3).contains(pieces.count), !pieces.contains(where: { $0 == nil || $0! < 0 }) else { return nil }
@@ -304,18 +318,100 @@ enum ShareUpdate {
     }
     static var current: [Int] { parts(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") ?? [0, 0, 0] }
     // Returns the highest non-draft, non-prerelease Mac release newer than current, or nil.
-    static func newer(_ data: Data, current: [Int]) -> (version: String, url: URL)? {
+    static func newer(_ data: Data, current: [Int]) -> Found? {
         guard let list = try? JSONDecoder().decode([Release].self, from: data) else { return nil }
-        var best: ([Int], URL)?
+        var best: ([Int], URL, Release)?
         for release in list where release.draft != true && release.prerelease != true {
             guard let prefix = prefixes.first(where: { release.tag_name.hasPrefix($0) }), let version = parts(String(release.tag_name.dropFirst(prefix.count))), let url = URL(string: release.html_url),
                   origins.contains(where: { release.html_url.lowercased().hasPrefix($0) }) else { continue }
             if version.lexicographicallyPrecedes(current) || version == current { continue }
-            if best == nil || best!.0.lexicographicallyPrecedes(version) { best = (version, url) }
+            if best == nil || best!.0.lexicographicallyPrecedes(version) { best = (version, url, release) }
         }
         guard let best = best else { return nil }
-        return (best.0.map(String.init).joined(separator: "."), best.1)
+        let version = best.0.map(String.init).joined(separator: ".")
+        return Found(version: version, url: best.1, zip: zip(best.2, version))
     }
+}
+
+// Background update: download the release ZIP, check its size, SHA-256 and signature against this
+// app, then on 重新啟動 a small script waits for Cursorway to quit, swaps the app and opens it again.
+enum ShareUpdater {
+    static var folder: URL { FileManager.default.temporaryDirectory.appendingPathComponent("Cursorway-Update", isDirectory: true) }
+    // Only an app bundle in a folder this user may write to can replace itself; otherwise the download page opens.
+    static var canInstall: Bool { let app = Bundle.main.bundleURL; return app.pathExtension == "app" && FileManager.default.isWritableFile(atPath: app.deletingLastPathComponent().path) }
+    static func sha256(_ file: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty { hash.update(data: chunk) }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+    // nil when the file is the published ZIP (same size, and same SHA-256 when GitHub lists one).
+    static func verify(_ file: URL, _ zip: ShareUpdate.Zip) -> String? {
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? -1
+        if size != zip.size { return "檔案大小不符" }
+        if let expected = zip.sha256, sha256(file) != expected { return "檔案校驗不符" }
+        return nil
+    }
+    // Identifier and leaf certificate of a signed bundle, after a strict check of it and everything inside.
+    static func signer(_ url: URL) -> (id: String, cert: Data)? {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code = code,
+              SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate | kSecCSCheckNestedCode), nil) == errSecSuccess else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess, let dict = info as? [String: Any],
+              let id = dict[kSecCodeInfoIdentifier as String] as? String, let certs = dict[kSecCodeInfoCertificates as String] as? [SecCertificate], let leaf = certs.first else { return nil }
+        return (id, SecCertificateCopyData(leaf) as Data)
+    }
+    // nil when the new app is the expected version and signed exactly like this one, so privacy grants carry over.
+    static func check(_ app: URL, version: String, current: URL = Bundle.main.bundleURL) -> String? {
+        guard Bundle(url: app)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == version else { return "版本不符" }
+        guard let new = signer(app) else { return "新版的簽章無效" }
+        guard let mine = signer(current), mine.id == new.id, mine.cert == new.cert else { return "新版的簽章和目前的版本不同" }
+        return nil
+    }
+    static func unpack(_ file: URL, into folder: URL) -> URL? {
+        try? FileManager.default.removeItem(at: folder)
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto"); process.arguments = ["-x", "-k", file.path, folder.path]
+        guard (try? process.run()) != nil else { return nil }
+        process.waitUntilExit()
+        let app = folder.appendingPathComponent("Cursorway.app")
+        return process.terminationStatus == 0 && FileManager.default.fileExists(atPath: app.path) ? app : nil
+    }
+    // Waits for this process to end, swaps the app (restoring the old one if the copy fails) and opens it.
+    static let script = """
+    pid="$1"; old="$2"; new="$3"; back="$old.previous"
+    while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+    rm -rf "$back"
+    if mv "$old" "$back" && /usr/bin/ditto "$new" "$old"; then rm -rf "$back"; else rm -rf "$old"; mv "$back" "$old"; fi
+    /usr/bin/open "$old"
+    """
+    static func install(_ app: URL) throws {
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script, "cursorway-update", String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundleURL.path, app.path]
+        try process.run()
+    }
+}
+
+// Reports a download's progress and hands over the finished file before URLSession deletes it.
+final class ShareDownload: NSObject, URLSessionDownloadDelegate {
+    let target: URL, progress: (Int64, Int64) -> Void, done: (String?) -> Void
+    var session: URLSession?, task: URLSessionDownloadTask?, finished = false
+    init(_ url: URL, to target: URL, progress: @escaping (Int64, Int64) -> Void, done: @escaping (String?) -> Void) {
+        self.target = target; self.progress = progress; self.done = done; super.init()
+        session = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
+        task = session!.downloadTask(with: url); task!.resume()
+    }
+    func cancel() { task?.cancel() }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) { progress(totalBytesWritten, totalBytesExpectedToWrite) }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        if let http = downloadTask.response as? HTTPURLResponse, http.statusCode != 200 { finish("伺服器回應 \(http.statusCode)"); return }
+        do { try? FileManager.default.removeItem(at: target); try FileManager.default.moveItem(at: location, to: target); finish(nil) } catch { finish(error.localizedDescription) }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error { finish((error as NSError).code == NSURLErrorCancelled ? "" : error.localizedDescription) }
+    }
+    func finish(_ problem: String?) { guard !finished else { return }; finished = true; session?.finishTasksAndInvalidate(); done(problem) }
 }
 
 // Launch at login through the system login items (macOS 13+).
@@ -767,6 +863,10 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     let arrange = NSButton(title: "排列螢幕", target: nil, action: nil)
     var computers: [NearbyComputer] = [], connectedAddress = "", consent: NSWindow?, consentId: String?, enabled = true, loading = true, promptedPermissions = false
     var updateURL: URL?, updateTimer: Timer?
+    // Background update state: the release found, the running download, and the checked app ready to install.
+    var updateFound: ShareUpdate.Found?, updateDownload: ShareDownload?, updateReady: URL?
+    let bannerButton = SharePrimaryButton(title: "下載更新", target: nil, action: nil), bannerSource = NSTextField(labelWithString: ""), bannerNotes = NSButton(title: "", target: nil, action: nil)
+    static let bannerHeight: CGFloat = 56
     let autostart = NSButton(checkboxWithTitle: "登入時自動啟動", target: nil, action: nil)
     var transferring = false, progress = ShareProgress()
     lazy var transferPanel = ShareTransferPanel(target: self, cancelAction: #selector(resume))
@@ -816,10 +916,16 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let root = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H)); root.fill = ShareStyle.background
         window.contentView = root
         // Update banner above everything; the window grows by its height while it shows.
-        banner.frame = NSRect(x: 0, y: 0, width: W, height: 44); banner.fill = ShareStyle.tint; banner.isHidden = true
-        bannerText.textColor = ShareStyle.blueInk; bannerText.font = .systemFont(ofSize: 13); bannerText.lineBreakMode = .byTruncatingTail; bannerText.frame = NSRect(x: 24, y: 13, width: 500, height: 18); banner.addSubview(bannerText)
-        let download = SharePrimaryButton(title: "下載更新", target: self, action: #selector(openUpdate)); download.frame = NSRect(x: 560, y: 7, width: 104, height: 30); banner.addSubview(download)
-        let dismiss = NSButton(title: "✕", target: self, action: #selector(dismissUpdate)); dismiss.isBordered = false; dismiss.frame = NSRect(x: 670, y: 7, width: 30, height: 30); dismiss.toolTip = "稍後再說"; banner.addSubview(dismiss)
+        // Two lines: what is happening, then where the update comes from and a link to its release notes.
+        banner.frame = NSRect(x: 0, y: 0, width: W, height: ShareApp.bannerHeight); banner.fill = ShareStyle.tint; banner.isHidden = true
+        bannerText.textColor = ShareStyle.blueInk; bannerText.font = .systemFont(ofSize: 13); bannerText.lineBreakMode = .byTruncatingTail; bannerText.frame = NSRect(x: 24, y: 9, width: 520, height: 18); banner.addSubview(bannerText)
+        bannerSource.stringValue = "來源：github.com/sunnylinisme/Cursorway ·"; bannerSource.textColor = ShareStyle.blueInk; bannerSource.font = .systemFont(ofSize: 11); bannerSource.sizeToFit()
+        bannerSource.frame = NSRect(x: 24, y: 31, width: bannerSource.frame.width, height: 16); banner.addSubview(bannerSource)
+        bannerNotes.isBordered = false; bannerNotes.target = self; bannerNotes.action = #selector(openUpdate); bannerNotes.toolTip = "在瀏覽器打開這一版的 GitHub 發佈頁"
+        bannerNotes.attributedTitle = NSAttributedString(string: "查看更新內容", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: ShareStyle.blueInk, .underlineStyle: NSUnderlineStyle.single.rawValue])
+        bannerNotes.sizeToFit(); bannerNotes.frame = NSRect(x: bannerSource.frame.maxX + 2, y: 30, width: bannerNotes.frame.width, height: 18); banner.addSubview(bannerNotes)
+        bannerButton.target = self; bannerButton.action = #selector(updateClicked); bannerButton.frame = NSRect(x: 560, y: 13, width: 104, height: 30); banner.addSubview(bannerButton)
+        let dismiss = NSButton(title: "✕", target: self, action: #selector(dismissUpdate)); dismiss.isBordered = false; dismiss.frame = NSRect(x: 670, y: 13, width: 30, height: 30); dismiss.toolTip = "稍後再說"; banner.addSubview(dismiss)
         body.frame = NSRect(x: 0, y: 0, width: W, height: H); root.addSubview(body); root.addSubview(banner)
         func at(_ view: NSView, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) { view.frame = NSRect(x: x, y: y, width: width, height: height); body.addSubview(view) }
         func text(_ field: NSTextField, _ size: CGFloat, _ weight: NSFont.Weight = .regular, _ color: NSColor = ShareStyle.ink) { field.font = .systemFont(ofSize: size, weight: weight); field.textColor = color; field.lineBreakMode = .byTruncatingTail }
@@ -899,8 +1005,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     var bannerVersion = ""
     func setBanner(_ show: Bool) {
         guard banner.isHidden == show else { return }
-        banner.isHidden = !show; body.frame.origin.y = show ? 44 : 0
-        var frame = window.frame; let delta: CGFloat = show ? 44 : -44
+        banner.isHidden = !show; body.frame.origin.y = show ? ShareApp.bannerHeight : 0
+        var frame = window.frame; let delta: CGFloat = show ? ShareApp.bannerHeight : -ShareApp.bannerHeight
         frame.size.height += delta; frame.origin.y -= delta; window.setFrame(frame, display: true)
         (window.contentView as? FlippedView)?.frame.size.height = body.frame.maxY
     }
@@ -1126,9 +1232,11 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
                 let alert = NSAlert(); alert.messageText = "檢查更新"
                 if let data = data, let found = ShareUpdate.newer(data, current: ShareUpdate.current) {
                     self.showUpdate(found)
-                    alert.informativeText = "有新版 \(found.version)。"; alert.addButton(withTitle: "前往下載"); alert.addButton(withTitle: "稍後")
+                    let auto = self.autoUpdate
+                    alert.informativeText = "有新版 \(found.version)。" + (auto ? "按「更新」會在背景下載，下載完按「重新啟動」就會安裝。" : "")
+                    alert.addButton(withTitle: auto ? "更新" : "前往下載"); alert.addButton(withTitle: "稍後")
                     NSApp.activate(ignoringOtherApps: true)
-                    if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(found.url) }
+                    if alert.runModal() == .alertFirstButtonReturn { if auto { self.window.makeKeyAndOrderFront(nil); if self.updateDownload == nil && self.updateReady == nil { self.updateClicked() } } else { NSWorkspace.shared.open(found.url) } }
                     return
                 }
                 alert.informativeText = data != nil ? "目前已是最新版（\(ShareApp.versionLabel)）。" : "無法檢查更新：" + (error?.localizedDescription ?? "沒有回應")
@@ -1136,10 +1244,14 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             }
         }.resume()
     }
-    func showUpdate(_ found: (version: String, url: URL)?) {
+    var autoUpdate: Bool { updateFound?.zip != nil && ShareUpdater.canInstall }
+    func showUpdate(_ found: ShareUpdate.Found?) {
         guard let found = found else { setBanner(false); return }
-        updateURL = found.url; bannerVersion = found.version
-        bannerText.stringValue = "有新版 \(found.version) · 安裝時會自動關閉並重新開啟 Cursorway"
+        // A download in progress or ready to install for this version keeps its own text.
+        if updateFound?.version == found.version && (updateDownload != nil || updateReady != nil) { return }
+        updateFound = found; updateURL = found.url; bannerVersion = found.version; updateReady = nil
+        bannerButton.title = autoUpdate ? "更新" : "下載更新"
+        bannerText.stringValue = "有新版 \(found.version) · " + (autoUpdate ? "可在背景下載，下載完按重新啟動" : "下載後把 Cursorway 拖到「應用程式」取代舊版")
         setBanner(dismissedUpdate != found.version)
         // While the window is closed a system notification announces it once per version.
         if announcedUpdate != found.version && !test && !window.isVisible {
@@ -1147,14 +1259,16 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             let center = UNUserNotificationCenter.current()
             center.requestAuthorization(options: [.alert]) { granted, _ in
                 guard granted else { return }
-                let content = UNMutableNotificationContent(); content.title = "Cursorway 有新版 \(found.version)"; content.body = "點這裡下載更新，安裝時會自動重新開啟。"
-                content.userInfo = ["url": found.url.absoluteString]
+                let content = UNMutableNotificationContent(); content.title = "Cursorway 有新版 \(found.version)"; content.body = self.autoUpdate ? "點這裡在背景下載新版，下載完按重新啟動就會安裝。" : "點這裡打開下載頁。"
+                content.userInfo = ["url": found.url.absoluteString, "auto": self.autoUpdate]
                 center.add(UNNotificationRequest(identifier: "update-" + found.version, content: content, trigger: nil))
             }
         }
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        if let text = response.notification.request.content.userInfo["url"] as? String, let url = URL(string: text) { NSWorkspace.shared.open(url) }
+        let info = response.notification.request.content.userInfo
+        if info["auto"] as? Bool == true && autoUpdate { NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); if updateDownload == nil && updateReady == nil { updateClicked() } }
+        else if let text = info["url"] as? String, let url = URL(string: text) { NSWorkspace.shared.open(url) }
         completionHandler()
     }
     func sendTargets() { do { let list = try options.advanced.targetList(); if !list.isEmpty || link != nil { send("TARGETS\t" + list) } } catch { showError(error) } }
@@ -1289,6 +1403,50 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         }
     }
     @objc func openUpdate() { if let url = updateURL { NSWorkspace.shared.open(url) } }
+    // Banner button: 更新 starts a background download, 取消 stops it, 重新啟動 swaps in the new app and opens it.
+    @objc func updateClicked() {
+        guard let found = updateFound else { return }
+        if let app = updateReady {
+            guard FileManager.default.fileExists(atPath: app.path) else { updateReady = nil; bannerButton.title = "更新"; updateClicked(); return }
+            do { try ShareUpdater.install(app); log("正在安裝新版 \(found.version)，Cursorway 會重新開啟。"); NSApp.terminate(nil) } catch { bannerText.stringValue = "無法安裝：" + error.localizedDescription }
+            return
+        }
+        if let download = updateDownload { download.cancel(); return }
+        guard autoUpdate, let zip = found.zip else { openUpdate(); return }
+        let folder = ShareUpdater.folder; try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("Cursorway-\(found.version)-macos-arm64.zip")
+        bannerButton.title = "取消"; showProgress(0, zip.size)
+        updateDownload = ShareDownload(zip.url, to: file, progress: { [weak self] got, total in self?.showProgress(got, total > 0 ? total : zip.size) }) { [weak self] problem in
+            guard let self = self else { return }
+            self.updateDownload = nil
+            if let problem = problem { self.updateFailed(problem); return }
+            self.bannerText.stringValue = "正在核對新版…"
+            DispatchQueue.global().async {
+                var problem = ShareUpdater.verify(file, zip), app: URL?
+                if problem == nil { app = ShareUpdater.unpack(file, into: folder.appendingPathComponent(found.version)); if app == nil { problem = "無法解壓縮" } }
+                if problem == nil, let app = app { problem = ShareUpdater.check(app, version: found.version) }
+                try? FileManager.default.removeItem(at: file)
+                DispatchQueue.main.async {
+                    if let problem = problem { self.updateFailed(problem); return }
+                    self.updateReady = app; self.bannerButton.title = "重新啟動"
+                    self.bannerText.stringValue = "新版 \(found.version) 已下載並核對無誤 · 按「重新啟動」安裝，連線會中斷幾秒"
+                    self.log("新版 \(found.version) 已下載並核對無誤。")
+                    if !self.test && !self.window.isVisible {
+                        let content = UNMutableNotificationContent(); content.title = "Cursorway \(found.version) 已下載"; content.body = "打開 Cursorway，按「重新啟動」安裝新版。"
+                        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ready-" + found.version, content: content, trigger: nil))
+                    }
+                }
+            }
+        }
+    }
+    func showProgress(_ got: Int64, _ total: Int64) {
+        bannerText.stringValue = String(format: "下載新版中 %d%%（%.1f / %.1f MB）· 可以繼續使用", total > 0 ? Int(min(100, got * 100 / total)) : 0, Double(got) / 1048576, Double(total) / 1048576)
+    }
+    func updateFailed(_ problem: String) {
+        bannerButton.title = "更新"
+        bannerText.stringValue = problem.isEmpty ? "有新版 \(bannerVersion) · 已取消下載" : "下載失敗：" + problem
+        if !problem.isEmpty { log("下載更新失敗：" + problem) }
+    }
     @objc func roleChanged() { guard !loading else { return }; stopLink(); stopBackend(); options.host = role.indexOfSelectedItem == 0; segment.selectedSegment = role.indexOfSelectedItem; roleChangedLabel(); do { try refreshRole(); if enabled { startLink() } } catch { showError(error) } }
     // 全部電腦: a small list beside the button with every computer's jump number, name and state.
     func allComputersView() -> NSView {
@@ -1832,6 +1990,25 @@ func selfTest(_ directory: URL) throws {
     app.showUpdate(found); RunLoop.current.run(until: Date().addingTimeInterval(0.2))
     guard !app.banner.isHidden, app.bannerText.stringValue.contains("0.3.11") else { throw ShareError.message("Update banner did not show") }
     try snapshot(app.window.contentView, "gui-mac-update.png")
+    guard app.bannerSource.stringValue.contains("github.com/sunnylinisme/Cursorway"), app.bannerNotes.title == "查看更新內容", app.bannerButton.title == (found.zip != nil && ShareUpdater.canInstall ? "更新" : "下載更新") else { throw ShareError.message("Update banner source line or button wrong") }
+    // Background update: the Mac ZIP comes only from this repository, and is checked by size and SHA-256.
+    let zipJSON = #"[{"tag_name":"v0.3.30","html_url":"https://github.com/sunnylinisme/Cursorway/releases/tag/v0.3.30","draft":false,"prerelease":false,"assets":[{"name":"Cursorway-Setup-0.3.30-x64.exe","size":3,"browser_download_url":"https://github.com/sunnylinisme/Cursorway/releases/download/v0.3.30/Cursorway-Setup-0.3.30-x64.exe"},{"name":"Cursorway-0.3.30-macos-arm64.zip","size":3,"digest":"sha256:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD","browser_download_url":"https://github.com/sunnylinisme/Cursorway/releases/download/v0.3.30/Cursorway-0.3.30-macos-arm64.zip"}]}]"#
+    guard let withZip = ShareUpdate.newer(Data(zipJSON.utf8), current: [0, 3, 20]), let zip = withZip.zip, zip.size == 3, zip.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", zip.url.lastPathComponent == "Cursorway-0.3.30-macos-arm64.zip" else { throw ShareError.message("Mac update ZIP not found in the release") }
+    guard ShareUpdate.newer(Data(zipJSON.replacingOccurrences(of: "https://github.com/sunnylinisme/Cursorway/releases/download/", with: "https://example.com/").utf8), current: [0, 3, 20])?.zip == nil else { throw ShareError.message("Update ZIP from another site was accepted") }
+    let sample = FileManager.default.temporaryDirectory.appendingPathComponent("cursorway-update-test.bin"); try Data("abc".utf8).write(to: sample)
+    guard ShareUpdater.verify(sample, zip) == nil, ShareUpdater.verify(sample, ShareUpdate.Zip(url: zip.url, size: 3, sha256: String(repeating: "0", count: 64))) == "檔案校驗不符", ShareUpdater.verify(sample, ShareUpdate.Zip(url: zip.url, size: 4, sha256: nil)) == "檔案大小不符" else { throw ShareError.message("Update file check wrong") }
+    try? FileManager.default.removeItem(at: sample)
+    let syntax = Process(); syntax.executableURL = URL(fileURLWithPath: "/bin/sh"); syntax.arguments = ["-n", "-c", ShareUpdater.script]; try syntax.run(); syntax.waitUntilExit()
+    guard syntax.terminationStatus == 0 else { throw ShareError.message("Update install script has a syntax error") }
+    if ShareUpdater.signer(Bundle.main.bundleURL) != nil, let mine = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+        guard ShareUpdater.check(Bundle.main.bundleURL, version: mine) == nil, ShareUpdater.check(Bundle.main.bundleURL, version: "0.0.1") == "版本不符" else { throw ShareError.message("Update signature check rejected this app") }
+    }
+    app.showUpdate(withZip); RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    guard app.bannerButton.title == (ShareUpdater.canInstall ? "更新" : "下載更新") else { throw ShareError.message("Background update button wrong") }
+    app.showProgress(1048576, 4194304)
+    guard app.bannerText.stringValue == "下載新版中 25%（1.0 / 4.0 MB）· 可以繼續使用" else { throw ShareError.message("Update progress text wrong: " + app.bannerText.stringValue) }
+    try snapshot(app.window.contentView, "gui-mac-update-progress.png")
+    app.updateFound = nil; app.showUpdate(found)
     app.dismissUpdate(); app.showUpdate(found)
     guard app.banner.isHidden else { throw ShareError.message("Dismissed update banner came back for the same version") }
     // Paired receiver: badge, summary and the arrange editor and advanced settings.

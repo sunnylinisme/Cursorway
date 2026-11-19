@@ -784,7 +784,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Before anything reads settings or starts barrier-link: BarrierShare → Cursorway.
         if !test { ShareSettings.root = ShareSettings.migrateRoot() }
-        if !test, let moved = ShareApp.retireOldApp() { log("已把舊的 Barrier Share.app 移到垃圾桶：\(moved.path)") }
+        if !test, ShareApp.retireOldApp() != nil { log("已把舊版 App 移到垃圾桶。") }
         buildWindow()
         // ⌘V while files are still arriving: paste them as soon as they are complete.
         pasteMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -1052,7 +1052,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
                 if !options.advanced.clipboard { peerLabel.stringValue += " · 剪貼簿未共用" }
             } else if enabled && (status.stringValue.hasPrefix("滑鼠在") || status.stringValue.hasPrefix("正在控制") || status.stringValue.hasPrefix("正在搜尋接收端")) {
                 status.stringValue = peers.count == 1 ? "正在等待 \(peers[0].name) 連線…" : "正在等待接收端連線…"
-                peerLabel.stringValue = "對方需要開著 Cursorway（或舊版 Barrier Share），並在同一個網路"
+                peerLabel.stringValue = "對方需要開著 Cursorway，並在同一個網路"
             }
         } else if options.host {
             tiles.append(.init(cell: ShareSettings.step(options.position), name: "接收端", placeholder: true))

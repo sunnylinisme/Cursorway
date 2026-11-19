@@ -196,10 +196,10 @@ class Wire:
         raise RuntimeError("Missing streaming file clipboard")
 
 
-# On CI one receiver run also goes through barrier-service.exe, which starts the core as SYSTEM
+# On CI one receiver run also goes through cursorway-service.exe, which starts the core as SYSTEM
 # with the session's winlogon token, as the installed app does. It must still copy files from Explorer.
 SERVICE_RUN = os.environ.get("GITHUB_ACTIONS") == "true"
-SERVICE_PIPE = r"\\.\pipe\BarrierShare.Service"
+SERVICE_PIPE = r"\\.\pipe\Cursorway.Service"
 def service(*command):
     subprocess.run(["sc.exe", *command], check=False, capture_output=True)
 def service_request(*fields):
@@ -215,10 +215,10 @@ def service_request(*fields):
             time.sleep(.3)
 runs = [(role, d, False) for role in ["server", "client"] for d in ["right", "left", "up", "down"]] + ([("client", "right", True)] if SERVICE_RUN else [])
 if SERVICE_RUN:
-    service("stop", "BarrierShare"); service("delete", "BarrierShare")
-    created = subprocess.run(["sc.exe", "create", "BarrierShare", "binPath=", '"' + str(binary / "barrier-service.exe") + '"', "start=", "demand"], capture_output=True, text=True)
+    service("stop", "Cursorway"); service("delete", "Cursorway")
+    created = subprocess.run(["sc.exe", "create", "Cursorway", "binPath=", '"' + str(binary / "cursorway-service.exe") + '"', "start=", "demand"], capture_output=True, text=True)
     assert created.returncode == 0, created.stdout + created.stderr
-    service("start", "BarrierShare")
+    service("start", "Cursorway")
 for role, direction, via_service in runs:
     with tempfile.TemporaryDirectory(prefix="barrier-clipboard-") as temporary:
         root = pathlib.Path(temporary)
@@ -230,7 +230,7 @@ for role, direction, via_service in runs:
         console = open(root / "console.log", "w", encoding="utf-8")
         try:
             def pair(*args):
-                return subprocess.check_output([str(binary / "barrier-pair.exe"), *map(str, args)], text=True).strip()
+                return subprocess.check_output([str(binary / "cursorway-pair.exe"), *map(str, args)], text=True).strip()
 
             def driver(*args):
                 wire.drive([str(binary / "native-windows-drop-test.exe"), *map(str, args)])
@@ -253,16 +253,16 @@ for role, direction, via_service in runs:
                     config = root / "server.conf"
                     opposite = {"right": "left", "left": "right", "up": "down", "down": "up"}[direction]
                     config.write_text(("section: screens\n windows-host:\n windows:\nend\nsection: links\n windows-host:\n  right = windows\n windows:\n  left = windows-host\nend\nsection: options\n clipboardSharing = true\nend\n").replace("right = windows", direction + " = windows").replace("left = windows-host", opposite + " = windows-host"))
-                    args = ["barriers.exe", "--name", "windows-host", "-c", str(config), "--address", "127.0.0.1:" + str(port)]
+                    args = ["cursorway-server.exe", "--name", "windows-host", "-c", str(config), "--address", "127.0.0.1:" + str(port)]
                     profile = server_profile
                 else:
                     listener.listen(1); listener.settimeout(15)
-                    args = ["barrierc.exe", "--name", "windows", "127.0.0.1:" + str(port)]
+                    args = ["cursorway-client.exe", "--name", "windows", "127.0.0.1:" + str(port)]
                     profile = client_profile
                 args[0] = str(binary / args[0])
                 args[1:1] = ["-f", "--no-tray", "--debug", "DEBUG1", "--file-clipboard", "--profile-dir", str(profile), "--log", str(root / "core.log")]
                 if via_service:
-                    # The pairing identity and trust travel as data, exactly as BarrierShare.exe sends them.
+                    # The pairing identity and trust travel as data, exactly as Cursorway.exe sends them.
                     import base64
                     data = lambda path: base64.b64encode(path.read_bytes()).decode()
                     reply = service_request("START", "receiver", "127.0.0.1:" + str(port), data(client_profile / "SSL/Barrier.pem"),
@@ -364,8 +364,8 @@ for role, direction, via_service in runs:
                 if path.exists(): print(path.read_text(errors="replace"))
 
 if SERVICE_RUN:
-    service("stop", "BarrierShare"); service("delete", "BarrierShare")
+    service("stop", "Cursorway"); service("delete", "Cursorway")
     # Leave nothing behind for later steps (the discovery test needs port 24801 free).
     time.sleep(2)
-    for image in ["barrier-service.exe", "barrierc.exe", "barriers.exe", "barrier-link.exe"]:
+    for image in ["cursorway-service.exe", "cursorway-client.exe", "cursorway-server.exe", "cursorway-link.exe"]:
         subprocess.run(["taskkill", "/F", "/IM", image], capture_output=True)

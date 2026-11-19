@@ -60,7 +60,7 @@ static class ShareSettings
     }
     public static string Pair(params string[] args)
     {
-        using (var process = Process.Start(Command("barrier-pair.exe", args))) {
+        using (var process = Process.Start(Command("cursorway-pair.exe", args))) {
             var output = Task.Factory.StartNew(() => process.StandardOutput.ReadToEnd());
             var error = Task.Factory.StartNew(() => process.StandardError.ReadToEnd());
             if (!process.WaitForExit(15000)) { process.Kill(); throw new IOException("配對工具未回應。"); }
@@ -305,7 +305,7 @@ static class ShareSettings
                 throw new IOException("請輸入主控端的區域網路 IPv4 位址，例如 192.168.1.20。");
             args.AddRange(WheelArgs(Advanced)); args.Add(address);
         }
-        return Command(host ? "barriers.exe" : "barrierc.exe", args.ToArray());
+        return Command(host ? "cursorway-server.exe" : "cursorway-client.exe", args.ToArray());
     }
 }
 
@@ -346,7 +346,7 @@ static class ShareUpdate
     {
         ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
         var request = (HttpWebRequest)WebRequest.Create(Releases);
-        request.UserAgent = "BarrierShare-UpdateCheck"; request.Accept = "application/vnd.github+json"; request.Timeout = 15000;
+        request.UserAgent = "Cursorway-UpdateCheck"; request.Accept = "application/vnd.github+json"; request.Timeout = 15000;
         using (var response = request.GetResponse()) using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
             return Newer(reader.ReadToEnd(), Current);
     }
@@ -411,12 +411,12 @@ sealed class ShareAdvanced
     }
 }
 
-// Talks to barrier-service.exe (installed version): the service runs the core with system rights so
+// Talks to cursorway-service.exe (installed version): the service runs the core with system rights so
 // it also works on the sign-in screen, the lock screen and UAC prompts. The portable copy has no service.
 static class ShareService
 {
-    public const string Pipe = "BarrierShare.Service";
-    public static bool Installed { get { return File.Exists(Path.Combine(ShareSettings.Bin, "barrier-service.exe")); } }
+    public const string Pipe = "Cursorway.Service";
+    public static bool Installed { get { return File.Exists(Path.Combine(ShareSettings.Bin, "cursorway-service.exe")); } }
     public static string[] Request(string line, int timeout = 1500)
     {
         using (var pipe = new System.IO.Pipes.NamedPipeClientStream(".", Pipe, System.IO.Pipes.PipeDirection.InOut)) {
@@ -446,7 +446,9 @@ static class ShareService
 static class ShareLogin
 {
     const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
-    public static string Name = "BarrierShare";
+    public static string Name = "Cursorway";
+    // Before the rename the value was called BarrierShare and pointed at Cursorway.exe.
+    const string OldName = "BarrierShare";
     public static string Command { get { return ShareSettings.Quote(Application.ExecutablePath) + " --background"; } }
     public static bool Enabled
     {
@@ -457,7 +459,15 @@ static class ShareLogin
             }
         }
     }
-    public static void Refresh() { try { if (Enabled && !Command.Equals(ReadValue())) Enabled = true; } catch (Exception) { } }
+    public static void Refresh()
+    {
+        try {
+            using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey, true)) {
+                if (key != null && key.GetValue(OldName) != null) { key.DeleteValue(OldName, false); Enabled = true; }
+            }
+            if (Enabled && !Command.Equals(ReadValue())) Enabled = true;
+        } catch (Exception) { }
+    }
     public static string ReadValue() { using (var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(RunKey)) return key == null ? null : key.GetValue(Name) as string; }
 }
 
@@ -1410,7 +1420,7 @@ sealed class ShareWindow : Form
         if (link != null || testing || closing || !enabled) return;
         try {
             ShareSettings.Init(Host);
-            var info = ShareSettings.Command("barrier-link.exe", ShareSettings.Profile(Host), Host ? "host" : "receiver", Environment.MachineName);
+            var info = ShareSettings.Command("cursorway-link.exe", ShareSettings.Profile(Host), Host ? "host" : "receiver", Environment.MachineName);
             info.RedirectStandardInput = true;
             var process = new Process { StartInfo = info, EnableRaisingEvents = true }; link = process;
             process.OutputDataReceived += delegate(object s, DataReceivedEventArgs e) { Post(process, e.Data, true); };
@@ -2333,7 +2343,7 @@ static class ShareElevation
     {
         try {
             if (Type != 2) return false;
-            string marker = Path.Combine(Path.GetTempPath(), "BarrierShare.unelevated");
+            string marker = Path.Combine(Path.GetTempPath(), "Cursorway.unelevated");
             if (File.Exists(marker) && DateTime.UtcNow - File.GetLastWriteTimeUtc(marker) < TimeSpan.FromSeconds(30)) return false;
             File.WriteAllText(marker, "");
             // explorer.exe hands the path to the running (unelevated) shell, which starts it with normal rights.
@@ -2346,7 +2356,7 @@ static class ShareElevation
 static class ShareProgram
 {
     // windows-setup.iss signals this before replacing files; keep the name in sync.
-    public const string QuitEvent = "Local\\BarrierShare.Quit";
+    public const string QuitEvent = "Local\\Cursorway.Quit";
     [STAThread]
     static int Main(string[] args)
     {
@@ -2376,7 +2386,7 @@ static class ShareProgram
         // user's normal rights and Windows blocks that for higher-integrity windows. Start again unelevated.
         if (args.Length == 0 && ShareElevation.Relaunch()) return 0;
         bool created;
-        using (var mutex = new Mutex(true, "Local\\BarrierShare.Desktop", out created)) {
+        using (var mutex = new Mutex(true, "Local\\Cursorway.Desktop", out created)) {
             if (!created) { MessageBox.Show("Cursorway 已在執行，請從右下角圖示開啟。", "Cursorway"); return 0; }
             // The only running copy: move the pre-rename settings folder before anything opens it.
             ShareSettings.MoveFromOldName();
@@ -2440,13 +2450,13 @@ static class ShareProgram
             string second = meter.Describe("[2026-11-12T10:00:01] INFO: file clipboard: progress received 3145728 bytes", t0.AddSeconds(2));
             if (first == null || !first.Contains("1.0 MB") || second == null || !second.StartsWith("正在接收") || !second.Contains("3.0 MB") || !second.Contains("MB/s") || meter.Describe("file clipboard: sent 5 bytes", t0) != null)
                 throw new Exception("Transfer progress parsing failed: " + first + " / " + second);
-            ShareLogin.Name = "BarrierShare-SelfTest-" + Guid.NewGuid().ToString("N");
+            ShareLogin.Name = "Cursorway-SelfTest-" + Guid.NewGuid().ToString("N");
             try {
                 ShareLogin.Enabled = true;
                 if (!ShareLogin.Enabled || ShareLogin.ReadValue() != ShareLogin.Command || !ShareLogin.Command.EndsWith("\" --background")) throw new Exception("Launch-at-login entry not written");
                 ShareLogin.Enabled = false;
                 if (ShareLogin.Enabled) throw new Exception("Launch-at-login entry not removed");
-            } finally { ShareLogin.Enabled = false; ShareLogin.Name = "BarrierShare"; }
+            } finally { ShareLogin.Enabled = false; ShareLogin.Name = "Cursorway"; }
             // Every advanced option at once; the hidden backend below must accept the resulting file.
             ShareSettings.Advanced = new ShareAdvanced { SwitchDelay = 250, DoubleTap = 300, Corners = true, CornerSize = 24, SwapModifiers = true, RelativeMouse = true, ScreenSaver = false, SwitchKeys = true, LockKey = true,
                 Targets = "10.8.0.5, office-pc.local", Extra = "# comment\r\nkeystroke(Control+Alt+F12) = switchToScreen(windows)\r\n" };

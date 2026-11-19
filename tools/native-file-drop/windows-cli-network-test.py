@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix="barrier-network-") as temporary:
     log_path = root / "client.log"
     try:
         def pair(*args):
-            return subprocess.check_output([str(binary / "barrier-pair.exe"), *map(str, args)], text=True).strip()
+            return subprocess.check_output([str(binary / "cursorway-pair.exe"), *map(str, args)], text=True).strip()
         server_profile, client_profile = root / "server", root / "client"
         server_fingerprint = pair("init", server_profile)
         client_fingerprint = pair("init", client_profile)
@@ -37,7 +37,7 @@ with tempfile.TemporaryDirectory(prefix="barrier-network-") as temporary:
             target = subprocess.Popen([str(binary / "native-windows-drop-test.exe"), "--network"])
             processes.append(target)
             client_log = open(root / "console.log", "w", encoding="utf-8")
-            client = subprocess.Popen([str(binary / "barrierc.exe"), "-f", "--no-tray", "--name", "windows",
+            client = subprocess.Popen([str(binary / "cursorway-client.exe"), "-f", "--no-tray", "--name", "windows",
                 "--native-file-drop", "--profile-dir", str(client_profile), "--log", str(log_path),
                 "127.0.0.1:" + str(listener.getsockname()[1])], stdout=client_log, stderr=subprocess.STDOUT)
             processes.append(client)

@@ -2,7 +2,7 @@
 
 Windows 10（1903 以上）／11 x64 與 Apple Silicon Mac（macOS 15 以上）可以任選主控／接收角色，雙向複製多個檔案或資料夾。主控端可設定接收端在右、左、上、下；兩台更新同版後使用原生視窗程式，無需 CMD。完整操作、區網搜尋與配對、暫存清理與限制見 [GUI-README.txt](GUI-README.txt)。
 
-Windows 開啟 `BarrierShare.exe`，Mac 開啟 `Barrier Share.app`。主／副角色只決定鍵鼠來源，不限制複製方向。主控端從區網電腦清單邀請接收端，兩邊核對 TLS 綁定的 6 位數短碼並同意；之後以已保存憑證自動重連。無需輸入 IP 或指紋。設定分別保存在 `%LOCALAPPDATA%\BarrierShare` 與 `~/Library/Application Support/BarrierShare`。主介面提供暫停與解除配對。
+Windows 開啟 `Cursorway.exe`，Mac 開啟 `Cursorway.app`。主／副角色只決定鍵鼠來源，不限制複製方向。主控端從區網電腦清單邀請接收端，兩邊核對 TLS 綁定的 6 位數短碼並同意；之後以已保存憑證自動重連。無需輸入 IP 或指紋。設定分別保存在 `%LOCALAPPDATA%\Cursorway` 與 `~/Library/Application Support/Cursorway`。主介面提供暫停與解除配對。
 
 ## 區網搜尋、同意與重連
 

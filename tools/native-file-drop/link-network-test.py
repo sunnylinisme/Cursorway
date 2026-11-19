@@ -2,14 +2,15 @@
 """Real helper processes, isolated loopback discovery/TLS. Never starts input capture."""
 import pathlib, subprocess, socket, tempfile, threading, queue, time, sys, base64, ssl, select
 BIN = pathlib.Path(sys.argv[1]).resolve()
-SUFFIX = '.exe' if sys.platform == 'win32' else ''
+# Windows builds the helpers under the product name; the Mac keeps the Barrier names.
+LINK, PAIR = ('cursorway-link.exe', 'cursorway-pair.exe') if sys.platform == 'win32' else ('barrier-link', 'barrier-pair')
 def port():
     with socket.socket() as s:
         s.bind(('127.0.0.1', 0)); return s.getsockname()[1]
 class Agent:
     def __init__(self, profile, role, own, other):
         self.profile = profile; self.events = queue.Queue(); self.history = []
-        self.p = subprocess.Popen([str(BIN / ('barrier-link' + SUFFIX)), str(profile), role, '測試 ' + role, str(own), str(other)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1)
+        self.p = subprocess.Popen([str(BIN / LINK), str(profile), role, '測試 ' + role, str(own), str(other)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', bufsize=1)
         def reader():
             for line in self.p.stdout:
                 parts = line.rstrip('\r\n').split('\t'); self.events.put(parts); self.history.append(parts)
@@ -33,7 +34,7 @@ class Agent:
         self.history.clear()
         while not self.events.empty(): self.events.get_nowait()
 def initialize(profile):
-    return subprocess.check_output([str(BIN / ('barrier-pair' + SUFFIX)), 'init', str(profile)], text=True).strip()
+    return subprocess.check_output([str(BIN / PAIR), 'init', str(profile)], text=True).strip()
 def invitation(host, receiver, peer):
     host.send('PAIR', peer); a=host.wait('VERIFY'); b=receiver.wait('REQUEST')
     assert a[4] == b[4] and len(a[4]) == 6, (a, b)

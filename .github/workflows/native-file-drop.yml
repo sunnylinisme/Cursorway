@@ -95,7 +95,7 @@ jobs:
           $text = [Text.RegularExpressions.Regex]::Replace($text, '(Assembly(File)?Version\("\d+\.\d+\.\d+)\.0"\)', ('$1.' + $build + '")'))
           $text = $text.Replace('static readonly string BuildCommit = "";', "static readonly string BuildCommit = `"$commit`";")
           [IO.File]::WriteAllText($stamp, $text, [Text.UTF8Encoding]::new($false))
-          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo "/win32icon:$PWD\tools\native-file-drop\icons\BarrierShare.ico" /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll /reference:System.Web.Extensions.dll "/win32manifest:$PWD\tools\native-file-drop\desktop.manifest" "/out:$PWD\build\bin\Release\BarrierShare.exe" $stamp
+          & "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe" /nologo "/win32icon:$PWD\tools\native-file-drop\icons\BarrierShare.ico" /target:winexe /platform:x64 /codepage:65001 /reference:System.Windows.Forms.dll /reference:System.Drawing.dll /reference:System.Xml.Linq.dll /reference:System.Web.Extensions.dll "/win32manifest:$PWD\tools\native-file-drop\desktop.manifest" "/out:$PWD\build\bin\Release\Cursorway.exe" $stamp
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build
         run: cmake --build build --config Release --parallel 3
@@ -129,14 +129,14 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory build/gui-test | Out-Null
-          $test = Start-Process build/bin/Release/BarrierShare.exe -ArgumentList '--self-test', "$PWD/build/gui-test" -PassThru
+          $test = Start-Process build/bin/Release/Cursorway.exe -ArgumentList '--self-test', "$PWD/build/gui-test" -PassThru
           if (-not $test.WaitForExit(60000)) { $test.Kill(); throw 'Desktop self-test timed out' }
           if ($test.ExitCode -ne 0) { $reason = (Get-Content build/gui-test/FAIL.txt -Raw) -replace "`r?`n", '%0A'; Write-Output "::error title=Desktop self-test::$reason"; throw 'Desktop self-test failed' }
           Get-Content build/gui-test/PASS.txt
       - name: Normal desktop startup and live discovery in both roles
         shell: pwsh
         run: |
-          $test = Start-Process build/bin/Release/BarrierShare.exe -ArgumentList '--startup-test', "$PWD/build/gui-test" -PassThru
+          $test = Start-Process build/bin/Release/Cursorway.exe -ArgumentList '--startup-test', "$PWD/build/gui-test" -PassThru
           if (-not $test.WaitForExit(45000)) { $test.Kill(); throw 'Production startup test timed out' }
           if ($test.ExitCode -ne 0 -or -not (Test-Path build/gui-test/STARTUP-PASS.txt)) {
             Get-Content build/gui-test/STARTUP-FAIL.txt -ErrorAction SilentlyContinue
@@ -158,7 +158,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory build/package | Out-Null
-          Copy-Item build/bin/Release/barrierc.exe, build/bin/Release/barriers.exe, build/bin/Release/barrier-pair.exe, build/bin/Release/barrier-link.exe, build/bin/Release/barrier-service.exe, build/bin/Release/BarrierShare.exe build/package/
+          Copy-Item build/bin/Release/cursorway-client.exe, build/bin/Release/cursorway-server.exe, build/bin/Release/cursorway-pair.exe, build/bin/Release/cursorway-link.exe, build/bin/Release/cursorway-service.exe, build/bin/Release/Cursorway.exe build/package/
           Copy-Item tools/native-file-drop/GUI-README.txt build/package/
           Copy-Item LICENSE build/package/
           Copy-Item -Recurse tools/native-file-drop/licenses build/package/

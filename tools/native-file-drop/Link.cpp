@@ -518,7 +518,7 @@ static void network(State& state, const std::string& testTarget) {
 }
 int main(int argc, char** argv) {
     try {
-        require(argc == 4 || argc == 6, "Usage: barrier-link PROFILE host|receiver NAME [LOCAL_TEST_PORT PEER_TEST_PORT]");
+        require(argc == 4 || argc == 6, "Usage: cursorway-link PROFILE host|receiver NAME [LOCAL_TEST_PORT PEER_TEST_PORT]");
 #if SYSAPI_WIN32
         WSADATA data; require(WSAStartup(MAKEWORD(2, 2), &data) == 0, "Cannot initialize networking");
 #else

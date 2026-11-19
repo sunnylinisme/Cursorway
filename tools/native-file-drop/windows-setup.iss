@@ -28,7 +28,7 @@ PrivilegesRequired=admin
 ArchitecturesAllowed=x64os
 ArchitecturesInstallIn64BitMode=x64os
 MinVersion=10.0.18362
-SetupMutex=Local\BarrierShare.Setup
+SetupMutex=Local\Cursorway.Setup,Local\BarrierShare.Setup
 CloseApplications=no
 RestartApplications=no
 WizardStyle=modern
@@ -37,7 +37,7 @@ OutputDir={#OutputDir}
 OutputBaseFilename=Cursorway-Setup-{#AppVersion}-x64
 SetupIconFile={#AddBackslash(SourcePath)}icons\BarrierShare.ico
 UninstallDisplayName=Cursorway
-UninstallDisplayIcon={app}\BarrierShare.exe
+UninstallDisplayIcon={app}\Cursorway.exe
 VersionInfoVersion={#AppVersion}.0
 Compression=lzma2
 SolidCompression=yes
@@ -54,12 +54,12 @@ chinesetraditional.CloseFailed=無法自動關閉 Cursorway。請從右下角系
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-Source: "{#PackageDir}\BarrierShare.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PackageDir}\barriers.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PackageDir}\barrierc.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PackageDir}\barrier-pair.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PackageDir}\barrier-link.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#PackageDir}\barrier-service.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\Cursorway.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\cursorway-server.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\cursorway-client.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\cursorway-pair.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\cursorway-link.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\cursorway-service.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\GUI-README.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\COMMIT.txt"; DestDir: "{app}"; Flags: ignoreversion
@@ -71,29 +71,43 @@ Type: files; Name: "{autoprograms}\Barrier Share.lnk"
 Type: files; Name: "{autodesktop}\Barrier Share.lnk"
 
 [Icons]
-Name: "{autoprograms}\Cursorway"; Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\Cursorway"; Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\Cursorway"; Filename: "{app}\Cursorway.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\Cursorway"; Filename: "{app}\Cursorway.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Registry]
 ; The app writes this value when "launch at sign-in" is ticked; uninstall removes it without ever creating it.
+; Before the rename it was called BarrierShare; the app replaces that one when it starts.
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Cursorway"; Flags: uninsdeletevalue dontcreatekey
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "BarrierShare"; Flags: uninsdeletevalue dontcreatekey
 
 [Run]
 ; A copy that was running before the update is started again, also for silent installs.
 ; The app runs as the signed-in user, never with the installer's administrator rights.
-Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: WasRunning
-Filename: "{app}\BarrierShare.exe"; WorkingDir: "{app}"; Flags: nowait skipifsilent runasoriginaluser; Check: not WasRunning
+Filename: "{app}\Cursorway.exe"; WorkingDir: "{app}"; Flags: nowait runasoriginaluser; Check: WasRunning
+Filename: "{app}\Cursorway.exe"; WorkingDir: "{app}"; Flags: nowait skipifsilent runasoriginaluser; Check: not WasRunning
 
 ; Settings and pairing live in LocalAppData\Cursorway (moved from LocalAppData\BarrierShare) and are kept. The service's copy of them
 ; (pairing identity, screen settings, logs, received files) lives in {app}\state and goes with the app.
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\state"
 
+; 0.3.21 and earlier used the Barrier names for the programs (0.3.21 already in this folder).
+[InstallDelete]
+Type: files; Name: "{app}\BarrierShare.exe"
+Type: files; Name: "{app}\barriers.exe"
+Type: files; Name: "{app}\barrierc.exe"
+Type: files; Name: "{app}\barrier-pair.exe"
+Type: files; Name: "{app}\barrier-link.exe"
+Type: files; Name: "{app}\barrier-service.exe"
+
 [Code]
 const
-  AppMutexName = 'Local\BarrierShare.Desktop';
+  { The current app and one from before the rename (Barrier Share, 0.3.21 and earlier). }
+  AppMutexName = 'Local\Cursorway.Desktop,Local\BarrierShare.Desktop';
   { BarrierShare.cs (ShareProgram.QuitEvent) waits on this event and exits cleanly. }
-  QuitEventName = 'Local\BarrierShare.Quit';
+  QuitEventName = 'Local\Cursorway.Quit';
+  OldQuitEventName = 'Local\BarrierShare.Quit';
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
 var
   Running: Boolean;
   { Where the app was installed before this setup ran (another folder before the rename). }
@@ -119,6 +133,7 @@ begin
   if not CheckForMutexes(AppMutexName) then exit;
   Running := True;
   Handle := OpenEvent($0002 { EVENT_MODIFY_STATE }, 0, QuitEventName);
+  if Handle = 0 then Handle := OpenEvent($0002, 0, OldQuitEventName);
   if Handle <> 0 then begin
     SetEvent(Handle);
     CloseHandle(Handle);
@@ -129,7 +144,7 @@ begin
   end;
   if CheckForMutexes(AppMutexName) then begin
     Log('Barrier Share did not quit on request; ending it and its helpers');
-    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM BarrierShare.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM Cursorway.exe /IM BarrierShare.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
     for I := 1 to 50 do begin
       if not CheckForMutexes(AppMutexName) then break;
       Sleep(100);
@@ -150,17 +165,24 @@ begin
 end;
 
 { Stop the service and wait until it has ended its core, so the files can be replaced. }
-procedure StopService();
+procedure StopNamedService(Name: String);
 var
   I, Code: Integer;
 begin
-  Sc('stop BarrierShare');
+  Sc('stop ' + Name);
   for I := 1 to 50 do begin
     { findstr succeeds while the service is still running or changing state. }
-    Exec(ExpandConstant('{sys}\cmd.exe'), '/c sc query BarrierShare | findstr /c:"RUNNING" /c:"PENDING" >nul', '', SW_HIDE, ewWaitUntilTerminated, Code);
+    Exec(ExpandConstant('{sys}\cmd.exe'), '/c sc query ' + Name + ' | findstr /c:"RUNNING" /c:"PENDING" >nul', '', SW_HIDE, ewWaitUntilTerminated, Code);
     if Code <> 0 then break;
     Sleep(200);
   end;
+end;
+
+{ The service is called Cursorway; before the rename (0.3.21 and earlier) it was BarrierShare. }
+procedure StopService();
+begin
+  StopNamedService('Cursorway');
+  StopNamedService('BarrierShare');
 end;
 
 { Versions up to 0.3.8 installed per user under LocalAppData; remove that copy so only one remains.
@@ -213,7 +235,7 @@ var
 begin
   RemoveFirewallRules();
   SetArrayLength(Names, 3);
-  Names[0] := 'barriers.exe'; Names[1] := 'barrierc.exe'; Names[2] := 'barrier-link.exe';
+  Names[0] := 'cursorway-server.exe'; Names[1] := 'cursorway-client.exe'; Names[2] := 'cursorway-link.exe';
   for I := 0 to 2 do
     Netsh('advfirewall firewall add rule name="Cursorway" dir=in action=allow profile=private,domain program="' + ExpandConstant('{app}\') + Names[I] + '"');
 end;
@@ -245,15 +267,22 @@ var
 begin
   if CurStep <> ssPostInstall then exit;
   MoveOldFolder();
+  { Launch at sign-in from before the rename points at BarrierShare.exe, which is gone now: move it to Cursorway.exe. }
+  if RegValueExists(HKCU, RunKey, 'BarrierShare') then begin
+    RegWriteStringValue(HKCU, RunKey, 'Cursorway', '"' + ExpandConstant('{app}\Cursorway.exe') + '" --background');
+    RegDeleteValue(HKCU, RunKey, 'BarrierShare');
+  end;
+  { The service from before the rename is stopped by now; one service remains. }
+  Sc('delete BarrierShare');
   AddFirewallRules();
   { sc takes binPath= as one argument; the quotes the service manager needs around a path with
     spaces are escaped inside it. }
-  Binary := '\"' + ExpandConstant('{app}\barrier-service.exe') + '\"';
-  if Sc('create BarrierShare binPath= "' + Binary + '" start= auto DisplayName= "Cursorway"') <> 0 then
-    Sc('config BarrierShare binPath= "' + Binary + '" start= auto DisplayName= "Cursorway"');
-  Sc('description BarrierShare "Lets the paired computer control the sign-in screen, lock screen and UAC prompts."');
-  Sc('failure BarrierShare reset= 86400 actions= restart/5000/restart/5000/restart/30000');
-  Sc('start BarrierShare');
+  Binary := '\"' + ExpandConstant('{app}\cursorway-service.exe') + '\"';
+  if Sc('create Cursorway binPath= "' + Binary + '" start= auto DisplayName= "Cursorway"') <> 0 then
+    Sc('config Cursorway binPath= "' + Binary + '" start= auto DisplayName= "Cursorway"');
+  Sc('description Cursorway "Lets the paired computer control the sign-in screen, lock screen and UAC prompts."');
+  Sc('failure Cursorway reset= 86400 actions= restart/5000/restart/5000/restart/30000');
+  Sc('start Cursorway');
 end;
 
 function InitializeUninstall(): Boolean;
@@ -266,6 +295,7 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
   if CurUninstallStep <> usUninstall then exit;
   StopService();
+  Sc('delete Cursorway');
   Sc('delete BarrierShare');
   RemoveFirewallRules();
 end;

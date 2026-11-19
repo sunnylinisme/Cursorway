@@ -10,7 +10,7 @@ Cursorway（原名 Barrier Share）— Windows／Mac 共用鍵盤滑鼠與雙向
    Windows：開啟 Cursorway-Setup-x.y.z-x64.exe 安裝，再從開始功能表開啟 Cursorway。從 Barrier Share 升級時會自動搬到 Program Files\Cursorway，配對和設定都會保留。
    安裝需要系統管理員權限（會詢問一次「是否允許」），裝在 Program Files，並安裝「Cursorway」背景服務。
    安裝程式會自動關閉執行中的舊版並移除 0.3.8 以前的個人安裝，裝完再開啟；配對及設定都會保留。
-   也可使用可攜 ZIP（Cursorway-x.y.z-x64-portable.zip），解壓後雙擊 BarrierShare.exe。
+   也可使用可攜 ZIP（Cursorway-x.y.z-x64-portable.zip），解壓後雙擊 Cursorway.exe。
    Mac：解壓縮後將 Cursorway.app 放到「應用程式」，再開啟（0.3.20 以前叫 Barrier Share.app）。
    Mac 測試版未公證，若被阻擋，請在「系統設定 → 隱私權與安全性」允許開啟。
 2. 有實體滑鼠鍵盤的那台選「主控端」，另一台選「接收端」。

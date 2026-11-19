@@ -42,7 +42,7 @@ $oldShortcuts = @(
     (Join-Path ([Environment]::GetFolderPath('CommonPrograms')) 'Barrier Share.lnk'),
     (Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) 'Barrier Share.lnk')
 )
-if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Refusing to replace an existing Barrier Share service.' }
+if (Get-Service Cursorway -ErrorAction SilentlyContinue) { throw 'Refusing to replace an existing Barrier Share service.' }
 foreach ($path in @($profileOld, $profileNew, $programFilesNew, $uninstallKey, $machineKey) + $shortcuts + $oldShortcuts) {
     if (Test-Path -LiteralPath $path) { throw "Refusing to alter an existing profile, installation or shortcut: $path" }
 }
@@ -80,7 +80,7 @@ function Assert-Profile([hashtable]$Expected) {
     }
 }
 function Assert-Installed {
-    foreach ($name in 'BarrierShare.exe', 'barriers.exe', 'barrierc.exe', 'barrier-pair.exe', 'barrier-link.exe', 'barrier-service.exe', 'GUI-README.txt', 'LICENSE', 'COMMIT.txt') {
+    foreach ($name in 'Cursorway.exe', 'cursorway-server.exe', 'cursorway-client.exe', 'cursorway-pair.exe', 'cursorway-link.exe', 'cursorway-service.exe', 'GUI-README.txt', 'LICENSE', 'COMMIT.txt') {
         if (-not (Test-Path -LiteralPath (Join-Path $installDir $name) -PathType Leaf)) { throw "Missing installed file: $name" }
     }
     foreach ($file in Get-ChildItem -LiteralPath $PackageDir -File -Recurse) {
@@ -91,12 +91,12 @@ function Assert-Installed {
         }
     }
     if (Test-Path -LiteralPath $machineKey) { throw 'Installer unexpectedly created a per-user uninstall entry.' }
-    $service = Get-CimInstance Win32_Service -Filter "Name='BarrierShare'"
-    if (-not $service -or $service.State -ne 'Running' -or $service.StartMode -ne 'Auto' -or -not $service.PathName.Contains((Join-Path $installDir 'barrier-service.exe'))) {
+    $service = Get-CimInstance Win32_Service -Filter "Name='Cursorway'"
+    if (-not $service -or $service.State -ne 'Running' -or $service.StartMode -ne 'Auto' -or -not $service.PathName.Contains((Join-Path $installDir 'cursorway-service.exe'))) {
         throw "Barrier Share service is not installed and running from this installation: $($service | Out-String)"
     }
     $entry = Get-ItemProperty -LiteralPath $uninstallKey
-    $fileVersion = [Version][Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $installDir 'BarrierShare.exe')).FileVersion
+    $fileVersion = [Version][Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $installDir 'Cursorway.exe')).FileVersion
     $expectedVersion = '{0}.{1}.{2}' -f $fileVersion.Major, $fileVersion.Minor, $fileVersion.Build
     if (-not $entry.DisplayName.StartsWith('Cursorway') -or $entry.DisplayVersion -ne $expectedVersion -or $entry.InstallLocation.TrimEnd('\') -ine $installDir.TrimEnd('\')) {
         throw 'Per-user uninstall metadata does not match the installed application.'
@@ -115,7 +115,7 @@ function Assert-Installed {
                 if (-not $item.IsLink) { throw "Not a Shell shortcut: $path" }
                 $shortcut = $item.GetLink
                 $target = [string]$shortcut.Path
-                $expected = Join-Path $installDir 'BarrierShare.exe'
+                $expected = Join-Path $installDir 'Cursorway.exe'
                 Add-Content -LiteralPath (Join-Path $TestRoot 'shortcuts.log') -Encoding utf8 -Value "Shortcut=$path; Target=$target; Expected=$expected; WorkingDirectory=$($shortcut.WorkingDirectory)"
                 if (-not $target -or [IO.Path]::GetFullPath($target) -ine [IO.Path]::GetFullPath($expected)) {
                     throw "Shortcut targets the wrong application: $path; actual=[$target]; expected=[$expected]"
@@ -156,6 +156,10 @@ if ($PreviousInstaller) {
     $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$installDir", '/TASKS=desktopicon')
     Assert-Installed
     Assert-Profile $beforeInstall
+    if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Upgrade left the service from before the rename.' }
+    foreach ($name in 'BarrierShare.exe', 'barriers.exe', 'barrierc.exe', 'barrier-pair.exe', 'barrier-link.exe', 'barrier-service.exe') {
+        if (Test-Path -LiteralPath (Join-Path $installDir $name)) { throw "Upgrade left a program from before the rename: $name" }
+    }
     if (@(Get-CimInstance Win32_Service | Where-Object { $_.DisplayName -like 'Cursorway*' -or $_.DisplayName -like 'Barrier Share*' }).Count -ne 1) { throw 'Expected one service after the upgrade.' }
     Write-Output '::notice title=Upgrade::from the previous release: moved to Program Files\Cursorway, old folder removed, state kept, one entry, one service, new shortcuts only, profile kept'
 } else {
@@ -167,7 +171,7 @@ if ($PreviousInstaller) {
 # The service starts a host core with the winlogon token of the console session, from data sent
 # over its pipe, and stops it again. The core then also serves the sign-in screen and UAC prompts.
 function Invoke-Service([string]$Line) {
-    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', 'BarrierShare.Service', [IO.Pipes.PipeDirection]::InOut)
+    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', 'Cursorway.Service', [IO.Pipes.PipeDirection]::InOut)
     try {
         $pipe.Connect(5000); $pipe.ReadMode = [IO.Pipes.PipeTransmissionMode]::Message
         $bytes = [Text.Encoding]::UTF8.GetBytes($Line); $pipe.Write($bytes, 0, $bytes.Length); $pipe.Flush()
@@ -177,15 +181,15 @@ function Invoke-Service([string]$Line) {
     } finally { $pipe.Dispose() }
 }
 function Get-FirewallPrograms { @(Get-NetFirewallRule -DisplayName 'Cursorway' -ErrorAction SilentlyContinue | Get-NetFirewallApplicationFilter | ForEach-Object { [IO.Path]::GetFileName($_.Program) } | Sort-Object) }
-if ((Get-FirewallPrograms) -join ',' -ne 'barrier-link.exe,barrierc.exe,barriers.exe') { throw "Installer did not allow the programs through the firewall: $((Get-FirewallPrograms) -join ',')" }
+if ((Get-FirewallPrograms) -join ',' -ne 'cursorway-client.exe,cursorway-link.exe,cursorway-server.exe') { throw "Installer did not allow the programs through the firewall: $((Get-FirewallPrograms) -join ',')" }
 if (Get-NetFirewallRule -DisplayName 'Barrier Share' -ErrorAction SilentlyContinue) { throw 'A firewall rule from before the rename remains.' }
 foreach ($rule in Get-NetFirewallRule -DisplayName 'Cursorway') {
     if ([string]$rule.Profile -ne 'Domain, Private') { throw "Firewall rule profile is $($rule.Profile), expected Domain, Private." }
     if (@(($rule | Get-NetFirewallAddressFilter).RemoteAddress) -join ',' -ne 'Any') { throw 'Firewall rule limits remote addresses; manual addresses across subnets would be blocked.' }
 }
-function Get-ServiceCore { @(Get-CimInstance Win32_Process -Filter "Name='barriers.exe'" | Where-Object { $_.ExecutablePath -ieq (Join-Path $installDir 'barriers.exe') }) }
+function Get-ServiceCore { @(Get-CimInstance Win32_Process -Filter "Name='cursorway-server.exe'" | Where-Object { $_.ExecutablePath -ieq (Join-Path $installDir 'cursorway-server.exe') }) }
 $serviceProfile = Join-Path $TestRoot 'service-identity'
-& (Join-Path $installDir 'barrier-pair.exe') init $serviceProfile | Out-Null
+& (Join-Path $installDir 'cursorway-pair.exe') init $serviceProfile | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Cannot create a test identity for the service.' }
 $pem = [Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $serviceProfile 'SSL\Barrier.pem')))
 $config = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("section: screens`n windows-host:`n windows:`nend`nsection: links`n windows-host:`n  right = windows`n windows:`n  left = windows-host`nend`nsection: options`n clipboardSharing = true`nend`n"))
@@ -251,7 +255,7 @@ Invoke-TestProcess (Join-Path $installDir 'unins000.exe') @('/VERYSILENT', '/SUP
 foreach ($file in Get-ChildItem -LiteralPath $PackageDir -File -Recurse) {
     if (Test-Path -LiteralPath (Join-Path $installDir ([IO.Path]::GetRelativePath($PackageDir, $file.FullName)))) { throw "Uninstall left packaged file: $($file.Name)" }
 }
-if (Get-Service BarrierShare -ErrorAction SilentlyContinue) { throw 'Uninstall left the Barrier Share service.' }
+if (Get-Service Cursorway -ErrorAction SilentlyContinue) { throw 'Uninstall left the Barrier Share service.' }
 if (@(Get-FirewallPrograms).Count -ne 0) { throw 'Uninstall left the firewall rules.' }
 if (Test-Path -LiteralPath (Join-Path $installDir 'state')) { throw 'Uninstall left the service state folder.' }
 foreach ($path in @($uninstallKey, $machineKey) + $shortcuts + $oldShortcuts) {
@@ -268,11 +272,11 @@ function Wait-Until([scriptblock]$Condition, [string]$Failure, [int]$Seconds = 2
         Start-Sleep -Milliseconds 200
     }
 }
-function Test-AppRunning { $mutex = $null; $open = [Threading.Mutex]::TryOpenExisting('Local\BarrierShare.Desktop', [ref]$mutex); if ($mutex) { $mutex.Dispose() }; return $open }
-$app = Join-Path $installDir 'BarrierShare.exe'
+function Test-AppRunning { $mutex = $null; $open = [Threading.Mutex]::TryOpenExisting('Local\Cursorway.Desktop', [ref]$mutex); if ($mutex) { $mutex.Dispose() }; return $open }
+$app = Join-Path $installDir 'Cursorway.exe'
 function Step([string]$Text) { Write-Output "::notice title=Installer step::$Text" }
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Refusing to alter an existing launch-at-sign-in entry.' }
+if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name Cursorway -ErrorAction SilentlyContinue)) { throw 'Refusing to alter an existing launch-at-sign-in entry.' }
 # The previous uninstaller removes itself shortly after exiting; let it finish before installing again.
 Wait-Until { -not (Test-Path -LiteralPath (Join-Path $installDir 'unins000.exe')) } 'Previous uninstaller did not finish removing itself.' 30
 Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$(Join-Path $TestRoot 'install-for-update.log')")
@@ -282,16 +286,16 @@ Wait-Until { Test-AppRunning } 'Installed app did not start in the background.'
 Start-Sleep -Seconds 2
 $updateLog = Join-Path $TestRoot 'update-running.log'
 Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$updateLog")
-Step ("update finished; first exited=$($first.HasExited); log: " + ((Select-String -LiteralPath $updateLog -Pattern 'quit|taskkill|Run entry|BarrierShare.exe' | ForEach-Object { $_.Line.Substring([Math]::Min(24, $_.Line.Length)) }) -join ' | '))
-Step ("processes: " + ((Get-Process BarrierShare -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id) $($_.Path)" }) -join ' | '))
+Step ("update finished; first exited=$($first.HasExited); log: " + ((Select-String -LiteralPath $updateLog -Pattern 'quit|taskkill|Run entry|Cursorway.exe' | ForEach-Object { $_.Line.Substring([Math]::Min(24, $_.Line.Length)) }) -join ' | '))
+Step ("processes: " + ((Get-Process Cursorway -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id) $($_.Path)" }) -join ' | '))
 if (-not $first.WaitForExit(1000)) { throw 'Setup replaced files without closing the running copy.' }
 if ((Get-Content -LiteralPath $updateLog -Raw).Contains('did not quit on request')) { throw 'Running copy ignored the quit signal and had to be killed.' }
-Wait-Until { @(Get-Process BarrierShare -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $first.Id -and $_.Path -ieq $app }).Count -eq 1 } 'Setup did not start the updated copy again.'
-$second = Get-Process BarrierShare | Where-Object { $_.Path -ieq $app }
-Set-ItemProperty -LiteralPath $runKey -Name BarrierShare -Value ('"' + $app + '" --background')
+Wait-Until { @(Get-Process Cursorway -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $first.Id -and $_.Path -ieq $app }).Count -eq 1 } 'Setup did not start the updated copy again.'
+$second = Get-Process Cursorway | Where-Object { $_.Path -ieq $app }
+Set-ItemProperty -LiteralPath $runKey -Name Cursorway -Value ('"' + $app + '" --background')
 Invoke-TestProcess (Join-Path $installDir 'unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$(Join-Path $TestRoot 'uninstall-running.log')")
 if (-not $second.WaitForExit(1000)) { throw 'Uninstall left the app running.' }
-if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name BarrierShare -ErrorAction SilentlyContinue)) { throw 'Uninstall left the launch-at-sign-in entry.' }
+if ($null -ne (Get-ItemProperty -LiteralPath $runKey -Name Cursorway -ErrorAction SilentlyContinue)) { throw 'Uninstall left the launch-at-sign-in entry.' }
 if (Test-Path -LiteralPath $app) { throw 'Uninstall could not remove the app that was running.' }
 
 Set-Content -LiteralPath (Join-Path $TestRoot 'INSTALLER-PASS.txt') -Value 'Administrator silent installation with the Barrier Share service (runs the core as the signed-in user, switches to SYSTEM for a secure desktop and back, stops it; rejects incomplete data) to a Unicode path with spaces; payload hashes and shortcuts match; installed Start Menu shortcut startup passes; repeat installation and uninstall preserve an existing profile; uninstall removes payload, shortcuts and registration; updating over a running background copy closes it through the quit signal and starts it again; uninstall closes a running copy and removes the launch-at-sign-in entry. With -PreviousInstaller it first upgrades from a release made before the rename (one folder, one entry, new shortcuts only, profile kept).' -Encoding utf8

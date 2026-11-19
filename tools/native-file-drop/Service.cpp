@@ -18,7 +18,7 @@
 // - The last command is kept, so after sign-out the core is started again in the new
 //   console session and the sign-in screen can be controlled from the other computer.
 //
-// Pipe protocol (\\.\pipe\BarrierShare.Service, one request per connection, UTF-8):
+// Pipe protocol (\\.\pipe\Cursorway.Service, one request per connection, UTF-8):
 //   START \t host|receiver \t address \t base64(Barrier.pem) \t base64(trusted) \t base64(config) \t screen name \t user profile folder [\t wheel "percent,0|1", receiver only]
 //   CONFIG \t base64(config)   (host: replace the running core's configuration; it reloads without reconnecting)
 //   STOP
@@ -45,8 +45,8 @@
 #include <vector>
 
 namespace {
-const wchar_t* kServiceName = L"BarrierShare";
-const wchar_t* kPipeName = L"\\\\.\\pipe\\BarrierShare.Service";
+const wchar_t* kServiceName = L"Cursorway";
+const wchar_t* kPipeName = L"\\\\.\\pipe\\Cursorway.Service";
 SERVICE_STATUS_HANDLE statusHandle = nullptr;
 SERVICE_STATUS status{SERVICE_WIN32_OWN_PROCESS, SERVICE_START_PENDING, 0, NO_ERROR, 0, 0, 0};
 HANDLE stopEvent = nullptr;
@@ -186,13 +186,13 @@ void stopWatcher() {
     if (watcherOutput) { CloseHandle(watcherOutput); watcherOutput = nullptr; }
     watcherSession = 0xFFFFFFFF; watcherBuffer.clear(); inputDesktop.clear();
 }
-// Runs "barrier-service.exe --desk-watch" with the winlogon token, which may read the input desktop.
+// Runs "cursorway-service.exe --desk-watch" with the winlogon token, which may read the input desktop.
 void startWatcher(DWORD session) {
     stopWatcher();
     SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE}; HANDLE read = nullptr, write = nullptr;
     if (!CreatePipe(&read, &write, &inherit, 0)) throw std::runtime_error("Cannot create watcher pipe");
     SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
-    std::wstring line = quote(moduleDirectory() + L"\\barrier-service.exe") + L" --desk-watch";
+    std::wstring line = quote(moduleDirectory() + L"\\cursorway-service.exe") + L" --desk-watch";
     std::vector<wchar_t> buffer(line.begin(), line.end()); buffer.push_back(0);
     STARTUPINFOW startup{sizeof(startup)}; startup.lpDesktop = const_cast<wchar_t*>(L"winsta0\\default");
     startup.dwFlags = STARTF_USESTDHANDLES; startup.hStdOutput = startup.hStdError = write;
@@ -228,7 +228,7 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
     HANDLE token = asSystem ? winlogonToken(session) : userToken(session);
     if (!token) throw std::runtime_error("No signed-in user in the console session");
     std::wstring bin = moduleDirectory(), profile = asSystem ? command.directory : command.userProfile, log = asSystem ? command.log : command.userLog;
-    std::wstring line = quote(bin + (command.host ? L"\\barriers.exe" : L"\\barrierc.exe")) + L" -f --no-tray --file-clipboard --profile-dir " + quote(profile) +
+    std::wstring line = quote(bin + (command.host ? L"\\cursorway-server.exe" : L"\\cursorway-client.exe")) + L" -f --no-tray --file-clipboard --profile-dir " + quote(profile) +
         L" --log " + quote(log) + L" --name " + command.name;
     line += command.host ? L" -c " + quote(profile + L"\\windows-windows.conf") : command.wheel + L" " + command.address;
     STARTUPINFOW startup{sizeof(startup)}; startup.lpDesktop = const_cast<wchar_t*>(L"winsta0\\default");

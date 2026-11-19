@@ -17,7 +17,7 @@ with tempfile.TemporaryDirectory(prefix="barrier-source-") as temporary:
     log = open(root / "console.log", "w", encoding="utf-8")
     try:
         def pair(*args):
-            return subprocess.check_output([str(binary / "barrier-pair.exe"), *map(str, args)], text=True).strip()
+            return subprocess.check_output([str(binary / "cursorway-pair.exe"), *map(str, args)], text=True).strip()
         server_profile, client_profile = root / "主控設定", root / "接收設定"
         server_fingerprint = pair("init", server_profile)
         pair("init", client_profile)
@@ -45,7 +45,7 @@ end
 """)
         with socket.socket() as free:
             free.bind(("127.0.0.1", 0)); port = free.getsockname()[1]
-        server = subprocess.Popen([str(binary / "barriers.exe"), "-f", "--no-tray", "--name", "windows-host",
+        server = subprocess.Popen([str(binary / "cursorway-server.exe"), "-f", "--no-tray", "--name", "windows-host",
             "--native-file-drop", "--debug", "DEBUG1", "--profile-dir", str(server_profile), "-c", str(config),
             "--address", "127.0.0.1:" + str(port), "--log", str(root / "server.log")], stdout=log, stderr=subprocess.STDOUT)
         processes.append(server)

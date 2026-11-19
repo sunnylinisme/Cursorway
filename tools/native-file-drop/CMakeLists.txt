@@ -66,4 +66,8 @@ if(WIN32)
     target_compile_definitions(barrier-service PRIVATE UNICODE _UNICODE)
     target_compile_options(barrier-service PRIVATE /utf-8)
     target_link_libraries(barrier-service advapi32 userenv wtsapi32 user32)
+    # Windows ships the helpers under the product name (Cursorway); the Mac keeps its names.
+    set_target_properties(barrier-pair PROPERTIES OUTPUT_NAME cursorway-pair)
+    set_target_properties(barrier-link PROPERTIES OUTPUT_NAME cursorway-link)
+    set_target_properties(barrier-service PROPERTIES OUTPUT_NAME cursorway-service)
 endif()

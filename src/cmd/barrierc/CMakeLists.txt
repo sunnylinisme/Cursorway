@@ -40,6 +40,9 @@ if (BARRIER_ADD_HEADERS)
 endif()
 
 add_executable(barrierc ${sources})
+if (WIN32)
+    set_target_properties(barrierc PROPERTIES OUTPUT_NAME cursorway-client)
+endif()
 target_link_libraries(barrierc
     arch base client common io mt net ipc platform server synlib ${libs} ${OPENSSL_LIBS})
 

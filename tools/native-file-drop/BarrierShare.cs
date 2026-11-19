@@ -910,6 +910,7 @@ sealed class ShareWindow : Form
     readonly ShareComboBox role = new ShareComboBox(), position = new ShareComboBox();
     readonly ShareDeviceList nearby = new ShareDeviceList();
     readonly Label positionHint = new Label(), status = new Label(), peerLabel = new Label(), emptyNearby = new Label(), roleLabel = new Label(), nearbyCount = new Label(), bannerText = new Label();
+    readonly LinkLabel bannerSource = new LinkLabel();
     readonly Panel body = new Panel(), banner = new Panel();
     readonly ShareSegment segment = new ShareSegment("主控端", "接收端");
     readonly ShareBadge badge = new ShareBadge();
@@ -1016,11 +1017,16 @@ sealed class ShareWindow : Form
         ClientSize = new Size(720, 608); BackColor = ShareStyle.Background; ForeColor = ShareStyle.Ink;
         FormBorderStyle = FormBorderStyle.FixedSingle; MaximizeBox = false; StartPosition = FormStartPosition.CenterScreen; Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         // An update banner sits above everything; the window grows by its height while it shows.
-        banner.Dock = DockStyle.Top; banner.Height = 44; banner.BackColor = ShareStyle.Tint; banner.Visible = false;
-        bannerText.ForeColor = ShareStyle.BlueInk; bannerText.TextAlign = ContentAlignment.MiddleLeft; bannerText.Font = new Font(Font.FontFamily,10F); bannerText.AutoEllipsis = true; bannerText.Bounds = new Rectangle(24,0,500,44);
-        bannerDownload.Text = "下載更新"; bannerDownload.BackColor = ShareStyle.Tint; bannerDownload.Font = new Font(Font.FontFamily,10F); bannerDownload.Bounds = new Rectangle(560,7,104,30);
-        bannerClose.Text = "✕"; bannerClose.BackColor = ShareStyle.Tint; bannerClose.Bounds = new Rectangle(668,7,30,30); bannerClose.AccessibleName = "稍後再說";
-        banner.Controls.AddRange(new Control[] { bannerText, bannerDownload, bannerClose });
+        banner.Dock = DockStyle.Top; banner.Height = 56; banner.BackColor = ShareStyle.Tint; banner.Visible = false;
+        bannerText.ForeColor = ShareStyle.BlueInk; bannerText.TextAlign = ContentAlignment.MiddleLeft; bannerText.Font = new Font(Font.FontFamily,10F); bannerText.AutoEllipsis = true; bannerText.Bounds = new Rectangle(24,6,520,24);
+        // Second line: where the update comes from, and this release's notes on GitHub.
+        bannerSource.Text = "來源：github.com/sunnylinisme/Cursorway · 查看更新內容"; bannerSource.LinkArea = new LinkArea(bannerSource.Text.Length - 6, 6);
+        bannerSource.BackColor = ShareStyle.Tint; bannerSource.ForeColor = ShareStyle.Muted; bannerSource.Font = new Font(Font.FontFamily,9F); bannerSource.TextAlign = ContentAlignment.MiddleLeft; bannerSource.Bounds = new Rectangle(24,30,520,20);
+        bannerSource.LinkBehavior = LinkBehavior.HoverUnderline; bannerSource.LinkColor = ShareStyle.Blue; bannerSource.ActiveLinkColor = ShareStyle.Blue; bannerSource.VisitedLinkColor = ShareStyle.Blue;
+        bannerSource.LinkClicked += delegate { OpenUpdate(); };
+        bannerDownload.Text = "下載更新"; bannerDownload.BackColor = ShareStyle.Tint; bannerDownload.Font = new Font(Font.FontFamily,10F); bannerDownload.Bounds = new Rectangle(560,13,104,30);
+        bannerClose.Text = "✕"; bannerClose.BackColor = ShareStyle.Tint; bannerClose.Bounds = new Rectangle(668,13,30,30); bannerClose.AccessibleName = "稍後再說";
+        banner.Controls.AddRange(new Control[] { bannerText, bannerSource, bannerDownload, bannerClose });
         bannerDownload.Click += delegate { UpdateClicked(); };
         bannerClose.Click += delegate { dismissedUpdate = announcedUpdate; SetBanner(false); };
         body.Dock = DockStyle.Fill; body.BackColor = ShareStyle.Background; body.AutoScroll = true; body.AutoScrollMinSize = new Size(720, 608);

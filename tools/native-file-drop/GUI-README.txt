@@ -24,6 +24,12 @@ Cursorway（原名 Barrier Share）— Windows／Mac 共用鍵盤滑鼠與雙向
    按「權限設定」可開啟設定；必要時重開程式。
    Windows 安裝程式會自動允許 Cursorway 使用私人／網域網路；若網路被設為「公用」，請改成「私人」。
 
+0.3.23 更新（Windows）
+- 視窗、「關於」和提示訊息都不再出現舊名稱。
+
+0.3.23 更新（Mac）
+- 視窗和提示訊息都不再出現舊名稱。
+
 0.3.22 更新（Windows）
 - 程式、背景服務和開機啟動項目都改用 Cursorway 的名稱（Cursorway.exe、Cursorway 服務），舊的 Barrier Share 服務和程式會在升級時自動移除。
 - 「關於」顯示版本號和 GitHub 專案網址。

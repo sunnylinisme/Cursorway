@@ -119,7 +119,7 @@ final class ShareSettings {
         if process.terminationStatus != 0 && !allowFailure { throw ShareError.message(result) }
         return result
     }
-    static func initialize(_ host: Bool) throws -> String { try run("barrier-pair", ["init", profile(host).path]) }
+    static func initialize(_ host: Bool) throws -> String { try run("cursorway-pair", ["init", profile(host).path]) }
     static func save(_ options: ShareOptions) throws {
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try JSONEncoder().encode(options).write(to: root.appendingPathComponent("settings.json"), options: .atomic)
@@ -226,7 +226,7 @@ final class ShareSettings {
     }
     static func command(_ options: ShareOptions) throws -> Process {
         let p = profile(options.host), process = Process()
-        process.executableURL = bin.appendingPathComponent(options.host ? "barriers" : "barrierc")
+        process.executableURL = bin.appendingPathComponent(options.host ? "cursorway-server" : "cursorway-client")
         var args = ["-f", "--no-tray", "--file-clipboard", "--profile-dir", p.path, "--log", p.appendingPathComponent(options.host ? "server.log" : "mac.log").path, "--name", options.host ? hostName : receiverName]
         if options.host {
             _ = try writeConfig(options)
@@ -247,7 +247,7 @@ final class ShareSettings {
         let lines = (try? String(contentsOf: trustedPath(host), encoding: .utf8)) ?? ""
         return lines.split(whereSeparator: \.isNewline).contains { $0.trimmingCharacters(in: .whitespaces) == fingerprint }
     }
-    static func trust(_ host: Bool, _ fingerprint: String) throws { _ = try run("barrier-pair", ["trust", profile(host).path, host ? "client" : "server", fingerprint]) }
+    static func trust(_ host: Bool, _ fingerprint: String) throws { _ = try run("cursorway-pair", ["trust", profile(host).path, host ? "client" : "server", fingerprint]) }
     @discardableResult static func importPairing(_ old: URL, _ host: Bool, replace: Bool) throws -> Bool {
         let fm = FileManager.default
         let candidates = [old.appendingPathComponent(host ? "profile-server/SSL" : "profile/SSL"), old.appendingPathComponent("profile/SSL"), old.appendingPathComponent("SSL")]
@@ -265,7 +265,7 @@ final class ShareSettings {
         try fm.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         defer { try? fm.removeItem(at: staging) }
         try fm.copyItem(at: source, to: staging.appendingPathComponent("SSL"))
-        _ = try run("barrier-pair", ["init", staging.path])
+        _ = try run("cursorway-pair", ["init", staging.path])
         if fm.fileExists(atPath: target.path) { try fm.moveItem(at: target, to: profile(host).appendingPathComponent("SSL.backup-" + UUID().uuidString)) }
         try fm.moveItem(at: staging.appendingPathComponent("SSL"), to: target)
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.appendingPathComponent("Barrier.pem").path)
@@ -1328,7 +1328,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         guard link == nil && enabled && !test else { return }
         do {
             _ = try ShareSettings.initialize(options.host)
-            let process = Process(), output = Pipe(), input = Pipe(); process.executableURL = ShareSettings.bin.appendingPathComponent("barrier-link")
+            let process = Process(), output = Pipe(), input = Pipe(); process.executableURL = ShareSettings.bin.appendingPathComponent("cursorway-link")
             process.arguments = [ShareSettings.profile(options.host).path, options.host ? "host" : "receiver", Host.current().localizedName ?? "Mac"]
             process.standardOutput = output; process.standardError = output; process.standardInput = input
             link = process; linkOutput = output; linkInput = input; pendingLink.removeAll()
@@ -1663,8 +1663,8 @@ func selfTest(_ directory: URL) throws {
     guard !restored.host && restored.address == options.address && restored.position == "up" else { throw ShareError.message("Settings roundtrip failed") }
     for host in [true, false] {
         let old = scratch.appendingPathComponent(host ? "舊主控" : "舊接收"), profile = old.appendingPathComponent(host ? "profile-server" : "profile")
-        let fingerprint = try ShareSettings.run("barrier-pair", ["init", profile.path])
-        _ = try ShareSettings.run("barrier-pair", ["trust", profile.path, host ? "client" : "server", fingerprint])
+        let fingerprint = try ShareSettings.run("cursorway-pair", ["init", profile.path])
+        _ = try ShareSettings.run("cursorway-pair", ["trust", profile.path, host ? "client" : "server", fingerprint])
         guard try ShareSettings.importPairing(old, host, replace: false), try ShareSettings.initialize(host) == fingerprint, ShareSettings.trusted(host, fingerprint) else { throw ShareError.message("Pairing import failed") }
         if try ShareSettings.importPairing(old, host, replace: false) { throw ShareError.message("Existing pairing overwritten") }
     }
@@ -1721,7 +1721,7 @@ func selfTest(_ directory: URL) throws {
     guard auto.ready(front: 7) == 7, auto.target == nil else { throw ShareError.message("⌘V during a transfer was not pasted") }
     auto.pressed(front: 7)
     guard auto.ready(front: 9) == nil else { throw ShareError.message("Pasted into a different app") }
-    for binary in ["barriers", "barrierc"] { if try !ShareSettings.run(binary, ["--help"], allowFailure: true).contains("--file-clipboard") { throw ShareError.message("Missing backend or file clipboard option") } }
+    for binary in ["cursorway-server", "cursorway-client"] { if try !ShareSettings.run(binary, ["--help"], allowFailure: true).contains("--file-clipboard") { throw ShareError.message("Missing backend or file clipboard option") } }
     guard let icon = Bundle.main.url(forResource: "BarrierShare", withExtension: "icns"), NSImage(contentsOf: icon) != nil,
           Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String == "BarrierShare.icns" else { throw ShareError.message("Missing app icon") }
     let base = "https://github.com/sunnylinisme/barrier/releases/tag/"
@@ -1912,7 +1912,7 @@ func selfTest(_ directory: URL) throws {
     guard try ShareSettings.config("right").contains(" clipboardSharing = true\n"), !(try ShareSettings.config("right")).contains("switchNeeds") else { throw ShareError.message("Feature defaults changed the config") }
     var receiverOptions = ShareOptions(); receiverOptions.host = false; receiverOptions.address = "192.168.1.5"; receiverOptions.advanced.wheelScale = 150; receiverOptions.advanced.wheelInvert = true
     guard let wheelArgs = try ShareSettings.command(receiverOptions).arguments, wheelArgs.contains("--wheel-invert"), let at = wheelArgs.firstIndex(of: "--wheel-scale"), wheelArgs[at + 1] == "150" else { throw ShareError.message("Receiver wheel arguments missing") }
-    guard try ShareSettings.run("barrierc", ["--help"], allowFailure: true).contains("--wheel-scale") else { throw ShareError.message("Core lacks --wheel-scale") }
+    guard try ShareSettings.run("cursorway-client", ["--help"], allowFailure: true).contains("--wheel-scale") else { throw ShareError.message("Core lacks --wheel-scale") }
     app.window.orderOut(nil); NSStatusBar.system.removeStatusItem(app.tray)
     try "PASS: both pairing roles, saved IP/position, four screen directions, bundled backends, native GUI render, update notice selection, switch hotkeys and transfer progress".write(to: directory.appendingPathComponent("PASS.txt"), atomically: true, encoding: .utf8)
 }

@@ -57,8 +57,15 @@ def requirement(path):
     return match.group(1)
 
 
+# 0.3.22 renamed the bundled helpers for Cursorway; their signing identifiers are unchanged.
+RENAMED = {'Contents/Helpers/barriers': 'Contents/Helpers/cursorway-server', 'Contents/Helpers/barrierc': 'Contents/Helpers/cursorway-client',
+           'Contents/Helpers/barrier-pair': 'Contents/Helpers/cursorway-pair', 'Contents/Helpers/barrier-link': 'Contents/Helpers/cursorway-link'}
+
+
 def verify_update(old_app, new_app):
     old, new = inventory(old_app), inventory(new_app)
+    if not (new.keys() & RENAMED.keys()):
+        old = {RENAMED.get(name, name): path for name, path in old.items()}
     if old.keys() != new.keys():
         removed, added = sorted(old.keys() - new.keys()), sorted(new.keys() - old.keys())
         raise ValueError(f'Bundled code inventory changed; removed={removed}, added={added}')

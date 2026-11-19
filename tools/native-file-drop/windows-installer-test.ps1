@@ -142,7 +142,8 @@ if ($PreviousInstaller) {
     # Upgrade from a release made before the rename: install it, then the new installer without /DIR.
     # The new version must stay in the previous folder, replace its shortcuts and keep settings and pairing.
     Invoke-TestProcess (Resolve-Path -LiteralPath $PreviousInstaller).Path ($arguments + "/LOG=$(Join-Path $TestRoot 'install-previous.log')")
-    foreach ($path in $oldShortcuts) { if (-not (Test-Path -LiteralPath $path)) { throw "The previous release did not create its shortcut: $path" } }
+    # 0.3.20 and earlier create Barrier Share shortcuts, 0.3.21 already Cursorway ones.
+    for ($i = 0; $i -lt $oldShortcuts.Count; $i++) { if (-not (Test-Path -LiteralPath $oldShortcuts[$i]) -and -not (Test-Path -LiteralPath $shortcuts[$i])) { throw "The previous release did not create its shortcut: $($oldShortcuts[$i])" } }
     Assert-Profile $beforeInstall
     # Stand-in for the service's state (the service rewrites it from the profile on every start).
     New-Item -ItemType Directory -Force -Path (Join-Path $installDir 'state\upgrade-test') | Out-Null

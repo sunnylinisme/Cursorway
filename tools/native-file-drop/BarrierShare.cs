@@ -322,7 +322,28 @@ static class ShareUpdate
     // "0.3.9" for a release, "0.3.9.123 測試版" for a test build.
     public static string Label { get { return Build > 0 ? Current + "." + Build + " 測試版" : Current.ToString(); } }
     public static string Details { get { return "版本 " + Label + (BuildCommit.Length > 0 ? "，commit " + BuildCommit : ""); } }
-    public sealed class Found { public Version Version; public string Url; }
+    public sealed class Found { public Version Version; public string Url, Setup, Sha256; public long Size; }
+    const string Downloads = "https://github.com/sunnylinisme/cursorway/releases/download/";
+    // The installer asset of a release: Cursorway-Setup-X.Y.Z-x64.exe from this repository, with its size and (when GitHub lists it) SHA-256.
+    static void ReadSetup(Dictionary<string, object> item, Found found)
+    {
+        object assets; if (!item.TryGetValue("assets", out assets) || !(assets is object[])) return;
+        string want = "Cursorway-Setup-" + found.Version + "-x64.exe";
+        foreach (var asset in ((object[])assets).OfType<Dictionary<string, object>>()) {
+            object name, url, size, digest;
+            if (!asset.TryGetValue("name", out name) || !want.Equals(name as string, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!asset.TryGetValue("browser_download_url", out url) || !(url is string) || !((string)url).StartsWith(Downloads, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!asset.TryGetValue("size", out size)) continue;
+            long bytes; try { bytes = Convert.ToInt64(size); } catch (Exception) { continue; }
+            if (bytes <= 0) continue;
+            found.Setup = (string)url; found.Size = bytes;
+            string d = asset.TryGetValue("digest", out digest) ? digest as string : null;
+            if (d != null && d.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) found.Sha256 = d.Substring(7).ToLowerInvariant();
+            return;
+        }
+    }
+    // Installed copies (uninstaller next to the exe) update themselves; the portable one opens the release page.
+    public static bool Installed { get { return File.Exists(Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "unins000.exe")); } }
     // Returns the highest non-draft, non-prerelease Windows release newer than current, or null.
     public static Found Newer(string json, Version current)
     {
@@ -339,7 +360,7 @@ static class ShareUpdate
             // GitHub paths ignore case; the repository is now named Cursorway.
             if (!link.StartsWith("https://github.com/sunnylinisme/barrier/releases/", StringComparison.OrdinalIgnoreCase) && !link.StartsWith("https://github.com/sunnylinisme/cursorway/releases/", StringComparison.OrdinalIgnoreCase)) continue;
             version = new Version(version.Major, version.Minor, Math.Max(0, version.Build));
-            if (version > current && (best == null || version > best.Version)) best = new Found { Version = version, Url = link };
+            if (version > current && (best == null || version > best.Version)) { best = new Found { Version = version, Url = link }; ReadSetup(item, best); }
         }
         return best;
     }
@@ -1000,7 +1021,7 @@ sealed class ShareWindow : Form
         bannerDownload.Text = "下載更新"; bannerDownload.BackColor = ShareStyle.Tint; bannerDownload.Font = new Font(Font.FontFamily,10F); bannerDownload.Bounds = new Rectangle(560,7,104,30);
         bannerClose.Text = "✕"; bannerClose.BackColor = ShareStyle.Tint; bannerClose.Bounds = new Rectangle(668,7,30,30); bannerClose.AccessibleName = "稍後再說";
         banner.Controls.AddRange(new Control[] { bannerText, bannerDownload, bannerClose });
-        bannerDownload.Click += delegate { OpenUpdate(); };
+        bannerDownload.Click += delegate { UpdateClicked(); };
         bannerClose.Click += delegate { dismissedUpdate = announcedUpdate; SetBanner(false); };
         body.Dock = DockStyle.Fill; body.BackColor = ShareStyle.Background; body.AutoScroll = true; body.AutoScrollMinSize = new Size(720, 608);
         Controls.Add(body); Controls.Add(banner);
@@ -1082,7 +1103,7 @@ sealed class ShareWindow : Form
         };
         menu.Items.Add("結束", null, delegate { closing = true; Close(); }); tray.Icon = Icon; tray.Text = "Cursorway " + ShareUpdate.Label; tray.ContextMenuStrip = menu; tray.Visible = !testing;
         tray.DoubleClick += delegate { ShowWindow(); };
-        tray.BalloonTipClicked += delegate { if (balloonOpensUpdate) OpenUpdate(); };
+        tray.BalloonTipClicked += delegate { if (balloonOpensUpdate) { ShowWindow(); UpdateClicked(); } };
         start.Click += delegate {
             // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
             if (transferring) { CancelTransfer(); return; }
@@ -1245,6 +1266,52 @@ sealed class ShareWindow : Form
         ShareStyle.Theme(menu); menu.Closed += delegate { BeginInvoke((Action)menu.Dispose); };
         return menu;
     }
+    // Banner button: 更新 starts a background download, 取消 stops it, 重新啟動 runs the installer silently
+    // (setup closes Cursorway through the quit event and starts it again). Otherwise it opens the release page.
+    ShareUpdate.Found pendingUpdate; WebClient updateDownload; string updateSetup;
+    void UpdateClicked()
+    {
+        if (updateSetup != null) { InstallUpdate(); return; }
+        if (updateDownload != null) { updateDownload.CancelAsync(); return; }
+        if (pendingUpdate == null || pendingUpdate.Setup == null || !ShareUpdate.Installed) { OpenUpdate(); return; }
+        var found = pendingUpdate; string folder = Path.Combine(Path.GetTempPath(), "Cursorway-Update");
+        string file = Path.Combine(folder, "Cursorway-Setup-" + found.Version + "-x64.exe"), part = file + ".part";
+        try { Directory.CreateDirectory(folder); if (File.Exists(part)) File.Delete(part); } catch (Exception e) { Error(e); return; }
+        ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+        var client = new WebClient(); updateDownload = client; client.Headers[HttpRequestHeader.UserAgent] = "Cursorway-Update";
+        bannerDownload.Text = "取消"; bannerClose.Visible = false; ShowProgress(0, found.Size);
+        client.DownloadProgressChanged += (o, e) => { if (updateDownload == client) ShowProgress(e.BytesReceived, found.Size); };
+        client.DownloadFileCompleted += (o, e) => {
+            client.Dispose(); updateDownload = null; bannerClose.Visible = true;
+            string problem = e.Cancelled ? "" : e.Error != null ? e.Error.GetBaseException().Message : Verify(part, found);
+            if (problem != null) {
+                try { File.Delete(part); } catch (Exception) { }
+                bannerDownload.Text = "更新"; bannerText.Text = problem.Length == 0 ? "有新版 " + found.Version + " · 已取消下載" : "下載失敗：" + problem;
+                if (problem.Length > 0) LogLine("下載更新失敗：" + problem);
+                return;
+            }
+            try { if (File.Exists(file)) File.Delete(file); File.Move(part, file); } catch (Exception x) { bannerText.Text = "下載失敗：" + x.Message; bannerDownload.Text = "更新"; return; }
+            updateSetup = file; bannerDownload.Text = "重新啟動";
+            bannerText.Text = "新版 " + found.Version + " 已下載 · 按「重新啟動」安裝，連線會中斷幾秒";
+            if (!testing) { tray.ShowBalloonTip(5000, "Cursorway " + found.Version + " 已下載", "點這裡重新啟動並安裝新版。", ToolTipIcon.Info); balloonOpensUpdate = true; }
+        };
+        client.DownloadFileAsync(new Uri(found.Setup), part);
+    }
+    void ShowProgress(long got, long total) { bannerText.Text = string.Format("下載新版中 {0}%（{1:0.0} / {2:0.0} MB）· 可以繼續使用", total > 0 ? Math.Min(100, got * 100 / total) : 0, got / 1048576.0, total / 1048576.0); }
+    // null when the file is the published installer (same size, and same SHA-256 when GitHub lists one).
+    internal static string Verify(string path, ShareUpdate.Found found)
+    {
+        var info = new FileInfo(path); if (!info.Exists || info.Length != found.Size) return "檔案大小不符";
+        if (found.Sha256 == null) return null;
+        using (var sha = System.Security.Cryptography.SHA256.Create()) using (var stream = File.OpenRead(path))
+            return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant() == found.Sha256 ? null : "檔案校驗不符";
+    }
+    void InstallUpdate()
+    {
+        if (!File.Exists(updateSetup)) { updateSetup = null; bannerDownload.Text = "更新"; UpdateClicked(); return; }
+        try { Process.Start(new ProcessStartInfo(updateSetup, "/SILENT /SUPPRESSMSGBOXES /NORESTART") { UseShellExecute = true }); bannerText.Text = "正在安裝新版，完成後會自動重新開啟…"; }
+        catch (System.ComponentModel.Win32Exception e) { bannerText.Text = e.NativeErrorCode == 1223 ? "需要按「是」允許安裝，請再按一次「重新啟動」" : "無法啟動安裝程式：" + e.Message; }
+    }
     void OpenUpdate() { if (updateUrl != null) try { Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); } catch (Exception e) { Error(e); } }
     void SetBanner(bool show)
     {
@@ -1403,12 +1470,16 @@ sealed class ShareWindow : Form
     internal void ShowUpdate(ShareUpdate.Found found)
     {
         if (found == null) { SetBanner(false); return; }
-        updateUrl = found.Url; string version = found.Version.ToString();
-        bannerText.Text = "有新版 " + version + " · 安裝時會自動關閉並重新開啟 Cursorway";
+        string version = found.Version.ToString();
+        // A download in progress or finished for this version keeps its banner text and button.
+        if (pendingUpdate != null && pendingUpdate.Version == found.Version && (updateDownload != null || updateSetup != null)) { SetBanner(true); return; }
+        updateUrl = found.Url; pendingUpdate = found; updateSetup = null;
+        bool auto = found.Setup != null && ShareUpdate.Installed; bannerDownload.Text = auto ? "更新" : "下載更新";
+        bannerText.Text = "有新版 " + version + (auto ? " · 可在背景下載，下載完按重新啟動" : " · 安裝時會自動關閉並重新開啟 Cursorway");
         SetBanner(dismissedUpdate != version);
         if (announcedUpdate != version && !testing) {
             announcedUpdate = version;
-            tray.ShowBalloonTip(5000, "Cursorway 有新版 " + version, "點這裡下載更新，安裝時會自動重新開啟。", ToolTipIcon.Info); balloonOpensUpdate = true;
+            tray.ShowBalloonTip(5000, "Cursorway 有新版 " + version, auto ? "點這裡在背景下載新版，下載完按重新啟動就會安裝。" : "點這裡下載更新，安裝時會自動重新開啟。", ToolTipIcon.Info); balloonOpensUpdate = true;
         }
     }
     void Save() { try { ShareSettings.Save(Host, address.Text.Trim()); } catch (Exception e) { Error(e); } }
@@ -2584,6 +2655,15 @@ static class ShareProgram
                 "{\"tag_name\":\"v0.3.11\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/v0.3.11\",\"draft\":false,\"prerelease\":false}]";
             // After the repository is renamed, releases link to /cursorway/; other repositories stay rejected.
             var renamed = ShareUpdate.Newer("[{\"tag_name\":\"v0.3.30\",\"html_url\":\"https://github.com/sunnylinisme/Cursorway/releases/tag/v0.3.30\",\"draft\":false,\"prerelease\":false},{\"tag_name\":\"v0.3.40\",\"html_url\":\"https://github.com/someone/cursorway/releases/tag/v0.3.40\",\"draft\":false,\"prerelease\":false}]", new Version(0, 3, 20));
+            string assetJson = "[{\"tag_name\":\"v0.3.30\",\"html_url\":\"https://github.com/sunnylinisme/Cursorway/releases/tag/v0.3.30\",\"draft\":false,\"prerelease\":false,\"assets\":[{\"name\":\"Cursorway-0.3.30-macos-arm64.zip\",\"size\":5,\"browser_download_url\":\"https://github.com/sunnylinisme/Cursorway/releases/download/v0.3.30/Cursorway-0.3.30-macos-arm64.zip\"},{\"name\":\"Cursorway-Setup-0.3.30-x64.exe\",\"size\":3,\"digest\":\"sha256:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD\",\"browser_download_url\":\"https://github.com/sunnylinisme/Cursorway/releases/download/v0.3.30/Cursorway-Setup-0.3.30-x64.exe\"}]}]";
+            var withSetup = ShareUpdate.Newer(assetJson, new Version(0, 3, 20));
+            if (withSetup == null || withSetup.Size != 3 || withSetup.Setup == null || !withSetup.Setup.EndsWith("Setup-0.3.30-x64.exe")) throw new Exception("Update did not pick the installer asset");
+            if (ShareUpdate.Newer(assetJson.Replace("https://github.com/sunnylinisme/Cursorway/releases/download/", "https://example.com/"), new Version(0, 3, 20)).Setup != null) throw new Exception("Installer from another site was accepted");
+            string probe = Path.Combine(directory, "update-probe.bin"); File.WriteAllText(probe, "abc");
+            if (ShareWindow.Verify(probe, withSetup) != null) throw new Exception("Installer with the right hash was rejected");
+            File.WriteAllText(probe, "abd"); if (ShareWindow.Verify(probe, withSetup) == null) throw new Exception("Installer with a wrong hash was accepted");
+            File.WriteAllText(probe, "abcd"); if (ShareWindow.Verify(probe, withSetup) == null) throw new Exception("Installer with a wrong size was accepted");
+            File.Delete(probe);
             if (renamed == null || renamed.Version != new Version(0, 3, 30)) throw new Exception("Update check does not follow the renamed repository");
             var found = ShareUpdate.Newer(releases, new Version(0, 3, 7));
             if (found == null || found.Version != new Version(0, 3, 11) || !found.Url.EndsWith("/v0.3.11")) throw new Exception("Update selection ignored platform, draft or origin rules");

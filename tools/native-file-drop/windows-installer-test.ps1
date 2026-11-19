@@ -302,7 +302,8 @@ Step "started background copy $($first.Id)"
 Wait-Until { Test-AppRunning } 'Installed app did not start in the background.'
 Start-Sleep -Seconds 2
 $updateLog = Join-Path $TestRoot 'update-running.log'
-Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$updateLog")
+# The same switches the app uses when it installs a downloaded update.
+Invoke-TestProcess $InstallerPath ((@('/SILENT') + ($arguments | Where-Object { $_ -ne '/VERYSILENT' })) + "/LOG=$updateLog")
 Step ("update finished; first exited=$($first.HasExited); log: " + ((Select-String -LiteralPath $updateLog -Pattern 'quit|taskkill|Run entry|Cursorway.exe' | ForEach-Object { $_.Line.Substring([Math]::Min(24, $_.Line.Length)) }) -join ' | '))
 Step ("processes: " + ((Get-Process Cursorway -ErrorAction SilentlyContinue | ForEach-Object { "$($_.Id) $($_.Path)" }) -join ' | '))
 if (-not $first.WaitForExit(1000)) { throw 'Setup replaced files without closing the running copy.' }

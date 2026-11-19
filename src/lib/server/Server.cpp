@@ -541,9 +541,11 @@ Server::jumpToScreen(BaseClientProxy* newScreen)
 	// record the current cursor position on the active screen
 	m_active->setJumpCursorPos(m_x, m_y);
 
-	// get the last cursor position on the target screen
-	SInt32 x, y;
-	newScreen->getJumpCursorPos(x, y);
+	// a shortcut switch puts the cursor in the middle of the target screen, where it is easy to find
+	// (the last position there, which Barrier used, was often a corner or the screen's origin)
+	SInt32 sx, sy, sw, sh;
+	newScreen->getShape(sx, sy, sw, sh);
+	SInt32 x = sx + sw / 2, y = sy + sh / 2;
 
 	switchScreen(newScreen, x, y, false);
 }

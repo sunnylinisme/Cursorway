@@ -1227,7 +1227,7 @@ sealed class ShareWindow : Form
     {
         var menu = new ContextMenuStrip { Font = new Font(Font.FontFamily, 10F) };
         menu.Items.Add("清除暫存檔案", null, delegate { ClearCache(); }).Enabled = clear.Enabled;
-        menu.Items.Add("關於 Cursorway", null, delegate { MessageBox.Show(this, "Cursorway（原 Barrier Share）\r\n" + ShareUpdate.Details + "\r\n\r\n以 Barrier 為基礎，在區域網路共用鍵盤、滑鼠與剪貼簿。", "關於 Cursorway"); });
+        menu.Items.Add("關於 Cursorway", null, delegate { ShowAbout(); });
         var look = new ToolStripMenuItem("外觀");
         foreach (var choice in new[] { new[] { "system", "跟隨系統" }, new[] { "light", "淺色" }, new[] { "dark", "深色" } }) {
             string value = choice[0];
@@ -1343,6 +1343,28 @@ sealed class ShareWindow : Form
         return bitmap;
     }
     // Switching role drops every live connection at once; pairing records stay.
+    public const string Project = "https://github.com/sunnylinisme/Cursorway";
+    // Version, what the app is, and a link to the project page (opened in the default browser).
+    internal void ShowAbout()
+    {
+        using (var about = new Form { Text = "關於 Cursorway", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+            ShowInTaskbar = false, StartPosition = FormStartPosition.CenterParent, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Font = Font, BackColor = ShareStyle.Background, Padding = new Padding(20, 16, 20, 16) }) {
+            var flow = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = ShareStyle.Background };
+            flow.Controls.Add(new Label { Text = "Cursorway（原 Barrier Share）", AutoSize = true, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, Font.Size + 2, FontStyle.Bold), Margin = new Padding(0, 0, 0, 6) });
+            flow.Controls.Add(new Label { Text = "版本 " + ShareUpdate.Label, AutoSize = true, ForeColor = ShareStyle.Muted, Margin = new Padding(0, 0, 0, 10) });
+            flow.Controls.Add(new Label { Text = "以 Barrier 為基礎，在區域網路共用鍵盤、滑鼠與剪貼簿。", AutoSize = true, ForeColor = ShareStyle.Ink, Margin = new Padding(0, 0, 0, 10) });
+            var link = new LinkLabel { Text = Project, AutoSize = true, LinkColor = ShareStyle.Blue, ActiveLinkColor = ShareStyle.Blue, VisitedLinkColor = ShareStyle.Blue, Margin = new Padding(0, 0, 0, 14) };
+            link.LinkClicked += delegate { try { Process.Start(new ProcessStartInfo(Project) { UseShellExecute = true }); } catch (Exception e) { Error(e); } };
+            flow.Controls.Add(link);
+            var ok = new Button { Text = "確定", DialogResult = DialogResult.OK, AutoSize = true };
+            flow.Controls.Add(ok);
+            about.Controls.Add(flow); about.AcceptButton = ok; about.CancelButton = ok;
+            ShareStyle.Theme(about);
+            about.ShowDialog(this);
+        }
+    }
+
     bool ConfirmRoleChange()
     {
         int up = online.Count; if (up == 0) return true;

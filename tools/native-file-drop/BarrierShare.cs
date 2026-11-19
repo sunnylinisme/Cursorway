@@ -312,7 +312,7 @@ static class ShareSettings
 // Looks up the newest published Windows release; only the public release list is requested, nothing is sent.
 static class ShareUpdate
 {
-    public const string Releases = "https://api.github.com/repos/sunnylinisme/barrier/releases?per_page=30";
+    public const string Releases = "https://api.github.com/repos/sunnylinisme/Cursorway/releases?per_page=30";
     // Shared vX.Y.Z releases carry both platforms; windows-vX.Y.Z is the pre-0.3.9 Windows-only form.
     static readonly string[] Prefixes = { "v", "windows-v" };
     public static Version Current { get { var v = typeof(ShareUpdate).Assembly.GetName().Version; return new Version(v.Major, v.Minor, Math.Max(0, v.Build)); } }
@@ -336,7 +336,8 @@ static class ShareUpdate
             string name = tag as string, link = url as string; Version version;
             string prefix = name == null ? null : Prefixes.FirstOrDefault(p => name.StartsWith(p, StringComparison.Ordinal));
             if (prefix == null || link == null || !Version.TryParse(name.Substring(prefix.Length), out version)) continue;
-            if (!link.StartsWith("https://github.com/sunnylinisme/barrier/releases/") && !link.StartsWith("https://github.com/sunnylinisme/cursorway/releases/")) continue;
+            // GitHub paths ignore case; the repository is now named Cursorway.
+            if (!link.StartsWith("https://github.com/sunnylinisme/barrier/releases/", StringComparison.OrdinalIgnoreCase) && !link.StartsWith("https://github.com/sunnylinisme/cursorway/releases/", StringComparison.OrdinalIgnoreCase)) continue;
             version = new Version(version.Major, version.Minor, Math.Max(0, version.Build));
             if (version > current && (best == null || version > best.Version)) best = new Found { Version = version, Url = link };
         }
@@ -2557,7 +2558,7 @@ static class ShareProgram
                 "{\"tag_name\":\"v0.5.0\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/v0.5.0\",\"draft\":true,\"prerelease\":false}," +
                 "{\"tag_name\":\"v0.3.11\",\"html_url\":\"https://github.com/sunnylinisme/barrier/releases/tag/v0.3.11\",\"draft\":false,\"prerelease\":false}]";
             // After the repository is renamed, releases link to /cursorway/; other repositories stay rejected.
-            var renamed = ShareUpdate.Newer("[{\"tag_name\":\"v0.3.30\",\"html_url\":\"https://github.com/sunnylinisme/cursorway/releases/tag/v0.3.30\",\"draft\":false,\"prerelease\":false},{\"tag_name\":\"v0.3.40\",\"html_url\":\"https://github.com/someone/cursorway/releases/tag/v0.3.40\",\"draft\":false,\"prerelease\":false}]", new Version(0, 3, 20));
+            var renamed = ShareUpdate.Newer("[{\"tag_name\":\"v0.3.30\",\"html_url\":\"https://github.com/sunnylinisme/Cursorway/releases/tag/v0.3.30\",\"draft\":false,\"prerelease\":false},{\"tag_name\":\"v0.3.40\",\"html_url\":\"https://github.com/someone/cursorway/releases/tag/v0.3.40\",\"draft\":false,\"prerelease\":false}]", new Version(0, 3, 20));
             if (renamed == null || renamed.Version != new Version(0, 3, 30)) throw new Exception("Update check does not follow the renamed repository");
             var found = ShareUpdate.Newer(releases, new Version(0, 3, 7));
             if (found == null || found.Version != new Version(0, 3, 11) || !found.Url.EndsWith("/v0.3.11")) throw new Exception("Update selection ignored platform, draft or origin rules");

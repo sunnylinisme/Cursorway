@@ -238,10 +238,17 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
         L" --log " + quote(log) + L" --name " + command.name;
     line += command.host ? L" -c " + quote(profile + L"\\windows-windows.conf") : command.wheel + L" " + command.address;
     STARTUPINFOW startup{sizeof(startup)}; startup.lpDesktop = const_cast<wchar_t*>(L"winsta0\\default");
+    // What the core prints before its log file is open (bad arguments, a missing file) goes to
+    // core-output.txt in the service's folder, which the user can read.
+    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE};
+    HANDLE output = CreateFileW((command.directory + L"\\core-output.txt").c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (output != INVALID_HANDLE_VALUE) { startup.dwFlags |= STARTF_USESTDHANDLES; startup.hStdOutput = output; startup.hStdError = output; startup.hStdInput = nullptr; }
     std::vector<wchar_t> buffer(line.begin(), line.end()); buffer.push_back(0);
     void* environment = nullptr; if (!asSystem) CreateEnvironmentBlock(&environment, token, FALSE);
-    BOOL ok = CreateProcessAsUserW(token, nullptr, buffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, environment, bin.c_str(), &startup, &core);
+    BOOL ok = CreateProcessAsUserW(token, nullptr, buffer.data(), nullptr, nullptr, output != INVALID_HANDLE_VALUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, environment, bin.c_str(), &startup, &core);
     DWORD error = GetLastError(); CloseHandle(token); if (environment) DestroyEnvironmentBlock(environment);
+    if (output != INVALID_HANDLE_VALUE) CloseHandle(output);
+    logLine(command.directory, "command: " + narrow(line));
     if (!ok) throw std::runtime_error("Cannot start core (error " + std::to_string(error) + ")");
     coreSession = session; coreSystem = asSystem; coreStartedAt = GetTickCount64(); coreUiAccess = uiAccess;
     logLine(command.directory, "core now runs as " + std::string(asSystem ? "SYSTEM" : "the signed-in user") + " (" + why + "), " + (command.host ? "host" : "receiver") + ", session " + std::to_string(session) + ", log " + narrow(log));

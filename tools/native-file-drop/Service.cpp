@@ -168,7 +168,10 @@ HANDLE winlogonToken(DWORD session) {
     DWORD uiAccess = 1; SetTokenInformation(result, TokenUIAccess, &uiAccess, sizeof(uiAccess));
     return result;
 }
-HANDLE userToken(DWORD session) {
+// On some computers a user core started with UI access ends at once (before it writes its log);
+// once that is seen the core runs without it, which keeps the connection working.
+bool userUiAccess = true;
+HANDLE userToken(DWORD session, bool uiAccess = false) {
     HANDLE token = nullptr, primary = nullptr;
     if (!WTSQueryUserToken(session, &token)) return nullptr;
     DuplicateTokenEx(token, MAXIMUM_ALLOWED, nullptr, SecurityImpersonation, TokenPrimary, &primary);
@@ -176,11 +179,12 @@ HANDLE userToken(DWORD session) {
     // UI access lets the core move the mouse and type into windows running as administrator
     // (installers, regedit, an elevated terminal); without it Windows blocks that input (UIPI)
     // and the pointer freezes while such a window is in front. Only SYSTEM can set it.
-    if (primary) { DWORD uiAccess = 1; SetTokenInformation(primary, TokenUIAccess, &uiAccess, sizeof(uiAccess)); }
+    if (primary && uiAccess) { DWORD on = 1; SetTokenInformation(primary, TokenUIAccess, &on, sizeof(on)); }
     return primary;
 }
 bool running(const PROCESS_INFORMATION& p) { DWORD code = 0; return p.hProcess && GetExitCodeProcess(p.hProcess, &code) && code == STILL_ACTIVE; }
 bool coreRunning() { return running(core); }
+ULONGLONG coreStartedAt = 0; bool coreUiAccess = false;
 void stopWatcher() {
     if (watcher.hProcess) { if (running(watcher)) TerminateProcess(watcher.hProcess, 0); CloseHandle(watcher.hProcess); CloseHandle(watcher.hThread); watcher = PROCESS_INFORMATION{}; }
     if (watcherOutput) { CloseHandle(watcherOutput); watcherOutput = nullptr; }
@@ -225,7 +229,8 @@ void stopCore() {
 // signed-in user's token and that user's own profile folder (what the app uses without the service).
 void startCore(DWORD session, bool asSystem, const std::string& why) {
     stopCore();
-    HANDLE token = asSystem ? winlogonToken(session) : userToken(session);
+    bool uiAccess = !asSystem && userUiAccess;
+    HANDLE token = asSystem ? winlogonToken(session) : userToken(session, uiAccess);
     if (!token) throw std::runtime_error("No signed-in user in the console session");
     std::wstring bin = moduleDirectory(), profile = asSystem ? command.directory : command.userProfile, log = asSystem ? command.log : command.userLog;
     std::wstring line = quote(bin + (command.host ? L"\\cursorway-server.exe" : L"\\cursorway-client.exe")) + L" -f --no-tray --file-clipboard --profile-dir " + quote(profile) +
@@ -237,7 +242,7 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
     BOOL ok = CreateProcessAsUserW(token, nullptr, buffer.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, environment, bin.c_str(), &startup, &core);
     DWORD error = GetLastError(); CloseHandle(token); if (environment) DestroyEnvironmentBlock(environment);
     if (!ok) throw std::runtime_error("Cannot start core (error " + std::to_string(error) + ")");
-    coreSession = session; coreSystem = asSystem;
+    coreSession = session; coreSystem = asSystem; coreStartedAt = GetTickCount64(); coreUiAccess = uiAccess;
     logLine(command.directory, "core now runs as " + std::string(asSystem ? "SYSTEM" : "the signed-in user") + " (" + why + "), " + (command.host ? "host" : "receiver") + ", session " + std::to_string(session) + ", log " + narrow(log));
 }
 // Starts or switches the core to match the console session and its input desktop; mutex held.
@@ -254,6 +259,11 @@ void apply() {
     bool secure = !desktop.empty() && _stricmp(desktop.c_str(), "Default") != 0;
     bool asSystem = !signedIn || secure;
     if (coreRunning() && session == coreSession && asSystem == coreSystem) { failures = 0; return; }
+    if (core.hProcess && !coreRunning() && coreUiAccess && GetTickCount64() - coreStartedAt < 3000) {
+        DWORD code = 0; GetExitCodeProcess(core.hProcess, &code);
+        userUiAccess = false;
+        logLine(command.directory, "core with UI access ended at once (exit " + std::to_string(code) + "); running it without UI access");
+    }
     static ULONGLONG retryAt = 0;
     if (coreRunning() || GetTickCount64() >= retryAt) {
         try { startCore(session, asSystem, !signedIn ? "nobody signed in" : secure ? "input desktop " + desktop : "input desktop " + (desktop.empty() ? std::string("Default") : desktop)); }

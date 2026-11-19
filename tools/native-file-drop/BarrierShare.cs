@@ -1054,7 +1054,7 @@ sealed class ShareWindow : Form
         var more = new ShareButton { Text = "更多  ▾", Quiet = true, BackColor = ShareStyle.Background, Font = new Font(Font.FontFamily,10F), TabIndex = 8 }; At(more,612,566,84,32);
         more.Click += delegate { BuildMoreMenu().Show(more, new Point(more.Width - 1, more.Height), ToolStripDropDownDirection.BelowLeft); };
         forget.Text = "解除配對"; clear.Text = "清除暫存"; pair.Text = "邀請配對";
-        details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.BorderStyle=BorderStyle.None;
+        details.Multiline=true; details.ReadOnly=true; details.ScrollBars=ScrollBars.Vertical; details.Font=new Font("Consolas",9F); details.BackColor=Color.FromArgb(249,251,255); details.ForeColor=ShareStyle.Ink; details.BorderStyle=BorderStyle.None;
         // A multiline TextBox has no Ctrl+A of its own.
         details.KeyDown += delegate(object sender, KeyEventArgs e) { if (e.Control && e.KeyCode == Keys.A) { details.SelectAll(); e.SuppressKeyPress = true; } };
         // Tray menu: status and the everyday actions without opening the window.
@@ -1345,25 +1345,27 @@ sealed class ShareWindow : Form
     // Switching role drops every live connection at once; pairing records stay.
     public const string Project = "https://github.com/sunnylinisme/Cursorway";
     // Version, what the app is, and a link to the project page (opened in the default browser).
-    internal void ShowAbout()
+    internal Form BuildAbout()
     {
-        using (var about = new Form { Text = "關於 Cursorway", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
-            ShowInTaskbar = false, StartPosition = FormStartPosition.CenterParent, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Font = Font, BackColor = ShareStyle.Background, Padding = new Padding(20, 16, 20, 16) }) {
-            var flow = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, AutoSize = true, WrapContents = false, BackColor = ShareStyle.Background };
-            flow.Controls.Add(new Label { Text = "Cursorway", AutoSize = true, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, Font.Size + 2, FontStyle.Bold), Margin = new Padding(0, 0, 0, 6) });
-            flow.Controls.Add(new Label { Text = "版本 " + ShareUpdate.Label, AutoSize = true, ForeColor = ShareStyle.Muted, Margin = new Padding(0, 0, 0, 10) });
-            flow.Controls.Add(new Label { Text = "在區域網路的電腦之間共用鍵盤、滑鼠與剪貼簿。", AutoSize = true, ForeColor = ShareStyle.Ink, Margin = new Padding(0, 0, 0, 10) });
-            var link = new LinkLabel { Text = Project, AutoSize = true, LinkColor = ShareStyle.Blue, ActiveLinkColor = ShareStyle.Blue, VisitedLinkColor = ShareStyle.Blue, Margin = new Padding(0, 0, 0, 14) };
-            link.LinkClicked += delegate { try { Process.Start(new ProcessStartInfo(Project) { UseShellExecute = true }); } catch (Exception e) { Error(e); } };
-            flow.Controls.Add(link);
-            var ok = new Button { Text = "確定", DialogResult = DialogResult.OK, AutoSize = true };
-            flow.Controls.Add(ok);
-            about.Controls.Add(flow); about.AcceptButton = ok; about.CancelButton = ok;
-            ShareStyle.Theme(about);
-            about.ShowDialog(this);
-        }
+        const int W = 340;
+        var about = new Form { Text = "關於 Cursorway", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+            ShowInTaskbar = false, StartPosition = FormStartPosition.CenterParent, Font = new Font(Font.FontFamily, 10F), BackColor = Color.White,
+            ClientSize = new Size(W, 300), AutoScaleDimensions = ShareWindow.Dpi96, AutoScaleMode = AutoScaleMode.Dpi };
+        Bitmap art; try { using (var icon = new Icon(Icon, new Size(256, 256))) art = icon.ToBitmap(); } catch (Exception) { art = Icon.ToBitmap(); }
+        about.Controls.Add(new PictureBox { Image = art, SizeMode = PictureBoxSizeMode.Zoom, Bounds = new Rectangle((W - 72) / 2, 28, 72, 72), BackColor = Color.White });
+        about.Controls.Add(new Label { Text = "Cursorway", TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(0, 110, W, 34), ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 16F, FontStyle.Bold) });
+        about.Controls.Add(new Label { Text = "版本 " + ShareUpdate.Label, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(0, 144, W, 22), ForeColor = ShareStyle.Muted, Font = new Font(Font.FontFamily, 9.5F) });
+        about.Controls.Add(new Label { Text = "在區域網路的電腦之間\n共用鍵盤、滑鼠與剪貼簿", TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(20, 176, W - 40, 44), ForeColor = ShareStyle.Ink });
+        var link = new LinkLabel { Text = "github.com/sunnylinisme/Cursorway", TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(0, 222, W, 22),
+            LinkBehavior = LinkBehavior.HoverUnderline, LinkColor = ShareStyle.Blue, ActiveLinkColor = ShareStyle.Blue, VisitedLinkColor = ShareStyle.Blue, Font = new Font(Font.FontFamily, 9.5F) };
+        link.LinkClicked += delegate { try { Process.Start(new ProcessStartInfo(Project) { UseShellExecute = true }); } catch (Exception e) { Error(e); } };
+        about.Controls.Add(link);
+        var ok = new ShareButton { Text = "確定", Primary = true, BackColor = Color.White, Bounds = new Rectangle((W - 120) / 2, 254, 120, 34), DialogResult = DialogResult.OK };
+        about.Controls.Add(ok); about.AcceptButton = ok; about.CancelButton = ok;
+        ShareStyle.Theme(about);
+        return about;
     }
+    internal void ShowAbout() { using (var about = BuildAbout()) about.ShowDialog(this); }
 
     bool ConfirmRoleChange()
     {
@@ -1671,7 +1673,7 @@ sealed class ShareWindow : Form
     internal void ShowDiagnostics()
     {
         if (diagnostics == null) {
-            diagnostics = new Form { Text="Cursorway · 診斷紀錄", ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18, 18, 18, 22), BackColor=Color.White, AutoScaleDimensions=ShareWindow.Dpi96, AutoScaleMode=AutoScaleMode.Dpi };
+            diagnostics = new Form { Text="Cursorway · 診斷紀錄", Icon=Icon, ClientSize=new Size(760,400), Font=Font, StartPosition=FormStartPosition.CenterParent, Padding=new Padding(18, 18, 18, 22), BackColor=Color.White, AutoScaleDimensions=ShareWindow.Dpi96, AutoScaleMode=AutoScaleMode.Dpi };
             details.Dock=DockStyle.Fill; diagnostics.Controls.Add(details);
             // A gap above the button and the window padding below it keep it off the log and the window edge.
             var bar = new Panel { Dock=DockStyle.Bottom, Height=50, BackColor=Color.White };
@@ -2396,6 +2398,7 @@ static class ShareProgram
                     info.Append(d.GetType().Name + " '" + d.Text + "' " + d.Bounds + " in " + d.Parent.GetType().Name + "\n");
                 File.WriteAllText(args[2] + ".txt", info.ToString());
                 Action<Form, string> shot = (form, name) => { form.Show(); Application.DoEvents(); using (var b = new Bitmap(form.Width, form.Height)) { form.DrawToBitmap(b, new Rectangle(Point.Empty, form.Size)); b.Save(args[2] + "." + name + ".png"); } form.Close(); };
+                shot(window.BuildAbout(), "about");
                 Func<ShareAdvanced> read; shot(window.BuildAdvanced(ShareSettings.Advanced, out read), "advanced");
                 string fa = "v2:sha256:" + new string('a', 64), fb = "v2:sha256:" + new string('b', 64);
                 ShareSettings.Receivers = new List<string> { fa, fb };

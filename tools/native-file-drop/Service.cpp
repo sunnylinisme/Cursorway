@@ -229,7 +229,8 @@ void stopCore() {
 // signed-in user's token and that user's own profile folder (what the app uses without the service).
 void startCore(DWORD session, bool asSystem, const std::string& why) {
     stopCore();
-    bool uiAccess = !asSystem && userUiAccess;
+    // Only the receiver types into other windows; the host reads input through its hook and needs no UI access.
+    bool uiAccess = !asSystem && !command.host && userUiAccess;
     HANDLE token = asSystem ? winlogonToken(session) : userToken(session, uiAccess);
     if (!token) throw std::runtime_error("No signed-in user in the console session");
     std::wstring bin = moduleDirectory(), profile = asSystem ? command.directory : command.userProfile, log = asSystem ? command.log : command.userLog;

@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" role="img" aria-label="Cursorway 示範：滑鼠移過螢幕邊緣到另一台電腦、跨電腦複製貼上檔案、用快捷鍵切換電腦">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 520" width="960" height="520" role="img" aria-label="Cursorway 示範：自動找到附近電腦並用配對碼快速配對、滑鼠移過螢幕邊緣到另一台電腦、跨電腦複製貼上檔案、用快捷鍵切換電腦">
 <style>
   * { font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", "Segoe UI", "Noto Sans TC", sans-serif; }
   .bg { fill: #0f1420; }
@@ -14,54 +14,85 @@
   .muted { fill: #8b97ad; font-size: 14px; }
 
   /* one 14 s story, looping */
-  .cursor   { animation: cursor 14s infinite; }
-  .glow-l   { animation: glowL 14s infinite; }
-  .glow-r   { animation: glowR 14s infinite; }
-  .select   { animation: select 14s infinite; }
-  .copy     { animation: copy 14s infinite; }
-  .paste    { animation: paste 14s infinite; }
-  .macfile  { animation: macfile 14s infinite; }
-  .bar      { animation: bar 14s infinite; transform-box: fill-box; transform-origin: left center; }
-  .done     { animation: done 14s infinite; }
-  .hotkey   { animation: hotkey 14s infinite; }
-  .cap1     { animation: cap1 14s infinite; }
-  .cap2     { animation: cap2 14s infinite; }
-  .cap3     { animation: cap3 14s infinite; }
-  .trail    { animation: trail 14s infinite; }
+  .cursor   { animation: cursor 20s infinite; }
+  .glow-l   { animation: glowL 20s infinite; }
+  .glow-r   { animation: glowR 20s infinite; }
+  .select   { animation: select 20s infinite; }
+  .copy     { animation: copy 20s infinite; }
+  .paste    { animation: paste 20s infinite; }
+  .macfile  { animation: macfile 20s infinite; }
+  .bar      { animation: bar 20s infinite; transform-box: fill-box; transform-origin: left center; }
+  .done     { animation: done 20s infinite; }
+  .hotkey   { animation: hotkey 20s infinite; }
+  .cap1     { animation: cap1 20s infinite; }
+  .cap2     { animation: cap2 20s infinite; }
+  .cap3     { animation: cap3 20s infinite; }
+  .trail    { animation: trail 20s infinite; }
 
   @keyframes cursor {
-    0%   { transform: translate(190px, 230px); }
-    6%   { transform: translate(190px, 230px); animation-timing-function: ease-in; }
-    15%  { transform: translate(442px, 205px); animation-timing-function: linear; }
-    19%  { transform: translate(600px, 200px); animation-timing-function: ease-out; }
-    25%  { transform: translate(720px, 225px); }
-    27%  { transform: translate(720px, 225px); animation-timing-function: ease-in-out; }
-    35%  { transform: translate(140px, 262px); }
-    41%  { transform: translate(140px, 262px); animation-timing-function: ease-in-out; }
-    50%  { transform: translate(705px, 236px); }
-    66%  { transform: translate(705px, 236px); animation-timing-function: ease-in-out; }
-    70%  { transform: translate(780px, 175px); }
-    74%  { transform: translate(780px, 175px); animation-timing-function: step-end; }
-    75%  { transform: translate(290px, 175px); }
-    90%  { transform: translate(290px, 175px); animation-timing-function: ease-in-out; }
-    100% { transform: translate(190px, 230px); }
+    0%   { transform: translate(200px, 280px); }
+    2%   { transform: translate(200px, 280px); animation-timing-function: ease-in-out; }
+    6%   { transform: translate(325px, 186px); }
+    9%   { transform: translate(325px, 186px); animation-timing-function: ease-in-out; }
+    12%  { transform: translate(240px, 238px); }
+    24%  { transform: translate(240px, 238px); animation-timing-function: ease-in-out; }
+    30%   { transform: translate(190px, 230px); }
+    34.2% { transform: translate(190px, 230px); animation-timing-function: ease-in; }
+    40.5% { transform: translate(442px, 205px); animation-timing-function: linear; }
+    43.3% { transform: translate(600px, 200px); animation-timing-function: ease-out; }
+    47.5% { transform: translate(720px, 225px); }
+    48.9% { transform: translate(720px, 225px); animation-timing-function: ease-in-out; }
+    54.5% { transform: translate(140px, 262px); }
+    58.7% { transform: translate(140px, 262px); animation-timing-function: ease-in-out; }
+    65%   { transform: translate(705px, 236px); }
+    76.2% { transform: translate(705px, 236px); animation-timing-function: ease-in-out; }
+    79%   { transform: translate(780px, 175px); }
+    81.8% { transform: translate(780px, 175px); animation-timing-function: step-end; }
+    82.5% { transform: translate(290px, 175px); }
+    93%   { transform: translate(290px, 175px); animation-timing-function: ease-in-out; }
+    100%  { transform: translate(190px, 230px); }
   }
   /* which computer the keyboard and mouse are on */
-  @keyframes glowL { 0%,16% { opacity: 1 } 17%,30% { opacity: 0 } 31%,45% { opacity: 1 } 46%,74% { opacity: 0 } 75%,100% { opacity: 1 } }
-  @keyframes glowR { 0%,16% { opacity: 0 } 17%,30% { opacity: 1 } 31%,45% { opacity: 0 } 46%,74% { opacity: 1 } 75%,100% { opacity: 0 } }
-  @keyframes trail { 0%,13% { opacity: 0 } 15%,19% { opacity: .9 } 22%,100% { opacity: 0 } }
+  @keyframes glowL { 0%,30%,41.2% { opacity: 1 } 41.9%,51% { opacity: 0 } 51.7%,61.5% { opacity: 1 } 62.2%,81.8% { opacity: 0 } 82.5%,100% { opacity: 1 } }
+  @keyframes glowR { 0%,30%,41.2% { opacity: 0 } 41.9%,51% { opacity: 1 } 51.7%,61.5% { opacity: 0 } 62.2%,81.8% { opacity: 1 } 82.5%,100% { opacity: 0 } }
+  @keyframes trail { 0%,30%,39.1% { opacity: 0 } 40.5%,43.3% { opacity: .9 } 45.4%,100% { opacity: 0 } }
 
-  @keyframes select { 0%,35% { opacity: 0 } 36%,52% { opacity: 1 } 53%,100% { opacity: 0 } }
-  @keyframes copy   { 0%,36% { opacity: 0; transform: translateY(8px) } 37%,42% { opacity: 1; transform: none } 44%,100% { opacity: 0 } }
-  @keyframes paste  { 0%,51% { opacity: 0; transform: translateY(8px) } 52%,57% { opacity: 1; transform: none } 59%,100% { opacity: 0 } }
-  @keyframes macfile { 0%,53% { opacity: 0; transform: scale(.6) } 56%,96% { opacity: 1; transform: scale(1) } 100% { opacity: 0 } }
-  @keyframes bar    { 0%,54% { transform: scaleX(0) } 64%,100% { transform: scaleX(1) } }
-  @keyframes done   { 0%,64% { opacity: 0 } 65%,96% { opacity: 1 } 100% { opacity: 0 } }
-  @keyframes hotkey { 0%,70% { opacity: 0; transform: translateY(10px) } 71%,82% { opacity: 1; transform: none } 85%,100% { opacity: 0 } }
+  @keyframes select { 0%,30%,54.5% { opacity: 0 } 55.2%,66.4% { opacity: 1 } 67.1%,100% { opacity: 0 } }
+  @keyframes copy   { 0%,30%,55.2% { opacity: 0; transform: translateY(8px) } 55.9%,59.4% { opacity: 1; transform: none } 60.8%,100% { opacity: 0 } }
+  @keyframes paste  { 0%,30%,65.7% { opacity: 0; transform: translateY(8px) } 66.4%,69.9% { opacity: 1; transform: none } 71.3%,100% { opacity: 0 } }
+  @keyframes macfile { 0%,30%,67.1% { opacity: 0; transform: scale(.6) } 69.2%,97.2% { opacity: 1; transform: scale(1) } 100% { opacity: 0 } }
+  @keyframes bar    { 0%,30%,67.8% { transform: scaleX(0) } 74.8%,100% { transform: scaleX(1) } }
+  @keyframes done   { 0%,30%,74.8% { opacity: 0 } 75.5%,97.2% { opacity: 1 } 100% { opacity: 0 } }
+  @keyframes hotkey { 0%,30%,79% { opacity: 0; transform: translateY(10px) } 79.7%,87.4% { opacity: 1; transform: none } 89.5%,100% { opacity: 0 } }
 
-  @keyframes cap1 { 0%,1% { opacity: 0 } 3%,26% { opacity: 1 } 28%,100% { opacity: 0 } }
-  @keyframes cap2 { 0%,28% { opacity: 0 } 30%,66% { opacity: 1 } 68%,100% { opacity: 0 } }
-  @keyframes cap3 { 0%,68% { opacity: 0 } 70%,94% { opacity: 1 } 97%,100% { opacity: 0 } }
+  @keyframes cap1 { 0%,30%,30.7% { opacity: 0 } 32.1%,48.2% { opacity: 1 } 49.6%,100% { opacity: 0 } }
+  @keyframes cap2 { 0%,30%,49.6% { opacity: 0 } 51%,76.2% { opacity: 1 } 77.6%,100% { opacity: 0 } }
+  @keyframes cap3 { 0%,30%,77.6% { opacity: 0 } 79%,95.8% { opacity: 1 } 97.9%,100% { opacity: 0 } }
+
+  /* pairing scene (0-28 %) */
+  .pw     { animation: pw 20s infinite; }
+  .invp   { animation: invp 20s infinite; }
+  .dlg    { animation: dlg 20s infinite; transform-box: fill-box; transform-origin: center; }
+  .okw    { animation: okw 20s infinite; }
+  .okm    { animation: okm 20s infinite; }
+  .paired { animation: paired 20s infinite; }
+  .fast   { animation: fast 20s infinite; }
+  .cap0   { animation: cap0 20s infinite; }
+  @keyframes pw     { 0%,24% { opacity: 1 } 27%,100% { opacity: 0 } }
+  @keyframes invp   { 0%,6% { opacity: 0 } 6.5%,7.5% { opacity: 1 } 8.5%,100% { opacity: 0 } }
+  @keyframes dlg    { 0%,8.5% { opacity: 0; transform: scale(.9) } 10%,24% { opacity: 1; transform: none } 27%,100% { opacity: 0 } }
+  @keyframes okw    { 0%,12% { opacity: 0 } 12.5%,13.5% { opacity: 1 } 14.5%,100% { opacity: 0 } }
+  @keyframes okm    { 0%,15% { opacity: 0 } 15.5%,16.5% { opacity: 1 } 17.5%,100% { opacity: 0 } }
+  @keyframes paired { 0%,17% { opacity: 0 } 18%,24% { opacity: 1 } 27%,100% { opacity: 0 } }
+  @keyframes fast   { 0%,18% { opacity: 0; transform: translateY(10px) } 19%,26% { opacity: 1; transform: none } 28%,100% { opacity: 0 } }
+  @keyframes cap0   { 0%,.5% { opacity: 0 } 1.5%,26% { opacity: 1 } 28.5%,100% { opacity: 0 } }
+
+  /* what sets Cursorway apart, shown with the scenes */
+  .tag text { fill: #1a1300; font-size: 15px; font-weight: 800; }
+  .tag0 { animation: tag0 20s infinite; }
+  .tag2 { animation: tag2 20s infinite; }
+  @keyframes tag0 { 0%,1% { opacity: 0 } 2.5%,26% { opacity: 1 } 28%,100% { opacity: 0 } }
+  @keyframes tag2 { 0%,50% { opacity: 0 } 51.5%,76% { opacity: 1 } 77.6%,100% { opacity: 0 } }
 </style>
 
 <rect class="bg" width="960" height="520" rx="18"/>
@@ -130,6 +161,65 @@
   </g>
 </g>
 
+
+<!-- pairing: the app on Windows lists the Mac nearby; invite, compare the code, agree on both -->
+<g class="pw">
+  <rect x="112" y="116" width="264" height="184" rx="12" fill="#f4f6fb"/>
+  <text x="130" y="142" font-size="14" font-weight="700" fill="#0f1420">Cursorway</text>
+  <text x="130" y="168" font-size="12" fill="#5b6478">附近電腦</text>
+  <rect x="124" y="176" width="240" height="40" rx="8" fill="#ffffff" stroke="#dfe4ee"/>
+  <rect x="136" y="187" width="22" height="15" rx="2" fill="#7a5cc9"/><rect x="132" y="202" width="30" height="3" rx="1.5" fill="#7a5cc9"/>
+  <text x="168" y="201" font-size="14" font-weight="600" fill="#0f1420">MacBook</text>
+  <rect x="300" y="184" width="56" height="26" rx="7" fill="#2f6fed"/>
+  <rect class="invp" x="300" y="184" width="56" height="26" rx="7" fill="#163f9e"/>
+  <text x="328" y="202" text-anchor="middle" font-size="13" font-weight="700" fill="#ffffff">邀請</text>
+  <text x="130" y="286" font-size="11" fill="#8b97ad">同一個網路的電腦會自動出現</text>
+  <g class="dlg">
+    <rect x="128" y="126" width="232" height="140" rx="12" fill="#ffffff"/>
+    <text x="244" y="152" text-anchor="middle" font-size="13" fill="#5b6478">配對碼（兩邊相同）</text>
+    <text x="244" y="196" text-anchor="middle" font-size="36" font-weight="800" fill="#0f1420" letter-spacing="3">482 913</text>
+    <rect x="200" y="222" width="88" height="30" rx="8" fill="#2f6fed"/>
+    <rect class="okw" x="200" y="222" width="88" height="30" rx="8" fill="#163f9e"/>
+    <text x="244" y="242" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">同意</text>
+    <g class="paired">
+      <rect x="184" y="218" width="120" height="36" rx="9" fill="#ffffff"/>
+      <circle cx="210" cy="236" r="11" fill="#3ccf8e"/>
+      <path d="M204 236 l4 4 l8 -8" stroke="#0f1420" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="228" y="241" font-size="15" font-weight="700" fill="#1f9d63">已配對</text>
+    </g>
+  </g>
+</g>
+<g class="pw">
+  <g class="dlg">
+    <rect x="600" y="126" width="232" height="140" rx="12" fill="#ffffff"/>
+    <text x="716" y="152" text-anchor="middle" font-size="13" fill="#5b6478">配對碼（兩邊相同）</text>
+    <text x="716" y="196" text-anchor="middle" font-size="36" font-weight="800" fill="#0f1420" letter-spacing="3">482 913</text>
+    <rect x="672" y="222" width="88" height="30" rx="8" fill="#2f6fed"/>
+    <rect class="okm" x="672" y="222" width="88" height="30" rx="8" fill="#163f9e"/>
+    <text x="716" y="242" text-anchor="middle" font-size="14" font-weight="700" fill="#ffffff">同意</text>
+    <g class="paired">
+      <rect x="656" y="218" width="120" height="36" rx="9" fill="#ffffff"/>
+      <circle cx="682" cy="236" r="11" fill="#3ccf8e"/>
+      <path d="M676 236 l4 4 l8 -8" stroke="#0f1420" stroke-width="2.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="700" y="241" font-size="15" font-weight="700" fill="#1f9d63">已配對</text>
+    </g>
+  </g>
+</g>
+<g class="fast badge" style="transform-box: fill-box">
+  <rect x="380" y="404" width="200" height="42" rx="12" fill="#3ccf8e"/>
+  <text x="480" y="432" text-anchor="middle" fill="#0f1420">約 5 秒完成配對</text>
+</g>
+<text class="caption cap0" x="480" y="482" text-anchor="middle">附近電腦自動出現 · 核對配對碼 · 兩邊按同意就連上</text>
+
+
+<g class="tag tag0">
+  <rect x="604" y="22" width="316" height="32" rx="16" fill="#ffc53d"/>
+  <text x="762" y="44" text-anchor="middle">不用輸入 IP、不用核對指紋</text>
+</g>
+<g class="tag tag2">
+  <rect x="604" y="22" width="316" height="32" rx="16" fill="#ffc53d"/>
+  <text x="762" y="44" text-anchor="middle">Windows ⇄ Mac 直接複製檔案和資料夾</text>
+</g>
 <!-- the shared edge -->
 <g class="trail">
   <rect x="446" y="150" width="68" height="110" rx="10" fill="url(#edge)"/>

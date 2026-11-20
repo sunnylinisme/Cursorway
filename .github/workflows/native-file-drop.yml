@@ -137,6 +137,11 @@ jobs:
           if (-not $test.WaitForExit(60000)) { $test.Kill(); throw 'Desktop self-test timed out' }
           if ($test.ExitCode -ne 0) { $reason = (Get-Content build/gui-test/FAIL.txt -Raw) -replace "`r?`n", '%0A'; Write-Output "::error title=Desktop self-test::$reason"; throw 'Desktop self-test failed' }
           Get-Content build/gui-test/PASS.txt
+      - name: Windows 9 x 1 and 1 x 9 arrangements connect every receiver
+        run: |
+          python tools/native-file-drop/windows-wide-layout-network-test.py build/bin/Release build/gui-test/layout-9x1.conf
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/native-file-drop/windows-wide-layout-network-test.py build/bin/Release build/gui-test/layout-1x9.conf
       - name: Normal desktop startup and live discovery in both roles
         shell: pwsh
         run: |

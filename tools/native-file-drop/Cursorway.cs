@@ -74,6 +74,7 @@ static class ShareSettings
         Directory.CreateDirectory(Root);
         var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), new XAttribute("appearance", Appearance), Advanced.ToXml(),
             new XElement("layout", Layout.Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("x", item.Value.X), new XAttribute("y", item.Value.Y)))),
+            GridXml("grid", Cols, Rows, HostAt, Preset, null), Custom == null ? null : GridXml("custom", Custom.Cols, Custom.Rows, Custom.Host, null, Custom.Cells),
             new XElement("numbers", Numbers.Where(item => item.Value >= 2 && item.Value <= 9).Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("number", item.Value)))),
             new XElement("edges", EdgeRange.Where(item => item.Value != "all").Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("range", item.Value)))),
             new XElement("platforms", Platforms.Select(item => new XElement("peer", new XAttribute("fingerprint", item.Key), new XAttribute("system", item.Value))))));
@@ -84,6 +85,7 @@ static class ShareSettings
     public static void Load(out bool host, out string address)
     {
         host = true; address = ""; Position = "right"; Appearance = "system"; Advanced = new ShareAdvanced(); Layout = new Dictionary<string, Point>(); EdgeRange = new Dictionary<string, string>(); Platforms = new Dictionary<string, string>(); Numbers = new Dictionary<string, int>();
+        Cols = Rows = 5; HostAt = new Point(2, 2); Preset = "center"; Custom = null;
         string path = Path.Combine(Root, "settings.xml");
         if (!File.Exists(path)) return;
         var root = XDocument.Load(path).Root;
@@ -111,14 +113,44 @@ static class ShareSettings
         var layout = root.Element("layout");
         if (layout != null) foreach (var screen in layout.Elements("screen")) {
             int x, y; string fp = (string)screen.Attribute("fingerprint");
-            if (fp != null && Int32.TryParse((string)screen.Attribute("x"), out x) && Int32.TryParse((string)screen.Attribute("y"), out y) && Math.Abs(x) <= 2 && Math.Abs(y) <= 2) {
+            if (fp != null && Int32.TryParse((string)screen.Attribute("x"), out x) && Int32.TryParse((string)screen.Attribute("y"), out y) && Math.Abs(x) <= 8 && Math.Abs(y) <= 8) {
                 Layout[fp] = new Point(x, y);
             }
         }
+        var grid = ReadGrid(root.Element("grid"));
+        if (grid != null) { Cols = grid.Cols; Rows = grid.Rows; HostAt = grid.Host; }
+        string preset = root.Element("grid") == null ? null : (string)root.Element("grid").Attribute("preset");
+        Preset = preset != null && ShareLayoutEditor.PresetIds.Contains(preset) ? preset : Layout.Count > 0 ? "custom" : "center";
+        Custom = ReadGrid(root.Element("custom"));
+    }
+    // The arrange-screens grid (1-9 columns and rows), where the host sits in it, the chosen preset and the
+    // last hand-made ("自訂") arrangement, so picking it again brings that back.
+    public static int Cols = 5, Rows = 5;
+    public static Point HostAt = new Point(2, 2);
+    public static string Preset = "center";
+    public static ShareGrid Custom;
+    static XElement GridXml(string name, int cols, int rows, Point host, string preset, Dictionary<string, Point> cells)
+    {
+        var e = new XElement(name, new XAttribute("cols", cols), new XAttribute("rows", rows), new XAttribute("hostX", host.X), new XAttribute("hostY", host.Y));
+        if (preset != null) e.Add(new XAttribute("preset", preset));
+        if (cells != null) foreach (var c in cells) e.Add(new XElement("screen", new XAttribute("fingerprint", c.Key), new XAttribute("x", c.Value.X), new XAttribute("y", c.Value.Y)));
+        return e;
+    }
+    static ShareGrid ReadGrid(XElement e)
+    {
+        int c, r, x, y;
+        if (e == null || !Int32.TryParse((string)e.Attribute("cols"), out c) || !Int32.TryParse((string)e.Attribute("rows"), out r) || !Int32.TryParse((string)e.Attribute("hostX"), out x) || !Int32.TryParse((string)e.Attribute("hostY"), out y)) return null;
+        if (c < 1 || c > 9 || r < 1 || r > 9 || x < 0 || y < 0 || x >= c || y >= r) return null;
+        var grid = new ShareGrid { Cols = c, Rows = r, Host = new Point(x, y), Cells = new Dictionary<string, Point>() };
+        foreach (var screen in e.Elements("screen")) {
+            int dx, dy; string fp = (string)screen.Attribute("fingerprint");
+            if (fp != null && Int32.TryParse((string)screen.Attribute("x"), out dx) && Int32.TryParse((string)screen.Attribute("y"), out dy) && Math.Abs(dx) <= 8 && Math.Abs(dy) <= 8) grid.Cells[fp] = new Point(dx, dy);
+        }
+        return grid;
     }
     public static ShareAdvanced Advanced = new ShareAdvanced();
     // Paired receivers (host role) in pairing order, and where each sits relative to this host (0,0)
-    // on a 5x5 grid; x grows to the right and y downwards.
+    // (up to 8 cells away on the arrange grid); x grows to the right and y downwards.
     public static List<string> Receivers = new List<string>();
     public static Dictionary<string, Point> Layout = new Dictionary<string, Point>();
     // Part of the shared edge a receiver next to the host uses: "all", "first" (top/left half) or "second".
@@ -536,6 +568,9 @@ static class ShareCursor
     // restores them itself; reload the user's cursor scheme if it was stopped abruptly.
     public static void Restore() { SystemParametersInfo(0x0057 /* SPI_SETCURSORS */, 0, IntPtr.Zero, 0); }
 }
+
+// One arrangement: grid size, the host's cell in it and each receiver relative to the host.
+sealed class ShareGrid { public int Cols, Rows; public Point Host; public Dictionary<string, Point> Cells; }
 
 static class ShareStyle
 {
@@ -1591,7 +1626,7 @@ sealed class ShareWindow : Form
             // A receiver's own switch number and place, as its host sent them on connecting (0.3.17+ hosts).
             int n, dx, dy; string[] at = f.Length == 4 ? f[3].Split(',') : new string[0];
             if (!Host && peers.ContainsKey(f[1]) && Int32.TryParse(f[2], out n) && n >= 1 && n <= 9) {
-                var cell = at.Length == 2 && Int32.TryParse(at[0], out dx) && Int32.TryParse(at[1], out dy) && Math.Abs(dx) <= 2 && Math.Abs(dy) <= 2 && (dx != 0 || dy != 0) ? new Point(-dx, -dy) : hostCell;
+                var cell = at.Length == 2 && Int32.TryParse(at[0], out dx) && Int32.TryParse(at[1], out dy) && Math.Abs(dx) <= 8 && Math.Abs(dy) <= 8 && (dx != 0 || dy != 0) ? new Point(-dx, -dy) : hostCell;
                 if (n != ownNumber || cell != hostCell) { ownNumber = n; hostCell = cell; UpdateControls(); }
             }
         } else if (f[0] == "GONE" && f.Length == 2) { if (devices.Remove(f[1])) RebuildNearby(); }
@@ -1966,6 +2001,7 @@ sealed class ShareWindow : Form
         using (var editor = BuildLayout()) {
             if (editor.ShowDialog(this) != DialogResult.OK) return;
             foreach (var item in editor.Placement) ShareSettings.Layout[item.Key] = item.Value;
+            ShareSettings.Cols = editor.Cols; ShareSettings.Rows = editor.Rows; ShareSettings.HostAt = editor.HostAt; ShareSettings.Preset = editor.Preset; ShareSettings.Custom = editor.Custom;
             foreach (var item in editor.Ranges) ShareSettings.EdgeRange[item.Key] = item.Value;
             foreach (var item in editor.Numbers) if (item.Value >= 2) ShareSettings.Numbers[item.Key] = item.Value; else ShareSettings.Numbers.Remove(item.Key);
             Save(); PeersChanged(); status.Text = "已儲存螢幕排列。"; ApplyConfig();
@@ -2254,54 +2290,80 @@ sealed class ShareTransferPopup : Form
     internal string Detail { get { return detail.Text; } }
 }
 
-// Drag the paired receivers around this host on a 5x5 grid. Neighbouring cells are linked edges;
-// every screen must touch the group, or the cursor could never reach it.
+// Drag the paired receivers (and this host) around a grid of up to 9x9. Neighbouring cells are linked
+// edges; every screen must touch the group, or the cursor could never reach it. Positions are kept
+// relative to the host, so a receiver may sit up to 8 cells away.
 sealed class ShareLayoutEditor : Form
 {
-    const int Cell = 96, Tall = 60, Span = 2;
+    const int Cell = 96, Tall = 60, AreaW = Cell * 5, AreaH = Tall * 5;
     static readonly Color[] Palette = { Color.FromArgb(29, 158, 117), Color.FromArgb(127, 119, 221), Color.FromArgb(216, 90, 48), Color.FromArgb(212, 83, 126), Color.FromArgb(186, 117, 23) };
-    public readonly Dictionary<string, Point> Placement = new Dictionary<string, Point>();
+    // Grid size, where the host sits in it and each receiver's cell (all in grid coordinates).
+    int cols = 5, rows = 5; Point host = new Point(2, 2);
+    readonly Dictionary<string, Point> at = new Dictionary<string, Point>();
+    // Each receiver relative to this host (0,0), which is what the settings and the config use.
+    public Dictionary<string, Point> Placement { get { return at.ToDictionary(p => p.Key, p => new Point(p.Value.X - host.X, p.Value.Y - host.Y)); } }
+    public int Cols { get { return cols; } }
+    public int Rows { get { return rows; } }
+    public Point HostAt { get { return host; } }
+    public string Preset { get; private set; }
+    public ShareGrid Custom { get; private set; }
     // Part of the host's edge each receiver beside it uses ("all", "first", "second").
     public readonly Dictionary<string, string> Ranges = new Dictionary<string, string>();
     readonly Dictionary<string, ComboBox> rangeBoxes = new Dictionary<string, ComboBox>(), numberBoxes = new Dictionary<string, ComboBox>();
     // One card per receiver in the list beside the grid; every part is a real control so scrolling moves them together.
     sealed class LegendRow { public ShareCard Card; public Label Side, Shortcut, Joins; }
-    readonly Dictionary<string, LegendRow> rows = new Dictionary<string, LegendRow>();
+    readonly Dictionary<string, LegendRow> rows_ = new Dictionary<string, LegendRow>();
     // Switch number chosen per receiver (0: next free number in this order); 1 stays with this computer.
     public readonly Dictionary<string, int> Numbers = new Dictionary<string, int>();
     readonly Dictionary<string, string> names = new Dictionary<string, string>();
     readonly List<string> order = new List<string>();
     readonly Panel canvas = new Panel();
     readonly FlowLayoutPanel legend = new FlowLayoutPanel { FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true };
-    readonly Label warning = new Label();
+    readonly FlowLayoutPanel presets = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, WrapContents = true };
+    readonly Label warning = new Label(), colsValue = new Label(), rowsValue = new Label();
     readonly ShareButton save = new ShareButton { Text = "儲存", Primary = true };
+    string notice = "";
+    const string HostKey = "\0host";
     string dragging; Point pointer;
+    public static readonly string[] PresetIds = { "center", "rowL", "rowR", "rowM", "colT", "twoTL", "twoBM", "L", "ring", "T", "custom" };
+    static readonly string[] PresetNames = { "主控在中間", "一排・主控最左", "一排・主控最右", "一排・主控中間", "直排・主控最上", "兩排・主控左上", "兩排・主控下中", "L 形・主控轉角", "口字形・主控中央", "T 形・主控上中", "自訂" };
     public ShareLayoutEditor(Dictionary<string, string> peers, Font font)
     {
         Text = "排列螢幕"; Font = new Font(font.FontFamily, 10F); BackColor = Color.White; ForeColor = ShareStyle.Ink;
         FormBorderStyle = FormBorderStyle.FixedDialog; StartPosition = FormStartPosition.CenterParent; MaximizeBox = MinimizeBox = false;
         AutoScaleDimensions = ShareWindow.Dpi96; AutoScaleMode = AutoScaleMode.Dpi;
-        int width = Cell * (Span * 2 + 1), height = Tall * (Span * 2 + 1);
-        ClientSize = new Size(width + 248 + SystemInformation.VerticalScrollBarWidth, height + 168);
+        int width = AreaW, height = AreaH, full = width + 216 + SystemInformation.VerticalScrollBarWidth;
         Controls.Add(new Label { Text = "排列螢幕", Font = new Font(Font.FontFamily, 13F, FontStyle.Bold), Bounds = new Rectangle(24, 14, width, 28) });
-        Controls.Add(new Label { Text = "拖曳接收端到這台的上下左右；滑鼠從相鄰的邊移過去。", Bounds = new Rectangle(24, 42, width + 200, 22), ForeColor = ShareStyle.Muted });
-        canvas.Bounds = new Rectangle(24, 74, width, height); canvas.BackColor = ShareStyle.Background;
+        Controls.Add(new Label { Text = "拖曳電腦（包括這台）排好位置；滑鼠從相鄰的邊移過去。", Bounds = new Rectangle(24, 42, full, 22), ForeColor = ShareStyle.Muted });
+        // 欄 − n + 　列 − n +
+        Action<string, int, Label, Action<int>> stepper = (label, x, value, change) => {
+            Controls.Add(new Label { Text = label, Bounds = new Rectangle(x, 74, 26, 26), TextAlign = ContentAlignment.MiddleLeft });
+            var minus = new ShareButton { Text = "−", BackColor = Color.White, Bounds = new Rectangle(x + 28, 72, 32, 30), AccessibleName = "減少" + label };
+            value.Bounds = new Rectangle(x + 62, 74, 28, 26); value.TextAlign = ContentAlignment.MiddleCenter;
+            var plus = new ShareButton { Text = "+", BackColor = Color.White, Bounds = new Rectangle(x + 92, 72, 32, 30), AccessibleName = "增加" + label };
+            minus.Click += delegate { change(-1); }; plus.Click += delegate { change(1); };
+            Controls.Add(minus); Controls.Add(value); Controls.Add(plus);
+        };
+        stepper("欄", 24, colsValue, d => ResizeGrid(cols + d, rows)); stepper("列", 172, rowsValue, d => ResizeGrid(cols, rows + d));
+        canvas.Bounds = new Rectangle(24, 112, width, height); canvas.BackColor = ShareStyle.Background;
         typeof(Panel).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).SetValue(canvas, true, null);
         Controls.Add(canvas);
-        legend.Bounds = new Rectangle(width + 40, 74, 184 + SystemInformation.VerticalScrollBarWidth, height); legend.BackColor = Color.White;
+        legend.Bounds = new Rectangle(width + 40, 112, 184 + SystemInformation.VerticalScrollBarWidth, height); legend.BackColor = Color.White;
         Controls.Add(legend);
         Func<string, float, Color, Rectangle, Label> text = (value, size, color, bounds) =>
             new Label { Text = value, Font = new Font(Font.FontFamily, size), ForeColor = color, BackColor = Color.White, Bounds = bounds, AutoEllipsis = true, UseMnemonic = false };
         legend.Controls.Add(new Label { Text = "已配對", Font = new Font(Font.FontFamily, 8.5F), ForeColor = ShareStyle.Faint, BackColor = Color.White, Size = new Size(180, 20), Margin = new Padding(0, 0, 0, 4) });
-        warning.Bounds = new Rectangle(24, 80 + height, width + 200, 24); warning.ForeColor = ShareStyle.Danger; Controls.Add(warning);
-        var reset = new ShareButton { Text = "恢復預設", Quiet = true, BackColor = Color.White, Bounds = new Rectangle(24, 110 + height, 100, 36) };
-        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(width + 224 + SystemInformation.VerticalScrollBarWidth - 244, 110 + height, 108, 36), DialogResult = DialogResult.Cancel };
-        save.BackColor = Color.White; save.Bounds = new Rectangle(width + 224 + SystemInformation.VerticalScrollBarWidth - 128, 110 + height, 128, 36); save.DialogResult = DialogResult.OK;
-        Controls.Add(reset); Controls.Add(cancel); Controls.Add(save); CancelButton = cancel;
+        warning.Bounds = new Rectangle(24, 118 + height, full, 24); warning.ForeColor = ShareStyle.Danger; Controls.Add(warning);
+        Controls.Add(new Label { Text = "預設佈局", Font = new Font(Font.FontFamily, 8.5F), ForeColor = ShareStyle.Faint, Bounds = new Rectangle(24, 146 + height, 200, 20) });
+        presets.Bounds = new Rectangle(24, 168 + height, full, 2 * 86); presets.BackColor = Color.White; Controls.Add(presets);
+        int buttonsY = 176 + height + 2 * 86;
+        var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(24 + full - 244, buttonsY, 108, 36), DialogResult = DialogResult.Cancel };
+        save.BackColor = Color.White; save.Bounds = new Rectangle(24 + full - 128, buttonsY, 128, 36); save.DialogResult = DialogResult.OK;
+        Controls.Add(cancel); Controls.Add(save); CancelButton = cancel;
+        ClientSize = new Size(full + 48, buttonsY + 52);
         var cells = ShareSettings.Cells();
         foreach (var peer in peers) {
             names[peer.Key] = peer.Value; order.Add(peer.Key);
-            Point cell; if (cells.TryGetValue(ShareSettings.ScreenName(peer.Key), out cell)) Placement[peer.Key] = cell;
             Ranges[peer.Key] = ShareSettings.RangeOf(peer.Key);
             string fp = peer.Key;
             var box = new ShareComboBox { Compact = true, Visible = false, AccessibleName = "相接的範圍：" + peer.Value };
@@ -2321,36 +2383,184 @@ sealed class ShareLayoutEditor : Form
             row.Shortcut = text("", 8.5F, ShareStyle.Faint, new Rectangle(24, 66, 150, 18)); row.Card.Controls.Add(row.Shortcut);
             row.Joins = text("相接：", 8.5F, ShareStyle.Muted, new Rectangle(10, 68, 60, 18)); row.Card.Controls.Add(row.Joins);
             box.Location = new Point(10, 86); box.Width = 150; row.Card.Controls.Add(box);
-            rows[fp] = row; legend.Controls.Add(row.Card);
+            rows_[fp] = row; legend.Controls.Add(row.Card);
         }
         legend.Controls.Add(new Label { Text = "每台都要能從這台一路走到；斜角不相連。螢幕大小不同時，可在上方選擇只相接上半段或下半段。", Font = new Font(Font.FontFamily, 8.5F),
             ForeColor = ShareStyle.Faint, BackColor = Color.White, Size = new Size(180, 66), Margin = new Padding(0, 4, 0, 0) });
-        reset.Click += delegate {
-            // The automatic placement: the saved arrangement set aside for a moment.
-            var saved = ShareSettings.Layout; ShareSettings.Layout = new Dictionary<string, Point>();
-            try { var auto = ShareSettings.Cells(); foreach (var fp in order) { Point c; if (auto.TryGetValue(ShareSettings.ScreenName(fp), out c)) Placement[fp] = c; } }
-            finally { ShareSettings.Layout = saved; }
-            Check(); canvas.Invalidate();
-        };
+        // The saved grid; an arrangement that does not fit it (older or hand-edited settings) gets the smallest grid around it.
+        cols = ShareSettings.Cols; rows = ShareSettings.Rows; host = ShareSettings.HostAt; Preset = ShareSettings.Preset; Custom = ShareSettings.Custom;
+        foreach (var fp in order) { Point c; if (cells.TryGetValue(ShareSettings.ScreenName(fp), out c)) at[fp] = new Point(c.X + host.X, c.Y + host.Y); }
+        if (!at.Values.All(Inside)) {
+            var all = at.Values.Select(p => new Point(p.X - host.X, p.Y - host.Y)).Concat(new[] { Point.Empty }).ToList();
+            int minX = all.Min(p => p.X), minY = all.Min(p => p.Y), w = all.Max(p => p.X) - minX + 1, h = all.Max(p => p.Y) - minY + 1;
+            if (w <= 9 && h <= 9) { var rel = Placement; cols = Math.Max(w, 1); rows = Math.Max(h, 1); host = new Point(-minX, -minY); foreach (var p in rel) at[p.Key] = new Point(p.Value.X + host.X, p.Value.Y + host.Y); Preset = "custom"; }
+            else Apply("center");
+        }
+        if (Custom == null && Preset == "custom") Custom = Snapshot();
+        for (int i = 0; i < PresetIds.Length; ++i) {
+            string id = PresetIds[i];
+            var card = new PresetCard { Owner_ = this, Id = id, Label = PresetNames[i], Size = new Size(90, 80), Margin = new Padding(0, 0, 6, 6), AccessibleName = PresetNames[i], AccessibleRole = AccessibleRole.RadioButton };
+            card.Click += delegate { if (card.Usable) Apply(id); };
+            presets.Controls.Add(card);
+        }
         canvas.Paint += (sender, e) => Draw(e.Graphics);
-        canvas.MouseDown += (sender, e) => { dragging = Placement.Where(p => CellBounds(p.Value).Contains(Unscale(e.Location))).Select(p => p.Key).FirstOrDefault(); pointer = Unscale(e.Location); canvas.Cursor = dragging != null ? Cursors.SizeAll : Cursors.Default; };
+        canvas.MouseDown += (sender, e) => { dragging = Hit(Unscale(e.Location)); pointer = Unscale(e.Location); canvas.Cursor = dragging != null ? Cursors.SizeAll : Cursors.Default; };
         canvas.MouseMove += (sender, e) => {
-            var at = Unscale(e.Location);
-            if (dragging != null) { pointer = at; canvas.Invalidate(); }
-            else canvas.Cursor = Placement.Any(p => CellBounds(p.Value).Contains(at)) ? Cursors.Hand : Cursors.Default;
+            var p = Unscale(e.Location);
+            if (dragging != null) { pointer = p; canvas.Invalidate(); }
+            else canvas.Cursor = Hit(p) != null ? Cursors.Hand : Cursors.Default;
         };
         canvas.MouseUp += (sender, e) => {
             if (dragging == null) return;
-            var at = Unscale(e.Location); var target = new Point(at.X / Cell - Span, at.Y / Tall - Span);
-            if (Math.Abs(target.X) <= Span && Math.Abs(target.Y) <= Span && target != Point.Empty && !Placement.Any(p => p.Key != dragging && p.Value == target)) Placement[dragging] = target;
-            dragging = null; canvas.Cursor = Cursors.Default; Check(); canvas.Invalidate();
+            string moved = dragging; dragging = null; canvas.Cursor = Cursors.Default;
+            var target = CellAt(Unscale(e.Location));
+            if (Inside(target)) Drop(moved, target); else canvas.Invalidate();
         };
         Check(); ShareStyle.Theme(this);
     }
-    // Drawing works in 96-dpi units; the canvas itself is scaled with the dialog.
-    float Zoom { get { return canvas.Width / (float)(Cell * (Span * 2 + 1)); } }
+    // A saved "自訂" arrangement: the grid, the host and each receiver relative to it.
+    ShareGrid Snapshot() { return new ShareGrid { Cols = cols, Rows = rows, Host = host, Cells = Placement }; }
+    bool Inside(Point c) { return c.X >= 0 && c.Y >= 0 && c.X < cols && c.Y < rows; }
+    // Who is in a cell: a receiver, the host (HostKey) or nobody.
+    string Occupant(Point c) { return c == host ? HostKey : at.Where(p => p.Value == c).Select(p => p.Key).FirstOrDefault(); }
+    // Drops a computer on a cell; an occupied cell swaps the two. Moving the host keeps everyone else where they are on the grid.
+    internal void Drop(string who, Point target)
+    {
+        Point from = who == HostKey ? host : at[who]; string other = Occupant(target);
+        if (other == who) { canvas.Invalidate(); return; }
+        if (other != null) { if (other == HostKey) host = from; else at[other] = from; }
+        if (who == HostKey) host = target; else at[who] = target;
+        Changed();
+    }
+    internal void DropHost(Point target) { Drop(HostKey, target); }
+    // Adds or removes the last column/row; a computer still in it must be moved first.
+    internal bool ResizeGrid(int newCols, int newRows)
+    {
+        if (newCols < 1 || newRows < 1 || newCols > 9 || newRows > 9) return false;
+        var cut = new[] { host }.Concat(at.Values);
+        if (cut.Any(c => c.X >= newCols || c.Y >= newRows)) { notice = "最右或最下那排還有電腦，先把它移開再縮小。"; Check(); return false; }
+        cols = newCols; rows = newRows; Changed(); return true;
+    }
+    // Hand-made changes become the "自訂" arrangement.
+    void Changed() { notice = ""; Preset = "custom"; Custom = Snapshot(); Check(); }
+    // Picks a preset; "自訂" brings back the last hand-made arrangement.
+    internal bool Apply(string id)
+    {
+        if (id == "custom") {
+            if (Custom != null) {
+                cols = Custom.Cols; rows = Custom.Rows; host = Custom.Host; var taken = new HashSet<Point> { host }; var missing = new List<string>();
+                foreach (var fp in order) {
+                    Point c; if (Custom.Cells.TryGetValue(fp, out c)) { c = new Point(c.X + host.X, c.Y + host.Y); if (Inside(c) && taken.Add(c)) { at[fp] = c; continue; } }
+                    missing.Add(fp);
+                }
+                // Computers paired after the snapshot go to the nearest free cells.
+                foreach (var fp in missing) {
+                    var free = Spread(cols, rows, host, (x, y) => !taken.Contains(new Point(x, y)), 1, true);
+                    if (free == null && cols < 9) { cols++; free = Spread(cols, rows, host, (x, y) => !taken.Contains(new Point(x, y)), 1, true); }
+                    if (free == null) break;
+                    at[fp] = free[0]; taken.Add(free[0]);
+                }
+            }
+        } else {
+            var grid = PresetGrid(id, order); if (grid == null) return false;
+            cols = grid.Cols; rows = grid.Rows; host = grid.Host;
+            foreach (var p in grid.Cells) at[p.Key] = new Point(p.Value.X + host.X, p.Value.Y + host.Y);
+        }
+        notice = ""; Preset = id; Check(); return true;
+    }
+    // Cells of a shape in the order they are reached from the host: right, left, up, down. Null if fewer than n.
+    static List<Point> Spread(int c, int r, Point h, Func<int, int, bool> inShape, int n, bool through = false)
+    {
+        var found = new List<Point>(); var seen = new HashSet<Point> { h }; var queue = new Queue<Point>(); queue.Enqueue(h);
+        while (queue.Count > 0 && found.Count < n) {
+            var p = queue.Dequeue();
+            foreach (var d in new[] { new Point(1, 0), new Point(-1, 0), new Point(0, -1), new Point(0, 1) }) {
+                var q = new Point(p.X + d.X, p.Y + d.Y);
+                if (q.X < 0 || q.Y < 0 || q.X >= c || q.Y >= r || !through && !inShape(q.X, q.Y) || !seen.Add(q)) continue;
+                queue.Enqueue(q); if (inShape(q.X, q.Y) && found.Count < n) found.Add(q);
+            }
+        }
+        return found.Count < n ? null : found;
+    }
+    // A preset for these receivers (in pairing order), relative to the host; null when it cannot hold them all.
+    internal static ShareGrid PresetGrid(string id, List<string> receivers)
+    {
+        int n = receivers.Count, c, r; Point h; Func<int, int, bool> shape = (x, y) => true;
+        switch (id) {
+            case "center": {
+                if (n > 24) return null;
+                // The automatic placement, with the saved arrangement set aside for a moment.
+                var savedLayout = ShareSettings.Layout; var savedReceivers = ShareSettings.Receivers;
+                ShareSettings.Layout = new Dictionary<string, Point>(); ShareSettings.Receivers = receivers;
+                try {
+                    var auto = ShareSettings.Cells(); var cells = new Dictionary<string, Point>();
+                    foreach (var fp in receivers) cells[fp] = auto[ShareSettings.ScreenName(fp)];
+                    if (cells.Values.Any(p => Math.Abs(p.X) > 2 || Math.Abs(p.Y) > 2)) return null;
+                    return new ShareGrid { Cols = 5, Rows = 5, Host = new Point(2, 2), Cells = cells };
+                } finally { ShareSettings.Layout = savedLayout; ShareSettings.Receivers = savedReceivers; }
+            }
+            case "rowL": c = n + 1; r = 1; h = new Point(0, 0); break;
+            case "rowR": c = n + 1; r = 1; h = new Point(n, 0); break;
+            case "rowM": c = n + 1; r = 1; h = new Point(n / 2, 0); break;
+            case "colT": c = 1; r = n + 1; h = new Point(0, 0); break;
+            case "twoTL": c = (n + 2) / 2; r = 2; h = new Point(0, 0); break;
+            case "twoBM": c = (n + 2) / 2; if (c % 2 == 0) c++; r = 2; h = new Point(c / 2, 1); break;
+            case "L": { int s = 1; while (2 * s - 1 < n + 1) s++; c = r = s; h = new Point(0, s - 1); shape = (x, y) => x == 0 || y == s - 1; break; }
+            case "ring": c = r = 3; h = new Point(1, 1); break;
+            case "T": { int w = n >= 4 ? 5 : 3; c = w; r = 1 + Math.Max(0, n + 1 - w); h = new Point(w / 2, 0); shape = (x, y) => y == 0 || x == w / 2; break; }
+            default: return null;
+        }
+        if (c > 9 || r > 9) return null;
+        var spots = Spread(c, r, h, shape, n); if (spots == null) return null;
+        var result = new Dictionary<string, Point>();
+        for (int i = 0; i < n; ++i) result[receivers[i]] = new Point(spots[i].X - h.X, spots[i].Y - h.Y);
+        return new ShareGrid { Cols = c, Rows = r, Host = h, Cells = result };
+    }
+    // Thumbnail card for one preset: blue is this host, grey the receivers.
+    sealed class PresetCard : Control
+    {
+        public ShareLayoutEditor Owner_; public string Id, Label;
+        public PresetCard() { SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint | ControlStyles.ResizeRedraw, true); Cursor = Cursors.Hand; }
+        ShareGrid Grid { get { return Id == "custom" ? Owner_.Custom : PresetGrid(Id, Owner_.order); } }
+        public bool Usable { get { return Id == "custom" ? Owner_.Custom != null : Grid != null; } }
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics; g.SmoothingMode = SmoothingMode.AntiAlias; g.Clear(BackColor);
+            bool chosen = Owner_.Preset == Id, usable = Usable; var grid = Grid;
+            var outer = new Rectangle(1, 1, Width - 3, Height - 3);
+            using (var path = ShareStyle.Rounded(outer, 7)) {
+                if (chosen) using (var b = new SolidBrush(ShareStyle.Tint)) g.FillPath(b, path);
+                using (var pen = new Pen(chosen ? ShareStyle.Blue : ShareStyle.Border, chosen ? 2F : 1F)) g.DrawPath(pen, path);
+            }
+            var area = new RectangleF(8, 6, Width - 16, Height * 0.55F);
+            if (grid != null) {
+                float u = Math.Min(area.Width / grid.Cols, area.Height / grid.Rows), gap = Math.Max(1F, u * 0.12F);
+                float x0 = area.X + (area.Width - u * grid.Cols) / 2, y0 = area.Y + (area.Height - u * grid.Rows) / 2;
+                var used = new HashSet<Point>(grid.Cells.Values.Select(p => new Point(p.X + grid.Host.X, p.Y + grid.Host.Y)));
+                for (int y = 0; y < grid.Rows; ++y) for (int x = 0; x < grid.Cols; ++x) {
+                    var cell = new RectangleF(x0 + x * u + gap / 2, y0 + y * u + gap / 2, u - gap, u - gap); var p = new Point(x, y);
+                    Color fill = p == grid.Host ? ShareStyle.Blue : used.Contains(p) ? ShareStyle.Faint : ShareStyle.Divider;
+                    if (!usable) fill = Color.FromArgb(90, fill);
+                    using (var b = new SolidBrush(fill)) g.FillRectangle(b, cell);
+                }
+            }
+            var label = new Rectangle(4, (int)(Height * 0.6F), Width - 8, Height - (int)(Height * 0.6F) - 3);
+            TextRenderer.DrawText(g, Label, new Font(Font.FontFamily, 7.5F), label, usable ? (chosen ? ShareStyle.BlueInk : ShareStyle.Ink) : ShareStyle.DisabledText,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.Top | TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis);
+        }
+    }
+    // Drawing works in 96-dpi units; the canvas itself is scaled with the dialog. The grid is fitted into the area.
+    float Zoom { get { return canvas.Width / (float)AreaW; } }
+    float Unit { get { return Math.Min(1F, Math.Min(AreaW / (float)(cols * Cell), AreaH / (float)(rows * Tall))); } }
+    PointF Origin { get { float u = Unit; return new PointF((AreaW - cols * Cell * u) / 2, (AreaH - rows * Tall * u) / 2); } }
     Point Unscale(Point p) { float k = Zoom; return new Point((int)(p.X / k), (int)(p.Y / k)); }
-    Rectangle CellBounds(Point cell) { return new Rectangle((cell.X + Span) * Cell + 5, (cell.Y + Span) * Tall + 5, Cell - 10, Tall - 10); }
+    Point CellAt(Point p) { float u = Unit; var o = Origin; return new Point((int)Math.Floor((p.X - o.X) / (Cell * u)), (int)Math.Floor((p.Y - o.Y) / (Tall * u))); }
+    Rectangle CellBounds(Point cell)
+    {
+        float u = Unit; var o = Origin; int inset = (int)Math.Max(2, 5 * u);
+        return new Rectangle((int)(o.X + cell.X * Cell * u) + inset, (int)(o.Y + cell.Y * Tall * u) + inset, (int)(Cell * u) - 2 * inset, (int)(Tall * u) - 2 * inset);
+    }
+    string Hit(Point p) { var c = CellAt(p); return Inside(c) && CellBounds(c).Contains(p) ? Occupant(c) : null; }
     Color ColorOf(string fp) { return Palette[Math.Max(0, order.IndexOf(fp)) % Palette.Length]; }
     // Tile fill and outline from a computer's colour: pale on light windows, deep on dark ones.
     static Color Mix(Color a, Color b, float t) { return Color.FromArgb((int)(a.R + (b.R - a.R) * t), (int)(a.G + (b.G - a.G) * t), (int)(a.B + (b.B - a.B) * t)); }
@@ -2371,7 +2581,7 @@ sealed class ShareLayoutEditor : Form
     // Every receiver must be connected to the host through neighbouring cells.
     public bool Reachable()
     {
-        var seen = new HashSet<Point> { Point.Empty }; var queue = new Queue<Point>(seen); var all = new HashSet<Point>(Placement.Values);
+        var seen = new HashSet<Point> { host }; var queue = new Queue<Point>(seen); var all = new HashSet<Point>(at.Values);
         while (queue.Count > 0) {
             var c = queue.Dequeue();
             foreach (var n in new[] { new Point(c.X + 1, c.Y), new Point(c.X - 1, c.Y), new Point(c.X, c.Y + 1), new Point(c.X, c.Y - 1) })
@@ -2382,22 +2592,24 @@ sealed class ShareLayoutEditor : Form
     void Check()
     {
         bool ok = Reachable(); save.Enabled = ok;
-        warning.Text = ok ? "" : "有電腦沒有和其他螢幕相鄰，滑鼠到不了；請把它移到相鄰的位置。";
-        Arrange();
+        warning.Text = notice != "" ? notice : ok ? "" : "有電腦沒有和其他螢幕相鄰，滑鼠到不了；請把它移到相鄰的位置。";
+        colsValue.Text = cols.ToString(); rowsValue.Text = rows.ToString();
+        Arrange(); canvas.Invalidate(); foreach (Control card in presets.Controls) card.Invalidate();
     }
+    internal string Notice { get { return notice; } }
     // Legend rows: name and side, the switch number, the Ctrl+Alt+number shortcut, then the edge range for a receiver beside the host.
     bool Direct { get { return ShareSettings.Advanced.DirectKeys; } }
     void Arrange()
     {
-        float k = Zoom; var resolved = Resolved();
+        float k = Zoom; var resolved = Resolved(); var placement = Placement;
         legend.SuspendLayout();
         foreach (var fp in order) {
-            Point c; var row = rows[fp]; var box = rangeBoxes[fp]; var number = numberBoxes[fp]; int n;
+            Point c; var row = rows_[fp]; var box = rangeBoxes[fp]; var number = numberBoxes[fp]; int n;
             bool known = resolved.TryGetValue(ShareSettings.ScreenName(fp), out n);
             string auto = known && Numbers[fp] == 0 ? "自動（" + n + "）" : "自動";
             number.Tag = "filling"; if ((string)number.Items[0] != auto) number.Items[0] = auto; number.SelectedIndex = Numbers[fp] == 0 ? 0 : Numbers[fp] - 1; number.Tag = null;
-            bool beside = Placement.TryGetValue(fp, out c) && ShareSettings.Beside(c);
-            row.Side.Text = Placement.ContainsKey(fp) ? Direction(c) : "";
+            bool beside = placement.TryGetValue(fp, out c) && ShareSettings.Beside(c);
+            row.Side.Text = placement.ContainsKey(fp) ? Direction(c) : "";
             int y = 66;
             row.Shortcut.Visible = Direct; row.Shortcut.Text = known ? "快捷鍵 Ctrl+Alt+" + n : "超過 9 台，沒有快捷鍵";
             if (Direct) { row.Shortcut.Top = (int)(y * k); y += 16; }
@@ -2417,30 +2629,33 @@ sealed class ShareLayoutEditor : Form
     }
     void Draw(Graphics g)
     {
-        g.SmoothingMode = SmoothingMode.AntiAlias; float k = Zoom; g.ScaleTransform(k, k);
+        g.SmoothingMode = SmoothingMode.AntiAlias; float k = Zoom, u = Unit; g.ScaleTransform(k, k);
         using (var grid = new Pen(ShareStyle.Border) { DashStyle = DashStyle.Dash })
-            for (int y = -Span; y <= Span; ++y) for (int x = -Span; x <= Span; ++x) using (var path = ShareStyle.Rounded(CellBounds(new Point(x, y)), 6)) g.DrawPath(grid, path);
-        Action<Rectangle, string, Color, Color, bool> tile = (r, text, fill, edge, host) => {
+            for (int y = 0; y < rows; ++y) for (int x = 0; x < cols; ++x) using (var path = ShareStyle.Rounded(CellBounds(new Point(x, y)), 6)) g.DrawPath(grid, path);
+        float size = 9F * Math.Max(0.7F, u);
+        Action<Rectangle, string, Color, Color, bool> tile = (r, text, fill, edge, isHost) => {
             using (var path = ShareStyle.Rounded(r, 7)) using (var b = new SolidBrush(fill)) using (var pen = new Pen(edge, 1.5F)) { g.FillPath(b, path); g.DrawPath(pen, path); }
-            var label = new Rectangle(r.X + 4, r.Y + (host ? 22 : 4), r.Width - 8, r.Height - (host ? 24 : 8));
-            if (host) using (var pen = new Pen(edge, 1.5F)) { float mx = r.X + r.Width / 2F, my = r.Y + 14; g.DrawEllipse(pen, mx - 4, my - 7, 8, 13); g.DrawLine(pen, mx, my - 7, mx, my - 3); }
-            using (var f = new Font(Font.FontFamily, 9F)) TextRenderer.DrawText(g, text, f, label, edge, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+            bool icon = isHost && r.Height >= 40;
+            var label = new Rectangle(r.X + 4, r.Y + (icon ? 22 : 4), r.Width - 8, r.Height - (icon ? 24 : 8));
+            if (icon) using (var pen = new Pen(edge, 1.5F)) { float mx = r.X + r.Width / 2F, my = r.Y + 14; g.DrawEllipse(pen, mx - 4, my - 7, 8, 13); g.DrawLine(pen, mx, my - 7, mx, my - 3); }
+            using (var f = new Font(Font.FontFamily, size)) TextRenderer.DrawText(g, text, f, label, edge, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
         };
-        tile(CellBounds(Point.Empty), "1 · 這台", ShareStyle.Tint, ShareStyle.Blue, true);
+        Func<Point, string, Rectangle> place = (cell, who) => { var r = CellBounds(cell); if (who == dragging) r.Offset(pointer.X - r.X - r.Width / 2, pointer.Y - r.Y - r.Height / 2); return r; };
+        if (dragging != HostKey) tile(place(host, HostKey), "1 · 這台", ShareStyle.Tint, ShareStyle.Blue, true);
         var numbers = Resolved();
-        foreach (var p in Placement.OrderBy(p => p.Key == dragging)) {
-            var r = CellBounds(p.Value);
-            if (p.Key == dragging) r.Offset(pointer.X - r.X - r.Width / 2, pointer.Y - r.Y - r.Height / 2);
-            int n; var c = ColorOf(p.Key); tile(r, (numbers.TryGetValue(ShareSettings.ScreenName(p.Key), out n) ? n + " · " : "") + names[p.Key], Light(c), Deep(c), false);
+        foreach (var p in at.OrderBy(p => p.Key == dragging)) {
+            int n; var c = ColorOf(p.Key); tile(place(p.Value, p.Key), (numbers.TryGetValue(ShareSettings.ScreenName(p.Key), out n) ? n + " · " : "") + names[p.Key], Light(c), Deep(c), false);
         }
+        if (dragging == HostKey) tile(place(host, HostKey), "1 · 這台", ShareStyle.Tint, ShareStyle.Blue, true);
     }
     // Test hook: scroll the list beside the grid to its end.
     internal void ScrollLegendToEnd() { legend.AutoScrollPosition = new Point(0, legend.DisplayRectangle.Height); }
-    // Test hook: place a receiver as a drag would.
+    // Test hook: place a receiver (relative to the host) as a drag onto an empty cell would.
     internal bool Place(string fingerprint, Point cell)
     {
-        if (cell == Point.Empty || Placement.Any(p => p.Key != fingerprint && p.Value == cell)) return false;
-        Placement[fingerprint] = cell; Check(); canvas.Invalidate(); return true;
+        var target = new Point(cell.X + host.X, cell.Y + host.Y);
+        if (!Inside(target) || Occupant(target) != null) return false;
+        Drop(fingerprint, target); return true;
     }
 }
 
@@ -2768,6 +2983,67 @@ static class ShareProgram
                     ShareStyle.Use(false); ShareStyle.Theme(layout);
                     layout.Close();
                 }
+                // Presets, swapping, the movable host, shrinking and the saved "自訂" arrangement.
+                ShareSettings.Layout = new Dictionary<string, Point>(); ShareSettings.Cols = ShareSettings.Rows = 5; ShareSettings.HostAt = new Point(2, 2); ShareSettings.Preset = "center"; ShareSettings.Custom = null;
+                using (var layout = new ShareLayoutEditor(new Dictionary<string, string> { { fa, "書房 Windows" }, { fb, "MacBook Air" }, { fc, "客廳電腦" } }, window.Font)) {
+                    layout.Show(); Application.DoEvents();
+                    Func<string> where = () => layout.Cols + "x" + layout.Rows + " host " + layout.HostAt + " " + String.Join(" ", layout.Placement.OrderBy(p => p.Key).Select(p => p.Value.X + "," + p.Value.Y));
+                    if (layout.Preset != "center" || layout.Cols != 5 || layout.HostAt != new Point(2, 2)) throw new Exception("Arrange grid did not start at 5x5 with the host in the middle: " + where());
+                    var expected = new Dictionary<string, string> {
+                        { "rowL", "4x1 host {X=0,Y=0} 1,0 2,0 3,0" }, { "rowR", "4x1 host {X=3,Y=0} -1,0 -2,0 -3,0" }, { "rowM", "4x1 host {X=1,Y=0} 1,0 -1,0 2,0" },
+                        { "colT", "1x4 host {X=0,Y=0} 0,1 0,2 0,3" }, { "twoTL", "2x2 host {X=0,Y=0} 1,0 0,1 1,1" }, { "twoBM", "3x2 host {X=1,Y=1} 1,0 -1,0 0,-1" },
+                        { "L", "3x3 host {X=0,Y=2} 1,0 0,-1 2,0" }, { "ring", "3x3 host {X=1,Y=1} 1,0 -1,0 0,-1" }, { "T", "3x2 host {X=1,Y=0} 1,0 -1,0 0,1" } };
+                    foreach (var item in expected) {
+                        if (!layout.Apply(item.Key) || layout.Preset != item.Key || !layout.Reachable() || where() != item.Value) throw new Exception("Preset " + item.Key + " gave " + where() + ", expected " + item.Value);
+                    }
+                    using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout-preset.png")); }
+                    layout.Apply("rowL");
+                    if (layout.ResizeGrid(3, 1) || layout.Notice != "最右或最下那排還有電腦，先把它移開再縮小。" || layout.Cols != 4) throw new Exception("Shrinking over a computer was not refused");
+                    if (!layout.ResizeGrid(4, 2) || layout.Preset != "custom" || layout.Notice != "") throw new Exception("Growing the grid did not switch to 自訂");
+                    // Moving the host onto a receiver swaps them; the others keep their grid cells.
+                    layout.DropHost(new Point(1, 0));
+                    if (layout.HostAt != new Point(1, 0) || layout.Placement[fa] != new Point(-1, 0) || layout.Placement[fc] != new Point(2, 0) || !layout.Reachable()) throw new Exception("Moving the host failed: " + where());
+                    layout.DropHost(new Point(3, 1));
+                    if (layout.HostAt != new Point(3, 1) || layout.Reachable()) throw new Exception("Host moved to an empty cell wrongly: " + where());
+                    layout.DropHost(new Point(1, 1)); layout.Drop(fc, new Point(1, 0));
+                    string custom = where();
+                    if (!layout.Reachable() || layout.Placement[fc] != new Point(0, -1)) throw new Exception("Swapping two receivers failed: " + custom);
+                    layout.Apply("ring"); if (where() == custom || !layout.Apply("custom") || where() != custom || layout.Preset != "custom") throw new Exception("自訂 was not restored: " + where() + " / " + custom);
+                    using (var bitmap = new Bitmap(layout.Width, layout.Height)) { layout.DrawToBitmap(bitmap, new Rectangle(Point.Empty, layout.Size)); bitmap.Save(Path.Combine(directory, "gui-layout-custom.png")); }
+                    // Saved and loaded again: the grid, the host, the preset and the snapshot.
+                    layout.Apply("T");
+                    ShareSettings.Cols = layout.Cols; ShareSettings.Rows = layout.Rows; ShareSettings.HostAt = layout.HostAt; ShareSettings.Preset = layout.Preset; ShareSettings.Custom = layout.Custom;
+                    foreach (var item in layout.Placement) ShareSettings.Layout[item.Key] = item.Value;
+                    ShareSettings.Save(true, ""); ShareSettings.Load(out host, out address);
+                    if (ShareSettings.Cols != 3 || ShareSettings.Rows != 2 || ShareSettings.HostAt != new Point(1, 0) || ShareSettings.Preset != "T" || ShareSettings.Custom == null || ShareSettings.Custom.Host != new Point(1, 1) || ShareSettings.Custom.Cells[fc] != new Point(0, -1))
+                        throw new Exception("Arrange grid roundtrip failed");
+                    layout.Close();
+                }
+                using (var reopened = new ShareLayoutEditor(new Dictionary<string, string> { { fa, "書房 Windows" }, { fb, "MacBook Air" }, { fc, "客廳電腦" } }, window.Font)) {
+                    if (reopened.Preset != "T" || reopened.Cols != 3 || reopened.HostAt != new Point(1, 0) || reopened.Placement[fc] != new Point(0, 1) || !reopened.Apply("custom") || reopened.Placement[fc] != new Point(0, -1))
+                        throw new Exception("Reopened editor lost the arrangement");
+                }
+                // Eight receivers in one row and one column: the farthest is 8 cells away. The network test runs the real core on these files.
+                var eight = Enumerable.Range(0, 8).Select(i => "v2:sha256:" + new string((char)('0' + i), 64)).ToList();
+                if (ShareLayoutEditor.PresetGrid("rowL", eight.Concat(new[] { fa }).ToList()) != null) throw new Exception("A 10-wide row was offered");
+                foreach (var shape in new[] { "rowL", "colT" }) {
+                    var grid = ShareLayoutEditor.PresetGrid(shape, eight);
+                    ShareSettings.Receivers = eight; ShareSettings.Layout = grid.Cells; ShareSettings.Platforms = new Dictionary<string, string>(); ShareSettings.Advanced = new ShareAdvanced();
+                    var far = grid.Cells[eight[7]];
+                    if (far != (shape == "rowL" ? new Point(8, 0) : new Point(0, 8))) throw new Exception("Farthest receiver is at " + far);
+                    var cellsNow = ShareSettings.Cells();
+                    if (eight.Any(fp => cellsNow[ShareSettings.ScreenName(fp)] != grid.Cells[fp])) throw new Exception("Config moved a receiver of the " + shape + " layout");
+                    string text = ShareSettings.Config(true), d = shape == "rowL" ? "right" : "down", opposite8 = shape == "rowL" ? "left" : "up";
+                    for (int i = 0; i < 8; ++i) {
+                        string me = ShareSettings.ScreenName(eight[i]), before = i == 0 ? ShareSettings.HostName : ShareSettings.ScreenName(eight[i - 1]);
+                        if (!text.Contains("  " + d + " = " + me + "\n") || !text.Contains("  " + opposite8 + " = " + before + "\n")) throw new Exception("Link to receiver " + (i + 1) + " missing in " + shape + "\n" + text);
+                    }
+                    ShareSettings.Save(true, ""); ShareSettings.Load(out host, out address);
+                    if (ShareSettings.Layout[eight[7]] != far) throw new Exception("An 8-cell offset did not survive saving");
+                    File.WriteAllText(Path.Combine(directory, shape == "rowL" ? "layout-9x1.conf" : "layout-1x9.conf"), text, new UTF8Encoding(false));
+                    File.WriteAllText(Path.Combine(directory, shape == "rowL" ? "layout-9x1.names" : "layout-1x9.names"), String.Join("\n", eight.Select(ShareSettings.ScreenName)));
+                }
+                ShareSettings.Cols = ShareSettings.Rows = 5; ShareSettings.HostAt = new Point(2, 2); ShareSettings.Preset = "center"; ShareSettings.Custom = null;
                 ShareSettings.Receivers = new List<string>(); ShareSettings.Layout = new Dictionary<string, Point>(); ShareSettings.EdgeRange = new Dictionary<string, string>(); ShareSettings.Advanced.DirectKeys = false;
                 using (var transfer = new ShareTransferPopup(window.Font)) {
                     transfer.Begin(false); Application.DoEvents();

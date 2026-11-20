@@ -13,7 +13,8 @@ import tempfile
 import time
 
 binary = pathlib.Path(sys.argv[1]).resolve()
-config = pathlib.Path(__file__).with_name("wide-row.conf")
+# Optional second argument: a config written by the Windows self-test (layout-9x1.conf / layout-1x9.conf).
+config = pathlib.Path(sys.argv[2]) if len(sys.argv) > 2 else pathlib.Path(__file__).with_name("wide-row.conf")
 names = re.findall(r"^ (r-[0-9a-f]{16}):$", config.read_text(encoding="utf-8").split("section: aliases")[0], re.M)
 assert len(names) == 8, names
 processes = []
@@ -57,7 +58,7 @@ with tempfile.TemporaryDirectory(prefix="cursorway-wide-") as temporary:
         dropped = re.findall(r'client "(r-[0-9a-f]{16})" has disconnected', text)
         assert not dropped, "disconnected: %s" % dropped
         assert all(p.poll() is None for p in processes), "a process exited"
-        print("PASS: 9 x 1 arrangement, server + 8 clients connected over mutual TLS and stayed connected")
+        print("PASS: " + config.name + ", server + 8 clients connected over mutual TLS and stayed connected")
     except Exception:
         console.flush()
         for log in [server_log, root / "console.log"]:

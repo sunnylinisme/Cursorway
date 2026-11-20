@@ -26,5 +26,5 @@ with tempfile.TemporaryDirectory(prefix='barrier-icons-') as temporary:
             suffix = '@2x' if scale == 2 else ''
             shutil.copyfile(p / f'icon-{size * scale}.png',
                             iconset / f'icon_{size}x{size}{suffix}.png')
-    subprocess.run(['iconutil', '-c', 'icns', '-o', str(root / 'BarrierShare.icns'),
+    subprocess.run(['iconutil', '-c', 'icns', '-o', str(root / 'Cursorway.icns'),
                     str(iconset)], check=True)

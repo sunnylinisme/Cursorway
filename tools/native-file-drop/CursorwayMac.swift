@@ -378,17 +378,24 @@ enum ShareUpdater {
         let app = folder.appendingPathComponent("Cursorway.app")
         return process.terminationStatus == 0 && FileManager.default.fileExists(atPath: app.path) ? app : nil
     }
-    // Waits for this process to end, swaps the app (restoring the old one if the copy fails) and opens it.
+    // Written by the install script when the swap failed and the old app was put back; read at the next launch.
+    static var failed: URL { ShareSettings.root.appendingPathComponent("update-failed.txt") }
+    // Waits for this process to end, swaps the app (restoring the old one if the copy fails), removes the
+    // downloaded copy, and opens the app again.
     static let script = """
-    pid="$1"; old="$2"; new="$3"; back="$old.previous"
+    pid="$1"; old="$2"; new="$3"; status="$4"; work="$5"; back="$old.previous"
     while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
     rm -rf "$back"
-    if mv "$old" "$back" && /usr/bin/ditto "$new" "$old"; then rm -rf "$back"; else rm -rf "$old"; mv "$back" "$old"; fi
-    /usr/bin/open "$old"
+    if mv "$old" "$back" && /usr/bin/ditto "$new" "$old"; then rm -rf "$back"; rm -f "$status"
+    else rm -rf "$old"; mv "$back" "$old"; echo "$(date '+%Y-%m-%d %H:%M') 無法替換 $old" > "$status"; fi
+    rm -rf "$work"
+    [ -n "$CURSORWAY_UPDATE_NO_OPEN" ] || /usr/bin/open "$old"
     """
+    // Leftovers of an earlier download or install; nothing runs from there once the app has started.
+    static func cleanUp() { try? FileManager.default.removeItem(at: folder) }
     static func install(_ app: URL) throws {
         let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script, "cursorway-update", String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundleURL.path, app.path]
+        process.arguments = ["-c", script, "cursorway-update", String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundleURL.path, app.path, failed.path, folder.path]
         try process.run()
     }
 }
@@ -885,6 +892,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         // Before anything reads settings or starts barrier-link: BarrierShare → Cursorway.
         if !test { ShareSettings.root = ShareSettings.migrateRoot() }
         if !test, ShareApp.retireOldApp() != nil { log("已把舊版 App 移到垃圾桶。") }
+        if !test { ShareUpdater.cleanUp(); reportFailedUpdate() }
         buildWindow()
         // ⌘V while files are still arriving: paste them as soon as they are complete.
         pasteMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
@@ -965,7 +973,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         tray = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         // The app icon itself (same as the Dock and the Windows tray). It is a full-colour tile with
         // its own light background, so it stays legible on light and dark menu bars; not a template image.
-        if let url = Bundle.main.url(forResource: "BarrierShare", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+        if let url = Bundle.main.url(forResource: "Cursorway", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
             icon.size = NSSize(width: 18, height: 18); icon.isTemplate = false
             tray.button?.image = icon; tray.button?.imageScaling = .scaleProportionallyDown; tray.button?.title = ""
         } else { tray.button?.title = "⇄" }
@@ -1191,7 +1199,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     // Offline or rate-limited checks stay silent; the local network connection never depends on them.
     func checkUpdate() {
         var request = URLRequest(url: ShareUpdate.releases, timeoutInterval: 15)
-        request.setValue("BarrierShare-UpdateCheck", forHTTPHeaderField: "User-Agent"); request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Cursorway-UpdateCheck", forHTTPHeaderField: "User-Agent"); request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -1225,7 +1233,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     // A manual check always answers, also when this is the newest version or the check failed.
     @objc func checkUpdateFromMenu() {
         var request = URLRequest(url: ShareUpdate.releases, timeoutInterval: 15)
-        request.setValue("BarrierShare-UpdateCheck", forHTTPHeaderField: "User-Agent"); request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Cursorway-UpdateCheck", forHTTPHeaderField: "User-Agent"); request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
             DispatchQueue.main.async {
                 guard let self = self else { return }
@@ -1437,6 +1445,20 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
                     }
                 }
             }
+        }
+    }
+    // The install script could not swap the app and put the old one back: say so once, then forget it.
+    func reportFailedUpdate(_ file: URL = ShareUpdater.failed) {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: file)
+        log("自動更新失敗，已還原成原本的版本：" + text.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !test else { return }
+        DispatchQueue.main.async {
+            let alert = NSAlert(); alert.messageText = "自動更新沒有完成"
+            alert.informativeText = "無法替換 Cursorway，已還原成原本的版本（\(ShareApp.versionLabel)）。可以再按一次「更新」，或到下載頁手動安裝。"
+            alert.addButton(withTitle: "好"); alert.addButton(withTitle: "打開下載頁")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertSecondButtonReturn { NSWorkspace.shared.open(URL(string: ShareUpdate.project + "/releases/latest")!) }
         }
     }
     func showProgress(_ got: Int64, _ total: Int64) {
@@ -1888,8 +1910,8 @@ func selfTest(_ directory: URL) throws {
     auto.pressed(front: 7)
     guard auto.ready(front: 9) == nil else { throw ShareError.message("Pasted into a different app") }
     for binary in ["cursorway-server", "cursorway-client"] { if try !ShareSettings.run(binary, ["--help"], allowFailure: true).contains("--file-clipboard") { throw ShareError.message("Missing backend or file clipboard option") } }
-    guard let icon = Bundle.main.url(forResource: "BarrierShare", withExtension: "icns"), NSImage(contentsOf: icon) != nil,
-          Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String == "BarrierShare.icns" else { throw ShareError.message("Missing app icon") }
+    guard let icon = Bundle.main.url(forResource: "Cursorway", withExtension: "icns"), NSImage(contentsOf: icon) != nil,
+          Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String == "Cursorway.icns" else { throw ShareError.message("Missing app icon") }
     let base = "https://github.com/sunnylinisme/barrier/releases/tag/"
     let releases = Data("""
     [{"tag_name":"windows-v9.0.0","html_url":"\(base)windows-v9.0.0","draft":false,"prerelease":false},
@@ -2000,6 +2022,22 @@ func selfTest(_ directory: URL) throws {
     try? FileManager.default.removeItem(at: sample)
     let syntax = Process(); syntax.executableURL = URL(fileURLWithPath: "/bin/sh"); syntax.arguments = ["-n", "-c", ShareUpdater.script]; try syntax.run(); syntax.waitUntilExit()
     guard syntax.terminationStatus == 0 else { throw ShareError.message("Update install script has a syntax error") }
+    // The install script swaps the app and cleans up, or puts the old app back and leaves a note for the next launch.
+    func runScript(_ old: URL, _ new: URL, _ status: URL, _ work: URL) throws {
+        let run = Process(); run.executableURL = URL(fileURLWithPath: "/bin/sh"); run.environment = ["CURSORWAY_UPDATE_NO_OPEN": "1", "PATH": "/usr/bin:/bin"]
+        run.arguments = ["-c", ShareUpdater.script, "cursorway-update", "999999", old.path, new.path, status.path, work.path]; try run.run(); run.waitUntilExit()
+    }
+    let swap = FileManager.default.temporaryDirectory.appendingPathComponent("cursorway-swap-test"); try? FileManager.default.removeItem(at: swap)
+    let oldApp = swap.appendingPathComponent("Apps/Cursorway.app"), work = swap.appendingPathComponent("work"), newApp = work.appendingPathComponent("Cursorway.app"), status = swap.appendingPathComponent("failed.txt")
+    try FileManager.default.createDirectory(at: oldApp, withIntermediateDirectories: true); try Data("old".utf8).write(to: oldApp.appendingPathComponent("v"))
+    try FileManager.default.createDirectory(at: newApp, withIntermediateDirectories: true); try Data("new".utf8).write(to: newApp.appendingPathComponent("v"))
+    try runScript(oldApp, newApp, status, work)
+    guard (try? String(contentsOf: oldApp.appendingPathComponent("v"), encoding: .utf8)) == "new", !FileManager.default.fileExists(atPath: work.path), !FileManager.default.fileExists(atPath: oldApp.path + ".previous"), !FileManager.default.fileExists(atPath: status.path) else { throw ShareError.message("Update swap did not replace the app or clean up") }
+    try runScript(oldApp, swap.appendingPathComponent("missing.app"), status, work)
+    guard (try? String(contentsOf: oldApp.appendingPathComponent("v"), encoding: .utf8)) == "new", FileManager.default.fileExists(atPath: status.path) else { throw ShareError.message("Failed update swap did not restore the app and leave a note") }
+    app.reportFailedUpdate(status)
+    guard !FileManager.default.fileExists(atPath: status.path) else { throw ShareError.message("Failed update note was not cleared") }
+    try? FileManager.default.removeItem(at: swap)
     if ShareUpdater.signer(Bundle.main.bundleURL) != nil, let mine = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
         guard ShareUpdater.check(Bundle.main.bundleURL, version: mine) == nil, ShareUpdater.check(Bundle.main.bundleURL, version: "0.0.1") == "版本不符" else { throw ShareError.message("Update signature check rejected this app") }
     }

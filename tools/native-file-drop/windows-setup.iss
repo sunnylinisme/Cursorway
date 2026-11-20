@@ -196,7 +196,9 @@ begin
   Command := RemoveQuotes(Command);
   if not FileExists(Command) then exit;
   Log('Removing the per-user installation: ' + Command);
-  Exec(Command, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  { The path comes from the user's own registry and points into a folder the user can write:
+    run it with the user's rights, never with this setup's administrator rights. }
+  ExecAsOriginalUser(Command, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

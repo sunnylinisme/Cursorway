@@ -482,10 +482,19 @@ static class ShareService
 {
     public const string Pipe = "Cursorway.Service";
     public static bool Installed { get { return File.Exists(Path.Combine(ShareSettings.Bin, "cursorway-service.exe")); } }
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint process);
+    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool ProcessIdToSessionId(uint process, out uint session);
     public static string[] Request(string line, int timeout = 1500)
     {
         using (var pipe = new System.IO.Pipes.NamedPipeClientStream(".", Pipe, System.IO.Pipes.PipeDirection.InOut)) {
             pipe.Connect(timeout); pipe.ReadMode = System.IO.Pipes.PipeTransmissionMode.Message;
+            // The pairing key goes over this pipe: talk only to the real service (session 0, where no
+            // signed-in user can start a process), not to a program that created the pipe name first.
+            uint server, session;
+            if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out server) || !ProcessIdToSessionId(server, out session) || session != 0)
+                throw new IOException("背景服務：連到的不是 Cursorway 服務");
             byte[] request = Encoding.UTF8.GetBytes(line); pipe.Write(request, 0, request.Length); pipe.Flush();
             var reply = new MemoryStream(); var buffer = new byte[4096];
             do { int read = pipe.Read(buffer, 0, buffer.Length); if (read == 0) break; reply.Write(buffer, 0, read); } while (!pipe.IsMessageComplete);
@@ -1326,12 +1335,12 @@ sealed class ShareWindow : Form
     }
     // Banner button: 更新 starts a background download, 取消 stops it, 重新啟動 runs the installer silently
     // (setup closes Cursorway through the quit event and starts it again). Otherwise it opens the release page.
-    ShareUpdate.Found pendingUpdate; WebClient updateDownload; string updateSetup;
+    ShareUpdate.Found pendingUpdate; WebClient updateDownload; string updateSetup; FileStream updateHold;
     void UpdateClicked()
     {
         if (updateSetup != null) { InstallUpdate(); return; }
         if (updateDownload != null) { updateDownload.CancelAsync(); return; }
-        if (pendingUpdate == null || pendingUpdate.Setup == null || !ShareUpdate.Installed) { OpenUpdate(); return; }
+        if (pendingUpdate == null || pendingUpdate.Setup == null || pendingUpdate.Sha256 == null || !ShareUpdate.Installed) { OpenUpdate(); return; }
         var found = pendingUpdate; string folder = ShareUpdate.Folder;
         string file = Path.Combine(folder, "Cursorway-Setup-" + found.Version + "-x64.exe"), part = file + ".part";
         try { Directory.CreateDirectory(folder); if (File.Exists(part)) File.Delete(part); } catch (Exception e) { Error(e); return; }
@@ -1359,21 +1368,34 @@ sealed class ShareWindow : Form
     // null when the file is the published installer (same size, and same SHA-256 when GitHub lists one).
     internal static string Verify(string path, ShareUpdate.Found found)
     {
-        var info = new FileInfo(path); if (!info.Exists || info.Length != found.Size) return "檔案大小不符";
-        if (found.Sha256 == null) return null;
-        using (var sha = System.Security.Cryptography.SHA256.Create()) using (var stream = File.OpenRead(path))
+        if (!File.Exists(path)) return "檔案大小不符";
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) return Verify(stream, found);
+    }
+    internal static string Verify(FileStream stream, ShareUpdate.Found found)
+    {
+        if (stream.Length != found.Size) return "檔案大小不符";
+        // Without the SHA-256 GitHub publishes for the asset the file is not run.
+        if (found.Sha256 == null) return "缺少檔案校驗碼";
+        stream.Position = 0;
+        using (var sha = System.Security.Cryptography.SHA256.Create())
             return BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "").ToLowerInvariant() == found.Sha256 ? null : "檔案校驗不符";
     }
     void InstallUpdate()
     {
         if (!File.Exists(updateSetup)) { updateSetup = null; bannerDownload.Text = "更新"; UpdateClicked(); return; }
         try {
+            // The folder is the user's own temp folder: check the installer again and keep it from
+            // being replaced (shared read only) until this copy quits for the update.
+            var held = new FileStream(updateSetup, FileMode.Open, FileAccess.Read, FileShare.Read);
+            string problem = Verify(held, pendingUpdate);
+            if (problem != null) { held.Dispose(); try { File.Delete(updateSetup); } catch (Exception) { } updateSetup = null; bannerDownload.Text = "更新"; bannerText.Text = "下載失敗：" + problem; return; }
+            updateHold = held;
             Process.Start(new ProcessStartInfo(updateSetup, "/SILENT /SUPPRESSMSGBOXES /NORESTART") { UseShellExecute = true });
             bannerText.Text = "正在安裝新版，完成後會自動重新開啟…";
             // Read at the next launch: still older than this version means the install did not finish.
             try { File.WriteAllText(ShareUpdate.Pending, pendingUpdate.Version.ToString()); } catch (Exception) { }
         }
-        catch (System.ComponentModel.Win32Exception e) { bannerText.Text = e.NativeErrorCode == 1223 ? "需要按「是」允許安裝，請再按一次「重新啟動」" : "無法啟動安裝程式：" + e.Message; }
+        catch (System.ComponentModel.Win32Exception e) { if (updateHold != null) { updateHold.Dispose(); updateHold = null; } bannerText.Text = e.NativeErrorCode == 1223 ? "需要按「是」允許安裝，請再按一次「重新啟動」" : "無法啟動安裝程式：" + e.Message; }
     }
     void OpenUpdate() { if (updateUrl != null) try { Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); } catch (Exception e) { Error(e); } }
     void SetBanner(bool show)
@@ -2922,6 +2944,7 @@ static class ShareProgram
             if (ShareWindow.Verify(probe, withSetup) != null) throw new Exception("Installer with the right hash was rejected");
             File.WriteAllText(probe, "abd"); if (ShareWindow.Verify(probe, withSetup) == null) throw new Exception("Installer with a wrong hash was accepted");
             File.WriteAllText(probe, "abcd"); if (ShareWindow.Verify(probe, withSetup) == null) throw new Exception("Installer with a wrong size was accepted");
+            File.WriteAllText(probe, "abc"); if (ShareWindow.Verify(probe, new ShareUpdate.Found { Version = withSetup.Version, Setup = withSetup.Setup, Size = withSetup.Size }) == null) throw new Exception("Installer without a published SHA-256 was accepted");
             File.Delete(probe);
             // An update that was started but did not arrive is reported once at the next launch; a finished one is not.
             Directory.CreateDirectory(ShareUpdate.Folder);

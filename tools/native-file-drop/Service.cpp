@@ -343,6 +343,13 @@ std::wstring clientSid(HANDLE pipe) {
     if (!ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(buffer.data())->User.Sid, &text)) throw std::runtime_error("Cannot identify caller");
     std::wstring sid(text); LocalFree(text); return sid;
 }
+// Whether the caller runs elevated as an administrator (a filtered UAC token does not count).
+bool callerIsAdministrator(HANDLE pipe) {
+    if (!ImpersonateNamedPipeClient(pipe)) return false;
+    BYTE sid[SECURITY_MAX_SID_SIZE]; DWORD size = sizeof(sid); BOOL member = FALSE;
+    bool ok = CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, sid, &size) && CheckTokenMembership(nullptr, sid, &member) && member;
+    RevertToSelf(); return ok;
+}
 std::string handle(HANDLE pipe, const std::string& request) {
     ULONG session = 0;
     if (!GetNamedPipeClientSessionId(pipe, &session) || session != WTSGetActiveConsoleSessionId()) throw std::runtime_error("Only the signed-in console user can control Barrier Share");
@@ -351,6 +358,9 @@ std::string handle(HANDLE pipe, const std::string& request) {
     auto reply = [&]() { return "OK\t" + std::string(wanted && coreRunning() ? "1" : "0") + '\t' + narrow(command.log); };
     if (f[0] == "STATUS") return reply();
     if (f[0] == "STOP") { wanted = false; stopCore(); return reply(); }
+    // DESKTOP is a test hook: acting as if a secure desktop were shown starts the core with the
+    // SYSTEM token on the user's desktop, so only an elevated administrator may use it.
+    if (f[0] == "DESKTOP" && !callerIsAdministrator(pipe)) throw std::runtime_error("DESKTOP needs an administrator");
     if (f[0] == "DESKTOP" && f.size() == 2 && !f[1].empty() && f[1].size() < 32 && f[1].find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ") == std::string::npos) {
         forcedDesktop = f[1] == "auto" ? "" : f[1]; apply(); return reply();
     }

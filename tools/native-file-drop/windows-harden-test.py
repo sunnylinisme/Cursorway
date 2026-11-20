@@ -33,9 +33,31 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True); kernel32.OpenProcess.
 with tempfile.TemporaryDirectory(prefix="cursorway-harden-") as temporary:
     root = pathlib.Path(temporary)
     def basic_user(name, command):
-        script = root / (name + ".cmd"); script.write_text("@" + command + "\r\n", encoding="mbcs")
-        done = subprocess.run(["runas", "/trustlevel:0x20000", str(script)], capture_output=True)
-        assert done.returncode == 0, "runas failed (%d): %s %s" % (done.returncode, done.stdout.decode("mbcs", "replace"), done.stderr.decode("mbcs", "replace"))
+        # The same user as a basic user (SAFER "normal user" level, medium integrity): what any
+        # program of this user without administrator rights would be. Returns the process id.
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        level = wintypes.HANDLE(); token = wintypes.HANDLE()
+        assert advapi32.SaferCreateLevel(2, 0x20000, 1, ctypes.byref(level), None), ctypes.WinError(ctypes.get_last_error())
+        assert advapi32.SaferComputeTokenFromLevel(level, None, ctypes.byref(token), 0, None), ctypes.WinError(ctypes.get_last_error())
+        advapi32.SaferCloseLevel(level)
+        sid = ctypes.c_void_p()
+        assert advapi32.ConvertStringSidToSidW("S-1-16-8192", ctypes.byref(sid)), ctypes.WinError(ctypes.get_last_error())
+        class LABEL(ctypes.Structure): _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+        label = LABEL(sid, 0x20)
+        assert advapi32.SetTokenInformation(token, 25, ctypes.byref(label), ctypes.sizeof(label) + advapi32.GetLengthSid(sid)), ctypes.WinError(ctypes.get_last_error())
+        class STARTUPINFO(ctypes.Structure):
+            _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR)] + \
+                       [(n, wintypes.DWORD) for n in ("dwX", "dwY", "dwXSize", "dwYSize", "dwXCountChars", "dwYCountChars", "dwFillAttribute", "dwFlags")] + \
+                       [("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD), ("lpReserved2", ctypes.c_void_p), ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE)]
+        class PROCESS_INFORMATION(ctypes.Structure):
+            _fields_ = [("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE), ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD)]
+        startup = STARTUPINFO(); startup.cb = ctypes.sizeof(startup); info = PROCESS_INFORMATION()
+        line = ctypes.create_unicode_buffer(command)
+        ok = advapi32.CreateProcessAsUserW(token, None, line, None, None, False, 0x08000000, None, None, ctypes.byref(startup), ctypes.byref(info))
+        error = ctypes.get_last_error(); kernel32.CloseHandle(token)
+        assert ok, "Cannot start %s as a basic user: %s" % (name, ctypes.WinError(error))
+        kernel32.CloseHandle(info.hThread); kernel32.CloseHandle(info.hProcess)
+        return info.dwProcessId
     def wait(check, what, seconds=20):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
@@ -55,9 +77,10 @@ with tempfile.TemporaryDirectory(prefix="cursorway-harden-") as temporary:
             subprocess.check_output([str(binary / "cursorway-pair.exe"), "init", str(profile)])
             log = root / (name + ".log")
             # Port 1 never answers: the core keeps retrying, which is all this test needs.
-            basic_user(name, '"%s" -f --no-tray --profile-dir "%s" --log "%s" --name harden-%s %s 127.0.0.1:1' % (binary / "cursorway-client.exe", profile, log, name, "--harden" if harden else ""))
-            pid = wait(lambda: core_pid("harden-" + name), name + " core did not start"); pids.append(pid)
-            time.sleep(1)
+            pid = basic_user(name, '"%s" -f --no-tray --profile-dir "%s" --log "%s" --name harden-%s %s 127.0.0.1:1' % (binary / "cursorway-client.exe", profile, log, name, "--harden" if harden else ""))
+            pids.append(pid); time.sleep(1.5)
+            alive = kernel32.OpenProcess(0x1000, False, pid); code = wintypes.DWORD()
+            assert alive and kernel32.GetExitCodeProcess(wintypes.HANDLE(alive), ctypes.byref(code)) and code.value == 259, name + " core exited at once: " + (log.read_text(errors="replace")[-2000:] if log.exists() else "no log")
             out = root / (name + ".result")
             basic_user(name + "-probe", '"%s" "%s" --probe %d "%s"' % (sys.executable, pathlib.Path(__file__).resolve(), pid, out))
             results[name] = wait(lambda: out.exists() and out.read_text(), name + " probe did not answer")

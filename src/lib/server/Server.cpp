@@ -19,6 +19,8 @@
 #include <chrono>
 #include <algorithm>
 #include "server/Server.h"
+#include "io/StreamFilter.h"
+#include "net/SecureSocket.h"
 #include "barrier/NativeFileProtocol.h"
 #include "barrier/ProtocolUtil.h"
 
@@ -315,6 +317,17 @@ Server::setConfig(const Config& config)
 	return true;
 }
 
+static std::string
+peerFingerprint(BaseClientProxy* client)
+{
+	barrier::IStream* stream = client->getStream();
+	while (StreamFilter* filter = dynamic_cast<StreamFilter*>(stream)) {
+		stream = filter->getStream();
+	}
+	SecureSocket* socket = dynamic_cast<SecureSocket*>(stream);
+	return socket != NULL ? socket->peerFingerprint() : std::string();
+}
+
 void
 Server::adoptClient(BaseClientProxy* client)
 {
@@ -334,6 +347,17 @@ Server::adoptClient(BaseClientProxy* client)
 
 	// add client to client list
 	if (!addClient(client)) {
+		// the same receiver (same pinned certificate) came back before we noticed its old
+		// connection died: drop the stale one instead of refusing, so it rejoins at once
+		ClientList::iterator existing = m_clients.find(getName(client));
+		std::string fingerprint = peerFingerprint(client);
+		if (existing != m_clients.end() && !fingerprint.empty() &&
+				peerFingerprint(existing->second) == fingerprint) {
+			LOG((CLOG_NOTE "client \"%s\" reconnected, dropping its stale connection", getName(client).c_str()));
+			closeClient(existing->second, kMsgEBusy);
+		}
+	}
+	if (m_clients.count(getName(client)) != 0 || !addClient(client)) {
 		// can only have one screen with a given name at any given time
 		LOG((CLOG_WARN "a client with name \"%s\" is already connected", getName(client).c_str()));
 		closeClient(client, kMsgEBusy);

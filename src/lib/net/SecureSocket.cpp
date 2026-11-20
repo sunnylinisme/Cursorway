@@ -725,6 +725,8 @@ bool SecureSocket::verify_cert_fingerprint(const barrier::fs::path& fingerprint_
          barrier::format_ssl_fingerprint(fingerprint_sha1.data).c_str(),
          barrier::format_ssl_fingerprint(fingerprint_sha256.data).c_str()));
 
+    m_peerFingerprint = barrier::format_ssl_fingerprint(fingerprint_sha256.data);
+
     // Provide debug hint as to what file is being used to verify fingerprint trust
     LOG((CLOG_NOTE "fingerprint_db_path: %s", fingerprint_db_path.u8string().c_str()));
 

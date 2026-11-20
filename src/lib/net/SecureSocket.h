@@ -59,8 +59,11 @@ public:
     EJobResult            doWrite() override;
     void                initSsl(bool server);
     bool load_certificates(const barrier::fs::path& path);
+    //! SHA-256 fingerprint of the verified peer certificate (empty before the handshake)
+    const std::string& peerFingerprint() const { return m_peerFingerprint; }
 
 private:
+    std::string m_peerFingerprint;
     // SSL
     void initContext(bool server); // may only be called with ssl_mutex_ acquired
     void createSSL(); // may only be called with ssl_mutex_ acquired.

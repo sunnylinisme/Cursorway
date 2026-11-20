@@ -472,8 +472,14 @@ HANDLE createSasEvent(const wchar_t* name, const wchar_t* access = L"D:P(A;;GA;;
 // Waits for the event; calls send for a receiver core only (a host types nothing into this computer).
 void watchSas(HANDLE event, SendSasFunction send, const std::function<bool()>& receiver) {
     HANDLE waits[2] = { event, stopEvent };
+    ULONGLONG last = 0;
     while (WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0) {
         if (!receiver()) continue;
+        // One press is one request: the core that takes over on the secure desktop may see the same
+        // keys again; one press must not ask Windows twice.
+        ULONGLONG now = GetTickCount64();
+        if (last != 0 && now - last < 3000) { std::lock_guard<std::mutex> lock(mutex); logLine(command.directory, "Ctrl+Alt+Del again within 3 s: ignored"); continue; }
+        last = now;
         send(FALSE);
         std::lock_guard<std::mutex> lock(mutex); logLine(command.directory, "Ctrl+Alt+Del from the paired computer: sent the secure attention sequence");
     }
@@ -531,15 +537,17 @@ int sasTest() {
         BOOL ok = SetEvent(core); CloseHandle(core); return ok != FALSE;
     };
     auto waitFor = [&](int count) { for (int i = 0; i < 40 && calls < count; ++i) Sleep(50); return calls == count; };
-    bool ok = signal() && waitFor(1) && signal() && waitFor(2);
-    receiver = false; ok = ok && signal(); Sleep(300); ok = ok && calls == 2;
+    // A second press right away is ignored; one 3 s later counts again.
+    bool ok = signal() && waitFor(1) && signal(); Sleep(300); ok = ok && calls == 1;
+    Sleep(3000); ok = ok && signal() && waitFor(2);
+    Sleep(3000); receiver = false; ok = ok && signal(); Sleep(300); ok = ok && calls == 2;
     // Nobody may take more than the right to set it (for example to wait on it and steal the signal).
     HANDLE wide = OpenEventW(EVENT_ALL_ACCESS, FALSE, name.c_str());
     bool narrow = true;
     if (wide) { CloseHandle(wide); narrow = false; }
     SetEvent(stopEvent); watcher.join(); CloseHandle(event);
     if (!ok || !narrow) { std::printf("FAIL: calls=%d narrow=%d\n", calls.load(), narrow ? 1 : 0); return 1; }
-    std::printf("PASS: Ctrl+Alt+Del event reached SendSAS twice for a receiver, not for a host, and only allows setting it\n");
+    std::printf("PASS: Ctrl+Alt+Del event reached SendSAS for a receiver (a repeat within 3 s ignored), not for a host, and only allows setting it\n");
     return 0;
 }
 int wmain(int argc, wchar_t** argv) {

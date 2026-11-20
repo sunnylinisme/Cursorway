@@ -197,17 +197,27 @@ ClientApp::updateStatus(const String& msg)
 
 
 void
+// Retries right after a start or a dropped connection come quickly (the Windows service swaps
+// the core when the desktop changes, and the host may need a moment), then at the usual pace.
+static int s_quickRetries = 0;
+static const int kQuickRetries = 4;
+static const double kQuickRetryTime = 0.25;
+
+void
 ClientApp::resetRestartTimeout()
 {
-    // retry time can nolonger be changed
-    //s_retryTime = 0.0;
+    s_quickRetries = 0;
 }
 
 
 double
 ClientApp::nextRestartTimeout()
 {
-    // retry at a constant rate (Issue 52)
+    // retry at a constant rate (Issue 52), after a few quick ones
+    if (s_quickRetries < kQuickRetries) {
+        ++s_quickRetries;
+        return kQuickRetryTime;
+    }
     return RETRY_TIME;
 
     /*

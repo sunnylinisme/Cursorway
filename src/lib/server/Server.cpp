@@ -349,19 +349,21 @@ Server::adoptClient(BaseClientProxy* client)
 	if (!addClient(client)) {
 		// the same receiver (same pinned certificate) came back before we noticed its old
 		// connection died: drop the stale one instead of refusing, so it rejoins at once
+		bool replaced = false;
 		ClientList::iterator existing = m_clients.find(getName(client));
 		std::string fingerprint = peerFingerprint(client);
 		if (existing != m_clients.end() && !fingerprint.empty() &&
 				peerFingerprint(existing->second) == fingerprint) {
 			LOG((CLOG_NOTE "client \"%s\" reconnected, dropping its stale connection", getName(client).c_str()));
 			closeClient(existing->second, kMsgEBusy);
+			replaced = true;
 		}
-	}
-	if (m_clients.count(getName(client)) != 0 || !addClient(client)) {
-		// can only have one screen with a given name at any given time
-		LOG((CLOG_WARN "a client with name \"%s\" is already connected", getName(client).c_str()));
-		closeClient(client, kMsgEBusy);
-		return;
+		if (!replaced || !addClient(client)) {
+			// can only have one screen with a given name at any given time
+			LOG((CLOG_WARN "a client with name \"%s\" is already connected", getName(client).c_str()));
+			closeClient(client, kMsgEBusy);
+			return;
+		}
 	}
 	LOG((CLOG_NOTE "client \"%s\" has connected", getName(client).c_str()));
 

@@ -69,6 +69,16 @@ def windows_clipboard(text=None):
         user32.CloseClipboard()
 
 
+def clipboard_formats():
+    user32 = ctypes.WinDLL("user32"); formats = []
+    if not user32.OpenClipboard(None): return "busy"
+    try:
+        f = user32.EnumClipboardFormats(0)
+        while f: formats.append(f); f = user32.EnumClipboardFormats(f)
+    finally: user32.CloseClipboard()
+    return formats
+
+
 def marshal_text(text):
     data = text.encode("utf-8")
     return struct.pack("!III", 1, 0, len(data)) + data
@@ -410,6 +420,7 @@ for role, direction, via_service in runs:
                             notes = (service_log.parent / "service.log").read_text(errors="replace")
                             assert ", UI access: on, hardened" in notes, "The service did not start the hardened UI access core: " + notes[-3000:]
                             assert "--harden" in notes and "--trusted-servers" in notes, "Hardened core command line is missing its options"
+                        if True:
                             # Plain text both ways under that core.
                             to_windows, to_host = "Cursorway 文字剪貼簿 ✓ host→Windows", "Cursorway 文字剪貼簿 ✓ Windows→host"
                             wire.send(b"CINN" + struct.pack("!hhIH", *entry, 43, 0)); wait_cursor(entry)
@@ -419,7 +430,7 @@ for role, direction, via_service in runs:
                                 wire.send(b"DCLP" + struct.pack("!BIB", 0, 43, mark) + string(body))
                             deadline = time.monotonic() + 5
                             while windows_clipboard() != to_windows and time.monotonic() < deadline: time.sleep(.1)
-                            assert windows_clipboard() == to_windows, "Text from the host did not reach the Windows clipboard: %r" % windows_clipboard()
+                            assert windows_clipboard() == to_windows, "Text from the host did not reach the Windows clipboard: %r, formats %r" % (windows_clipboard(), clipboard_formats())
                             windows_clipboard(to_host); time.sleep(.5)
                             wire.send(b"COUT")
                             assembled = b""; text_back = None
@@ -433,7 +444,7 @@ for role, direction, via_service in runs:
                                     elif mark == 2: assembled += body
                                     elif mark == 3: text_back = unmarshal_text(assembled); break
                             assert text_back == to_host, "Text from Windows did not reach the host: %r" % text_back
-                            print("PASS: hardened UI access core (service): file clipboard both ways, Explorer paste and plain text both ways", flush=True)
+                            print("PASS: " + ("hardened UI access core (service)" if via_service else "receiver core") + ": file clipboard both ways, Explorer paste and plain text both ways", flush=True)
                     assert (source / name).read_bytes() == local_bytes, "Source file changed"
                     assert (destination / name).read_bytes() == peer_bytes, "Paste contained stale or wrong bytes"
                     print("PASS: real Windows " + role + (" started by the service as SYSTEM" if via_service else "") + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ", ordinary edge jitter, hidden host cursor, intentional return and 50 fast returns to the edge verified"))

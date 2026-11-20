@@ -428,8 +428,9 @@ for role, direction, via_service in runs:
                             def string(value): return struct.pack("!I", len(value)) + value
                             for mark, body in ((1, str(len(blob)).encode()), (2, blob), (3, b"")):
                                 wire.send(b"DCLP" + struct.pack("!BIB", 0, 43, mark) + string(body))
-                            deadline = time.monotonic() + 5
-                            while windows_clipboard() != to_windows and time.monotonic() < deadline: time.sleep(.1)
+                            # Look rarely: every look holds the clipboard for a moment.
+                            time.sleep(1); deadline = time.monotonic() + 5
+                            while windows_clipboard() != to_windows and time.monotonic() < deadline: time.sleep(.5)
                             assert windows_clipboard() == to_windows, "Text from the host did not reach the Windows clipboard: %r, formats %r" % (windows_clipboard(), clipboard_formats())
                             windows_clipboard(to_host); time.sleep(.5)
                             wire.send(b"COUT")

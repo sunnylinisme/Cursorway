@@ -136,7 +136,14 @@ MSWindowsClipboard::open(Time time) const
 {
     LOG((CLOG_DEBUG "open clipboard"));
 
-    if (!OpenClipboard(m_window)) {
+    // Another program (a clipboard manager, a paste in progress) may hold the clipboard for a
+    // moment: try again briefly before giving up, or the update is lost.
+    BOOL opened = OpenClipboard(m_window);
+    for (int attempt = 0; !opened && attempt < 25; ++attempt) {
+        Sleep(20);
+        opened = OpenClipboard(m_window);
+    }
+    if (!opened) {
         // unable to cause this in integ tests; but this can happen!
         // * http://symless.com/pm/issues/86
         // * http://symless.com/pm/issues/1256

@@ -12,6 +12,13 @@ import tempfile
 import time
 
 binary = pathlib.Path(sys.argv[1]).resolve()
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+def report(kind, value, trace):
+    # Anything that ends the test early still leaves an annotation (job logs need a token to read).
+    import traceback
+    print("::error title=Rejoin crash::" + "%0A".join("".join(traceback.format_exception(kind, value, trace)).splitlines()[-12:]), flush=True)
+    sys.__excepthook__(kind, value, trace)
+sys.excepthook = report
 user32 = ctypes.windll.user32
 MOUSEEVENTF_MOVE = 0x0001
 processes = []

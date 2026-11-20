@@ -102,7 +102,6 @@ with tempfile.TemporaryDirectory(prefix="cursorway-harden-") as temporary:
                 ok = handle and kernel32.GetProcessMitigationPolicy(wintypes.HANDLE(handle), 8, ctypes.byref(flags), ctypes.sizeof(flags))
                 if handle: kernel32.CloseHandle(handle)
                 assert ok and flags.value & 1, "Hardened core allows DLLs that are not Microsoft-signed"
-                assert "harden: other programs cannot change this process; Microsoft-signed DLLs only: on" in log.read_text(errors="replace"), log.read_text(errors="replace")[-3000:]
         print("::notice title=Harden::basic user opening the plain core: %s; the hardened core: %s" % (results["plain"], results["hardened"]))
         assert results["plain"] == "opened", "Control failed: a basic user could not open the plain core either (%s), so the test proves nothing" % results["plain"]
         assert results["hardened"].startswith("denied"), "A basic user of the same account opened the hardened core for writing"

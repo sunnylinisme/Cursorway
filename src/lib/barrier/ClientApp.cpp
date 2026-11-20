@@ -196,7 +196,6 @@ ClientApp::updateStatus(const String& msg)
 }
 
 
-void
 // Retries right after a start or a dropped connection come quickly (the Windows service swaps
 // the core when the desktop changes, and the host may need a moment), then at the usual pace.
 static int s_quickRetries = 0;

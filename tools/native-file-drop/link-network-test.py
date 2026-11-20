@@ -117,6 +117,9 @@ def run():
             # With its place: the receiver sits left of the host; bad places are dropped.
             host.send('NUMBERS', rf+'=2/-1/0,'+sf+'=5/9/9'); receiver.clear()
             n=receiver.wait('NUMBER'); assert n[1:]==[hf,'2','-1,0'], n
+            # A wide arrangement (0.3.29+): up to 8 cells away; 9, -0 and -9 are dropped.
+            host.send('NUMBERS', rf+'=4/8/-8,'+sf+'=5/-0/1'); receiver.clear()
+            n=receiver.wait('NUMBER'); assert n[1:]==[hf,'4','8,-8'], n
             print('PASS: receiver learns its switch number and place from the host',flush=True)
             assert sorted(e[1] for e in host.history if e[0]=='SAVED')==sorted([rf,sf])
             host.send('FORGET',sf); assert host.wait('REMOVED')[1]==sf

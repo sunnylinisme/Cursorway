@@ -79,12 +79,12 @@ static bool validName(const std::string& encoded) {
 }
 static std::string slashed(std::string v) { std::replace(v.begin(), v.end(), ',', '/'); return v; }
 static bool validPlace(const std::string& v) {
-    // "<n>" or "<n>/<dx>/<dy>": switch number 1-9 and where the host placed the receiver (each -2..2).
+    // "<n>" or "<n>/<dx>/<dy>": switch number 1-9 and where the host placed the receiver (each -8..8, 0.3.29+).
     if (v.empty() || v[0] < '1' || v[0] > '9') return false;
     if (v.size() == 1) return true;
     if (v[1] != '/') return false;
     auto slash = v.find('/', 2); if (slash == std::string::npos) return false;
-    auto axis = [](const std::string& a) { return a == "0" || a == "1" || a == "2" || a == "-1" || a == "-2"; };
+    auto axis = [](const std::string& a) { size_t i = !a.empty() && a[0] == '-'; return a.size() == i + 1 && a[i] >= '0' && a[i] <= '8' && !(i && a[i] == '0'); };
     return axis(v.substr(2, slash - 2)) && axis(v.substr(slash + 1));
 }
 static bool validFingerprint(const std::string& fp) {

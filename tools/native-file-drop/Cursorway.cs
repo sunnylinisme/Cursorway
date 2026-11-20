@@ -2360,7 +2360,7 @@ sealed class ShareLayoutEditor : Form
         var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(24 + full - 244, buttonsY, 108, 36), DialogResult = DialogResult.Cancel };
         save.BackColor = Color.White; save.Bounds = new Rectangle(24 + full - 128, buttonsY, 128, 36); save.DialogResult = DialogResult.OK;
         Controls.Add(cancel); Controls.Add(save); CancelButton = cancel;
-        ClientSize = new Size(full + 48, buttonsY + 52);
+        ClientSize = new Size(full + 48, buttonsY + 60);
         var cells = ShareSettings.Cells();
         foreach (var peer in peers) {
             names[peer.Key] = peer.Value; order.Add(peer.Key);

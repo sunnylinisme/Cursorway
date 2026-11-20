@@ -61,8 +61,12 @@ with tempfile.TemporaryDirectory(prefix="cursorway-rejoin-") as temporary:
         print("::notice title=Rejoin::new receiver core connected %.2f s after the old one was killed" % took)
         assert took < 4, "reconnecting took %.2f s" % took
         print("PASS: the receiver's core was replaced and the host put the cursor back on it (%.2f s)" % took)
-    except Exception:
+    except Exception as failure:
         console.flush()
+        # Job logs need a token to read; annotations do not.
+        lines = [l for l in read(server_log).splitlines() if any(k in l for k in ("switch", "connected", "disconnected", "is back", "jump", "ERROR", "WARN"))]
+        print("::error title=Rejoin::%s%%0A%s" % (str(failure).replace("
+", " "), "%0A".join(l[-160:] for l in lines[-25:])))
         for log in [server_log, client_log, root / "console.log"]:
             if log.exists(): print("==", log.name); print(read(log)[-6000:])
         raise

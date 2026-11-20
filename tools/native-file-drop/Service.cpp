@@ -55,6 +55,7 @@ std::atomic<bool> stopping{false};
 
 struct Command {
     bool host = true; std::wstring sid, address, directory, log, name, userProfile, userLog, wheel;
+    std::string trusted; // receiver: the hosts the user's app asked for (only approved ones get raised rights)
 };
 std::mutex mutex;
 bool wanted = false; Command command;
@@ -153,6 +154,51 @@ void writeFile(const std::wstring& path, const std::string& data) {
     CloseHandle(file);
     if (!ok || written != data.size()) throw std::runtime_error("Cannot write state file");
 }
+// Approved hosts. Any program of the user can send START with its own trust list; a host on that
+// list could then drive the sign-in, lock and UAC screens (SYSTEM core) and windows run as
+// administrator (UI access core). So those two cores only trust hosts an administrator approved
+// (cursorway-service.exe --approve, run elevated by the app after pairing). The plain user core
+// trusts the user's own list, which grants nothing the user does not already have.
+std::string readText(const std::wstring& path) {
+    HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return {};
+    std::string text; char chunk[4096]; DWORD got = 0;
+    while (text.size() < 1 << 20 && ReadFile(file, chunk, sizeof(chunk), &got, nullptr) && got) text.append(chunk, got);
+    CloseHandle(file); return text;
+}
+bool validFingerprint(const std::string& line) {
+    return !line.empty() && line.size() < 200 && line.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789:") == std::string::npos;
+}
+std::vector<std::string> fingerprints(const std::string& text) {
+    std::vector<std::string> result; size_t start = 0;
+    while (start < text.size()) {
+        auto end = text.find('\n', start); auto line = text.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (validFingerprint(line) && std::find(result.begin(), result.end(), line) == result.end()) result.push_back(line);
+        if (end == std::string::npos) break; start = end + 1;
+    }
+    return result;
+}
+std::wstring approvedFile(const std::wstring& sid) { return moduleDirectory() + L"\\state\\" + sid + L"\\approved-servers.txt"; }
+std::vector<std::string> approvedHosts(const std::wstring& sid) { return fingerprints(readText(approvedFile(sid))); }
+// Requested hosts an administrator has not approved yet.
+std::vector<std::string> pendingHosts(const Command& c) {
+    std::vector<std::string> result; if (c.host) return result;
+    auto approved = approvedHosts(c.sid);
+    for (auto& fp : fingerprints(c.trusted)) if (std::find(approved.begin(), approved.end(), fp) == approved.end()) result.push_back(fp);
+    return result;
+}
+// The trust file of the SYSTEM and UI access cores: requested and approved.
+std::wstring approvedTrustFile(const Command& c) { return c.directory + L"\\SSL\\Fingerprints\\TrustedServers.txt"; }
+void writeApprovedTrust(const Command& c) {
+    auto approved = approvedHosts(c.sid); std::string text;
+    for (auto& fp : fingerprints(c.trusted)) if (std::find(approved.begin(), approved.end(), fp) != approved.end()) text += fp + "\n";
+    writeFile(approvedTrustFile(c), text);
+}
+// Only SYSTEM and Administrators may open the hardened core to change it; its owner (the user)
+// may query and wait for it (the same as --harden sets inside; this closes the gap before that runs).
+const wchar_t* kHardenedCore = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101000;;;OW)";
+bool hardenOff = false; std::string hardenOffReason; bool coreHardened = false;
 HANDLE winlogonToken(DWORD session) {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); PROCESSENTRY32W entry{sizeof(entry)}; HANDLE result = nullptr;
     for (BOOL more = Process32FirstW(snapshot, &entry); more && !result; more = Process32NextW(snapshot, &entry)) {
@@ -235,7 +281,10 @@ void stopCore() {
 void startCore(DWORD session, bool asSystem, const std::string& why) {
     stopCore();
     // Only the receiver types into other windows; the host reads input through its hook and needs no UI access.
-    bool uiAccess = !asSystem && !command.host && uiAccessAllowed();
+    auto pending = pendingHosts(command);
+    if (!command.host) writeApprovedTrust(command);
+    bool uiAccess = !asSystem && !command.host && uiAccessAllowed() && pending.empty();
+    bool harden = uiAccess && !hardenOff;
     HANDLE token = asSystem ? winlogonToken(session) : userToken(session, uiAccess);
     if (!token) throw std::runtime_error("No signed-in user in the console session");
     std::wstring bin = moduleDirectory(), profile = asSystem ? command.directory : command.userProfile, log = asSystem ? command.log : command.userLog;
@@ -243,6 +292,9 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
         L" --log " + quote(log) + L" --name " + command.name;
     // The host reads the configuration the service keeps (it arrives with START and CONFIG), never
     // the copy in the user's folder: on one computer the user's core could not open that file.
+    // The UI access core trusts only approved hosts (a file the user cannot change), and is hardened
+    // against other programs of the user unless that kept it from starting.
+    if (uiAccess) line += L" --trusted-servers " + quote(approvedTrustFile(command)) + (harden ? L" --harden" : L"");
     line += command.host ? L" -c " + quote(command.directory + L"\\windows-windows.conf") : command.wheel + L" " + command.address;
     if (!asSystem) {
         // Note whether the signed-in user's core can open its profile folder (for the log only).
@@ -263,14 +315,17 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
     if (output != INVALID_HANDLE_VALUE) { startup.dwFlags |= STARTF_USESTDHANDLES; startup.hStdOutput = output; startup.hStdError = output; startup.hStdInput = nullptr; }
     std::vector<wchar_t> buffer(line.begin(), line.end()); buffer.push_back(0);
     void* environment = nullptr; if (!asSystem) CreateEnvironmentBlock(&environment, token, FALSE);
-    BOOL ok = CreateProcessAsUserW(token, nullptr, buffer.data(), nullptr, nullptr, output != INVALID_HANDLE_VALUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, environment, bin.c_str(), &startup, &core);
-    DWORD error = GetLastError(); CloseHandle(token); if (environment) DestroyEnvironmentBlock(environment);
+    PSECURITY_DESCRIPTOR hardened = nullptr; SECURITY_ATTRIBUTES protect{sizeof(protect), nullptr, FALSE};
+    if (harden && ConvertStringSecurityDescriptorToSecurityDescriptorW(kHardenedCore, SDDL_REVISION_1, &hardened, nullptr)) protect.lpSecurityDescriptor = hardened;
+    BOOL ok = CreateProcessAsUserW(token, nullptr, buffer.data(), hardened ? &protect : nullptr, hardened ? &protect : nullptr, output != INVALID_HANDLE_VALUE, CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT, environment, bin.c_str(), &startup, &core);
+    DWORD error = GetLastError(); CloseHandle(token); if (environment) DestroyEnvironmentBlock(environment); if (hardened) LocalFree(hardened);
     if (output != INVALID_HANDLE_VALUE) CloseHandle(output);
     logLine(command.directory, "command: " + narrow(line));
     if (!ok) throw std::runtime_error("Cannot start core (error " + std::to_string(error) + ")");
-    coreSession = session; coreSystem = asSystem; coreStartedAt = GetTickCount64(); coreUiAccess = uiAccess;
+    coreSession = session; coreSystem = asSystem; coreStartedAt = GetTickCount64(); coreUiAccess = uiAccess; coreHardened = harden;
+    std::string accessOff = !pending.empty() ? std::to_string(pending.size()) + " paired computer(s) not yet allowed by an administrator" : uiAccessOff;
     logLine(command.directory, "core now runs as " + std::string(asSystem ? "SYSTEM" : "the signed-in user") + " (" + why + "), " + (command.host ? "host" : "receiver") + ", session " + std::to_string(session) + ", log " + narrow(log) +
-        (asSystem || command.host ? std::string() : uiAccess ? ", UI access: on" : ", UI access: off (" + uiAccessOff + ")"));
+        (asSystem || command.host ? std::string() : uiAccess ? std::string(", UI access: on") + (harden ? ", hardened" : ", not hardened (" + hardenOffReason + ")") : ", UI access: off (" + accessOff + ")"));
 }
 // Starts or switches the core to match the console session and its input desktop; mutex held.
 void apply() {
@@ -305,7 +360,10 @@ void apply() {
             ++quickExits; retryAt = GetTickCount64() + 1000ull * (quickExits < 10 ? quickExits : 10);
             if (quickExits <= 3 || quickExits % 20 == 0)
                 logLine(command.directory, "core ended after " + std::to_string(ran) + " ms (exit " + std::to_string(code) + " / " + hex + ", " + std::to_string(quickExits) + " in a row)");
-            if (coreUiAccess) {
+            if (coreHardened) {
+                hardenOff = true; hardenOffReason = "a hardened core ended after " + std::to_string(ran) + " ms, exit " + hex;
+                logLine(command.directory, "running the core without hardening from now on (" + hardenOffReason + ")");
+            } else if (coreUiAccess) {
                 ++uiAccessFailures; unsigned wait = 30 * uiAccessFailures;
                 uiAccessRetryAt = GetTickCount64() + 1000ull * wait;
                 uiAccessOff = "a core with UI access ended after " + std::to_string(ran) + " ms, exit " + hex + ", " + std::to_string(uiAccessFailures) + " in a row";
@@ -357,6 +415,12 @@ std::string handle(HANDLE pipe, const std::string& request) {
     std::lock_guard<std::mutex> lock(mutex);
     auto reply = [&]() { return "OK\t" + std::string(wanted && coreRunning() ? "1" : "0") + '\t' + narrow(command.log); };
     if (f[0] == "STATUS") return reply();
+    if (f[0] == "APPROVAL") {
+        if (command.host || clientSid(pipe) != command.sid) return "OK\t0\t";
+        auto pending = pendingHosts(command); std::string list;
+        for (auto& fp : pending) list += (list.empty() ? "" : ",") + fp;
+        return "OK\t" + std::to_string(pending.size()) + "\t" + list;
+    }
     if (f[0] == "STOP") { wanted = false; stopCore(); return reply(); }
     // DESKTOP is a test hook: acting as if a secure desktop were shown starts the core with the
     // SYSTEM token on the user's desktop, so only an elevated administrator may use it.
@@ -404,7 +468,12 @@ std::string handle(HANDLE pipe, const std::string& request) {
     secureDirectory(next.directory, next.sid);
     for (auto sub : { L"\\SSL", L"\\SSL\\Fingerprints" }) secureDirectory(next.directory + sub, next.sid);
     writeFile(next.directory + L"\\SSL\\Barrier.pem", pem);
-    writeFile(next.directory + (host ? L"\\SSL\\Fingerprints\\TrustedClients.txt" : L"\\SSL\\Fingerprints\\TrustedServers.txt"), trusted);
+    if (host) writeFile(next.directory + L"\\SSL\\Fingerprints\\TrustedClients.txt", trusted);
+    else {
+        // Upgrading: the hosts the service already let onto the sign-in screen stay approved.
+        if (GetFileAttributesW(approvedFile(next.sid).c_str()) == INVALID_FILE_ATTRIBUTES) writeFile(approvedFile(next.sid), readText(approvedTrustFile(next)));
+        next.trusted = trusted; writeApprovedTrust(next);
+    }
     if (host) writeFile(next.directory + L"\\windows-windows.conf", config);
     next.log = next.directory + (host ? L"\\server.log" : L"\\windows.log");
     stopCore(); command = next; wanted = true; failures = 0;
@@ -560,7 +629,26 @@ int sasTest() {
     std::printf("PASS: Ctrl+Alt+Del event reached SendSAS for a receiver (a repeat within 3 s ignored), not for a host, and only allows setting it\n");
     return 0;
 }
+// --approve <user SID> <fingerprint>[,<fingerprint>...]: run elevated by the app after pairing.
+int approve(const std::wstring& sid, const std::wstring& list) {
+    BYTE admins[SECURITY_MAX_SID_SIZE]; DWORD size = sizeof(admins); BOOL member = FALSE;
+    if (!CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, admins, &size) || !CheckTokenMembership(nullptr, admins, &member) || !member) { std::printf("needs an administrator\n"); return 5; }
+    if (sid.size() < 8 || sid.size() > 200 || sid.compare(0, 4, L"S-1-") || sid.find_first_not_of(L"S0123456789-") != std::wstring::npos) { std::printf("invalid user\n"); return 2; }
+    std::string text = narrow(list); for (auto& c : text) if (c == ',') c = '\n';
+    auto add = fingerprints(text);
+    if (add.empty()) { std::printf("nothing to approve\n"); return 2; }
+    std::wstring state = moduleDirectory() + L"\\state";
+    try {
+        secureDirectory(state, L""); secureDirectory(state + L"\\" + sid, sid);
+        auto approved = approvedHosts(sid);
+        for (auto& fp : add) if (std::find(approved.begin(), approved.end(), fp) == approved.end()) approved.push_back(fp);
+        std::string out; for (auto& fp : approved) out += fp + "\n";
+        writeFile(approvedFile(sid), out);
+    } catch (const std::exception& e) { std::printf("%s\n", e.what()); return 1; }
+    return 0;
+}
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 4 && std::wstring(argv[1]) == L"--approve") return approve(argv[2], argv[3]);
     if (argc == 2 && std::wstring(argv[1]) == L"--desk-watch") return watchDesktop();
     if (argc == 2 && std::wstring(argv[1]) == L"--sas-test") return sasTest();
     // --console runs the same loop in the foreground for testing as an administrator.

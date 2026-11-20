@@ -29,6 +29,47 @@ def entry_point(info, direction):
             "up": (x + width // 2, y + height - 1), "down": (x + width // 2, y)}[direction]
 
 
+# Plain text on the Windows clipboard (CF_UNICODETEXT), for the text clipboard check.
+def windows_clipboard(text=None):
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL("user32", use_last_error=True); kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.GetClipboardData.restype = wintypes.HANDLE; user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL; kernel32.GlobalLock.restype = ctypes.c_void_p; kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    for _ in range(50):
+        if user32.OpenClipboard(None): break
+        time.sleep(.05)
+    else: raise AssertionError("Cannot open the clipboard")
+    try:
+        if text is None:
+            handle = user32.GetClipboardData(13)
+            if not handle: return None
+            pointer = kernel32.GlobalLock(handle)
+            try: return ctypes.wstring_at(pointer)
+            finally: kernel32.GlobalUnlock(handle)
+        data = (text + "\0").encode("utf-16-le")
+        handle = kernel32.GlobalAlloc(0x0002, len(data)); pointer = kernel32.GlobalLock(handle)
+        ctypes.memmove(pointer, data, len(data)); kernel32.GlobalUnlock(handle)
+        user32.EmptyClipboard()
+        assert user32.SetClipboardData(13, handle), "SetClipboardData failed"
+    finally:
+        user32.CloseClipboard()
+
+
+def marshal_text(text):
+    data = text.encode("utf-8")
+    return struct.pack("!III", 1, 0, len(data)) + data
+
+
+def unmarshal_text(blob):
+    count, = struct.unpack_from("!I", blob); offset = 4
+    for _ in range(count):
+        kind, size = struct.unpack_from("!II", blob, offset); offset += 8
+        if kind == 0: return blob[offset:offset + size].decode("utf-8")
+        offset += size
+    return None
+
+
 def wait_cursor(expected):
     from ctypes import wintypes
     user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -265,6 +306,10 @@ for role, direction, via_service in runs:
                     # The pairing identity and trust travel as data, exactly as Cursorway.exe sends them.
                     import base64
                     data = lambda path: base64.b64encode(path.read_bytes()).decode()
+                    sid = subprocess.check_output(["whoami", "/user", "/fo", "csv", "/nh"], text=True).strip().split(",")[-1].strip('"')
+                    host_fp = (client_profile / "SSL/Fingerprints/TrustedServers.txt").read_text().split()[0]
+                    approved = subprocess.run([str(binary / "cursorway-service.exe"), "--approve", sid, host_fp], capture_output=True, text=True)
+                    assert approved.returncode == 0, "Approving the host failed: " + approved.stdout + approved.stderr
                     reply = service_request("START", "receiver", "127.0.0.1:" + str(port), data(client_profile / "SSL/Barrier.pem"),
                                             data(client_profile / "SSL/Fingerprints/TrustedServers.txt"), "", "windows", str(client_profile))
                     service_log = pathlib.Path(reply[2])
@@ -346,6 +391,34 @@ for role, direction, via_service in runs:
                         driver("--cursor-hidden")
                         digest, size, _ = wire.read_clipboard()
                         assert digest == hashlib.sha256(local_bytes).digest() and size == len(local_bytes)
+                        if via_service:
+                            notes = (service_log.parent / "service.log").read_text(errors="replace")
+                            assert ", UI access: on, hardened" in notes, "The service did not start the hardened UI access core: " + notes[-3000:]
+                            assert "--harden" in notes and "--trusted-servers" in notes, "Hardened core command line is missing its options"
+                            # Plain text both ways under that core.
+                            to_windows, to_host = "Cursorway 文字剪貼簿 ✓ host→Windows", "Cursorway 文字剪貼簿 ✓ Windows→host"
+                            wire.send(b"CINN" + struct.pack("!hhIH", *entry, 43, 0)); wait_cursor(entry)
+                            blob = marshal_text(to_windows)
+                            def string(value): return struct.pack("!I", len(value)) + value
+                            for mark, body in ((1, str(len(blob)).encode()), (2, blob), (3, b"")):
+                                wire.send(b"DCLP" + struct.pack("!BIB", 0, 43, mark) + string(body))
+                            deadline = time.monotonic() + 5
+                            while windows_clipboard() != to_windows and time.monotonic() < deadline: time.sleep(.1)
+                            assert windows_clipboard() == to_windows, "Text from the host did not reach the Windows clipboard: %r" % windows_clipboard()
+                            windows_clipboard(to_host); time.sleep(.5)
+                            wire.send(b"COUT")
+                            assembled = b""; text_back = None
+                            for _ in range(2000):
+                                message = wire.receive()
+                                if message.startswith(b"DCLP"):
+                                    identifier, _, mark = struct.unpack_from("!BIB", message, 4); length, = struct.unpack_from("!I", message, 10)
+                                    body = message[14:14 + length]
+                                    if identifier != 0: continue
+                                    if mark == 1: assembled = b""
+                                    elif mark == 2: assembled += body
+                                    elif mark == 3: text_back = unmarshal_text(assembled); break
+                            assert text_back == to_host, "Text from Windows did not reach the host: %r" % text_back
+                            print("PASS: hardened UI access core (service): file clipboard both ways, Explorer paste and plain text both ways", flush=True)
                     assert (source / name).read_bytes() == local_bytes, "Source file changed"
                     assert (destination / name).read_bytes() == peer_bytes, "Paste contained stale or wrong bytes"
                     print("PASS: real Windows " + role + (" started by the service as SYSTEM" if via_service else "") + " direction=" + direction + ", simulated TLS peer, bidirectional file clipboard, actual Explorer copy/paste, distinct peer bytes and original preserved" + (", native client edge entry/return verified" if role == "client" else ", ordinary edge jitter, hidden host cursor, intentional return and 50 fast returns to the edge verified"))

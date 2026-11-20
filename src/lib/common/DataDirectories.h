@@ -39,7 +39,11 @@ public:
     static fs::path trusted_servers_ssl_fingerprints_path();
     static fs::path trusted_clients_ssl_fingerprints_path();
     static fs::path ssl_certificate_path();
+    // A trusted-servers file outside the profile (the Windows service keeps the approved list
+    // where the user cannot change it); empty: the one in the profile.
+    static void trusted_servers_file(const fs::path& path);
 private:
+    static fs::path _trustedServers;
     static fs::path _profile;
     static fs::path _global;
     static fs::path _systemconfig;

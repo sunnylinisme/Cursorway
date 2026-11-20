@@ -25,9 +25,45 @@
 #include "base/Log.h"
 #include "base/String.h"
 #include "io/filesystem.h"
+#include "common/DataDirectories.h"
 
 #ifdef WINAPI_MSWINDOWS
 #include <VersionHelpers.h>
+#include <aclapi.h>
+#include <sddl.h>
+
+// --harden (the Windows service's receiver core, which may type into windows run as administrator):
+// other programs of the same user may not open this process or its threads to change them, and only
+// Microsoft-signed DLLs may load into it, which keeps out hook and injected DLLs. The input, the
+// clipboard and drag and drop work as before (same user, same integrity level).
+static void hardenProcess()
+{
+    // SYSTEM and Administrators keep full access; the owner (this user) may only query and wait.
+    const wchar_t* sddl = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101000;;;OW)";
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &descriptor, nullptr)) {
+        BOOL present = FALSE, defaulted = FALSE; PACL dacl = nullptr;
+        GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted);
+        DWORD process = SetSecurityInfo(GetCurrentProcess(), SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, dacl, nullptr);
+        DWORD thread = SetSecurityInfo(GetCurrentThread(), SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION, nullptr, nullptr, dacl, nullptr);
+        // Threads started later get the same protection.
+        HANDLE token = nullptr; DWORD tokenResult = ERROR_ACCESS_DENIED;
+        if (OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_DEFAULT, &token)) {
+            TOKEN_DEFAULT_DACL value{dacl};
+            tokenResult = SetTokenInformation(token, TokenDefaultDacl, &value, sizeof(value)) ? ERROR_SUCCESS : GetLastError();
+            CloseHandle(token);
+        }
+        LocalFree(descriptor);
+        if (process != ERROR_SUCCESS || thread != ERROR_SUCCESS || tokenResult != ERROR_SUCCESS)
+            LOG((CLOG_WARN "harden: process %lu, thread %lu, token %lu", process, thread, tokenResult));
+    }
+    // SetProcessMitigationPolicy(ProcessSignaturePolicy = 8, { MicrosoftSignedOnly = bit 0 }), Windows 8+.
+    using SetPolicy = BOOL (WINAPI*)(int, PVOID, SIZE_T);
+    auto setPolicy = reinterpret_cast<SetPolicy>(GetProcAddress(GetModuleHandleW(L"kernel32.dll"), "SetProcessMitigationPolicy"));
+    DWORD signature = 1;
+    BOOL signedOnly = setPolicy && setPolicy(8, &signature, sizeof(signature));
+    LOG((CLOG_NOTE "harden: other programs cannot change this process; Microsoft-signed DLLs only: %s", signedOnly ? "on" : "off"));
+}
 #endif
 
 ArgsBase* ArgParser::m_argsBase = NULL;
@@ -115,6 +151,10 @@ ArgParser::parseClientArgs(ClientArgs& args, int argc, const char* const* argv)
         }
         else if (isArg(i, argc, argv, NULL, "--wheel-invert")) {
             args.m_wheelInvert = true;
+        }
+        else if (isArg(i, argc, argv, NULL, "--trusted-servers", 1)) {
+            // the hosts this receiver accepts, from a file the user cannot change (Windows service)
+            barrier::DataDirectories::trusted_servers_file(barrier::fs::u8path(argv[++i]));
         }
         else {
             if (i + 1 == argc) {
@@ -266,6 +306,11 @@ ArgParser::parseGenericArgs(int argc, const char* const* argv, int& i)
     }
     else if (isArg(i, argc, argv, NULL, "--client")) {
         // HACK: stop error happening when using portable (barrierp)
+    }
+    else if (isArg(i, argc, argv, NULL, "--harden")) {
+#ifdef WINAPI_MSWINDOWS
+        hardenProcess();
+#endif
     }
     else if (isArg(i, argc, argv, NULL, "--file-clipboard")) {
         argsBase().m_fileClipboard = true;

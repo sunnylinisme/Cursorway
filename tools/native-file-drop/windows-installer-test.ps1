@@ -261,6 +261,29 @@ $reply = Invoke-Service "START`thost`t-`tbm90IGEga2V5`t`t$config`twindows-host`t
 if ($reply[0] -ne 'ERROR') { throw 'Service accepted pairing data without a private key.' }
 $reply = Invoke-Service "START`thost`t-`t$pem`t`t$config`twindows-host`trelative\path"
 if ($reply[0] -ne 'ERROR') { throw 'Service accepted a relative profile folder.' }
+# A newly paired host: the user's own core trusts it at once, but the cores with raised rights (SYSTEM on
+# the sign-in and UAC screens, UI access for windows run as administrator) only after an administrator allows it.
+$hostFp = 'v2:sha256:' + ('ab' * 32)
+$trusted = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$hostFp`n"))
+$reply = Invoke-Service "START`treceiver`t127.0.0.1:1`t$pem`t$trusted`t`twindows`t$serviceProfile"
+if ($reply[0] -ne 'OK') { throw "Service refused the receiver START: $($reply -join ' ')" }
+$receiverState = Split-Path $reply[2]
+$systemTrust = Join-Path $receiverState 'SSL\Fingerprints\TrustedServers.txt'
+$approval = Invoke-Service 'APPROVAL'
+if ($approval[1] -ne '1' -or $approval[2] -ne $hostFp) { throw "Service did not report the host as waiting for approval: $($approval -join ' ')" }
+if ((Get-Content -LiteralPath $systemTrust -Raw) -match 'abab') { throw 'A host nobody approved reached the trust list of the SYSTEM core.' }
+Start-Sleep -Seconds 1
+if (-not (Get-Content -LiteralPath (Join-Path $receiverState 'service.log') -Raw).Contains('not yet allowed by an administrator')) { throw 'The user core got UI access for a host nobody approved.' }
+& (Join-Path $installDir 'cursorway-service.exe') --approve ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) $hostFp
+if ($LASTEXITCODE -ne 0) { throw "Approving the host failed (exit $LASTEXITCODE)." }
+$approval = Invoke-Service 'APPROVAL'
+if ($approval[1] -ne '0') { throw "Host still waits for approval after it was approved: $($approval -join ' ')" }
+$reply = Invoke-Service "START`treceiver`t127.0.0.1:1`t$pem`t$trusted`t`twindows`t$serviceProfile"
+$deadline = [DateTime]::UtcNow.AddSeconds(20)
+while (-not (Get-Content -LiteralPath (Join-Path $receiverState 'service.log') -Raw).Contains(', UI access: on, hardened') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+if (-not (Get-Content -LiteralPath (Join-Path $receiverState 'service.log') -Raw).Contains(', UI access: on, hardened')) { throw "The approved host did not get the hardened UI access core: $(Get-Content -LiteralPath (Join-Path $receiverState 'service.log') -Raw)" }
+if (-not (Get-Content -LiteralPath $systemTrust -Raw).Contains($hostFp)) { throw 'The approved host is missing from the trust list of the SYSTEM core.' }
+$reply = Invoke-Service 'STOP'
 
 $startupRoot = Join-Path $TestRoot '已安裝啟動 startup'
 Invoke-TestProcess $shortcuts[0] @('--startup-test', $startupRoot) 45 $true

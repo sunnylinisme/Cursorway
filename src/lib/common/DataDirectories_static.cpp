@@ -22,6 +22,12 @@ namespace barrier {
 fs::path DataDirectories::_profile;
 fs::path DataDirectories::_global;
 fs::path DataDirectories::_systemconfig;
+fs::path DataDirectories::_trustedServers;
+
+void DataDirectories::trusted_servers_file(const fs::path& path)
+{
+    _trustedServers = path;
+}
 
 static const char kFingerprintsDirName[] = "SSL/Fingerprints";
 static const char kFingerprintsLocalFilename[] = "Local.txt";
@@ -40,6 +46,7 @@ fs::path DataDirectories::local_ssl_fingerprints_path()
 
 fs::path DataDirectories::trusted_servers_ssl_fingerprints_path()
 {
+    if (!_trustedServers.empty()) return _trustedServers;
     return ssl_fingerprints_path() / kFingerprintsTrustedServersFilename;
 }
 

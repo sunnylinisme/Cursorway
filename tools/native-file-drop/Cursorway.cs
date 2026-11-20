@@ -72,7 +72,7 @@ static class ShareSettings
     public static void Save(bool host, string address)
     {
         Directory.CreateDirectory(Root);
-        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), new XAttribute("appearance", Appearance), Advanced.ToXml(),
+        var document = new XDocument(new XElement("settings", new XAttribute("host", host), new XAttribute("address", address), new XAttribute("position", Position), new XAttribute("appearance", Appearance), new XAttribute("secureDeclined", SecureDeclined), Advanced.ToXml(),
             new XElement("layout", Layout.Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("x", item.Value.X), new XAttribute("y", item.Value.Y)))),
             GridXml("grid", Cols, Rows, HostAt, Preset, null), Custom == null ? null : GridXml("custom", Custom.Cols, Custom.Rows, Custom.Host, null, Custom.Cells),
             new XElement("numbers", Numbers.Where(item => item.Value >= 2 && item.Value <= 9).Select(item => new XElement("screen", new XAttribute("fingerprint", item.Key), new XAttribute("number", item.Value)))),
@@ -94,6 +94,7 @@ static class ShareSettings
         Position = Directions.Contains(position) ? position : "right";
         string appearance = (string)root.Attribute("appearance");
         Appearance = Appearances.Contains(appearance) ? appearance : "system";
+        SecureDeclined = (string)root.Attribute("secureDeclined") ?? "";
         Advanced = ShareAdvanced.FromXml(root.Element("advanced"));
         var platforms = root.Element("platforms");
         if (platforms != null) foreach (var peer in platforms.Elements("peer")) {
@@ -149,6 +150,9 @@ static class ShareSettings
         return grid;
     }
     public static ShareAdvanced Advanced = new ShareAdvanced();
+    // The paired hosts (as the service lists them) the user chose not to allow on the sign-in and
+    // administrator screens; asked again only when that list changes.
+    public static string SecureDeclined = "";
     // Paired receivers (host role) in pairing order, and where each sits relative to this host (0,0)
     // (up to 8 cells away on the arrange grid); x grows to the right and y downwards.
     public static List<string> Receivers = new List<string>();
@@ -1151,6 +1155,8 @@ sealed class ShareWindow : Form
         menu.Items.Add(trayArrange);
         menu.Items.Add("進階設定…", null, delegate { ShowWindow(); ShowAdvanced(); });
         menu.Items.Add(trayLogin); menu.Items.Add(new ToolStripSeparator());
+        trayApprove = new ToolStripMenuItem("允許操作登入與系統管理員畫面…", null, delegate { Approve(); }) { Visible = false };
+        menu.Items.Add(trayApprove);
         menu.Items.Add("診斷紀錄", null, delegate { ShowWindow(); ShowDiagnostics(); });
         menu.Items.Add("檢查更新", null, delegate { manualUpdateCheck = true; CheckUpdate(); });
         menu.Items.Add(new ToolStripSeparator());
@@ -1705,6 +1711,37 @@ sealed class ShareWindow : Form
         dialog.Dispose(); UpdateControls();
     }
     void CloseConsent() { var dialog = consent; consent = null; consentId = null; if (dialog != null) dialog.Close(); }
+    // Receiver with the service: a newly paired host may control the sign-in, lock and UAC screens
+    // and windows run as administrator only after an administrator allows it once (UAC). Until then
+    // everything else works as usual.
+    ToolStripMenuItem trayApprove; string approvalPending;
+    void CheckApproval()
+    {
+        if (Host || testing || backend == null) return;
+        string[] reply; try { reply = ShareService.Request("APPROVAL", 3000); } catch (Exception) { return; }
+        approvalPending = reply[1] == "0" ? null : reply[2];
+        trayApprove.Visible = approvalPending != null;
+        if (approvalPending == null || ShareSettings.SecureDeclined == approvalPending) return;
+        var answer = MessageBox.Show(this, "要讓配對的電腦也能操作這台的登入畫面、鎖定畫面、UAC 視窗，以及以系統管理員身分執行的視窗嗎？\n\n" +
+            "這需要系統管理員按一次「是」。選「否」的話，平常的鍵盤滑鼠和複製貼上都照常，只有這些畫面不能從另一台操作；之後可以從系統匣選單的「允許操作登入與系統管理員畫面…」再允許。",
+            "Cursorway", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (answer == DialogResult.Yes) Approve(); else { ShareSettings.SecureDeclined = approvalPending; Save(); }
+    }
+    void Approve()
+    {
+        if (approvalPending == null) return;
+        try {
+            var start = new ProcessStartInfo(Path.Combine(ShareSettings.Bin, "cursorway-service.exe"),
+                "--approve " + System.Security.Principal.WindowsIdentity.GetCurrent().User.Value + " " + approvalPending) { UseShellExecute = true, Verb = "runas", WindowStyle = ProcessWindowStyle.Hidden };
+            using (var process = Process.Start(start)) {
+                if (!process.WaitForExit(15000) || process.ExitCode != 0) { status.Text = "無法允許（代碼 " + (process.HasExited ? process.ExitCode.ToString() : "逾時") + "）；詳情見診斷紀錄。"; return; }
+            }
+            approvalPending = null; trayApprove.Visible = false; ShareSettings.SecureDeclined = ""; Save();
+            LogLine("系統管理員已允許配對的電腦操作登入、鎖定、UAC 與系統管理員畫面。");
+            // The service gives the new core those rights at its next start.
+            StopBackend(); StartBackend(); status.Text = "已允許，正在重新連線…";
+        } catch (System.ComponentModel.Win32Exception e) { status.Text = e.NativeErrorCode == 1223 ? "沒有允許；登入與系統管理員畫面仍不能從另一台操作。" : "無法允許：" + e.Message; }
+    }
     void StartBackend()
     {
         if (backend != null || !enabled) return;
@@ -1722,6 +1759,7 @@ sealed class ShareWindow : Form
                 }
                 serviceTail.Start(); LogLine("背景服務已啟動核心：平常以你的身分執行，登入、鎖定、UAC 畫面時改用系統身分 · " + Path.GetDirectoryName(serviceLog));
                 connectedAddress = address.Text; status.Text = "配對已驗證，正在連線…"; UpdateControls();
+                if (!Host) BeginInvoke((Action)CheckApproval);
                 return;
             } catch (Exception e) { backend = null; serviceLog = null; LogLine("背景服務無法使用，改由這個程式啟動：" + e.Message); }
         }
@@ -1970,7 +2008,9 @@ sealed class ShareWindow : Form
     // The receiver core's UI access, which lets it control windows run as administrator (an elevated CMD, installers).
     internal static string UiAccessNote(string line)
     {
+        if (line.Contains(", UI access: on, not hardened (")) return "UI 存取：開啟，但沒有加強保護（" + line.Substring(line.IndexOf(", not hardened (", StringComparison.Ordinal) + 16).TrimEnd(')') + "）";
         if (line.Contains(", UI access: on")) return "UI 存取：開啟（可以操作以系統管理員執行的視窗）";
+        if (line.Contains("not yet allowed by an administrator")) return "UI 存取：關閉，新配對的電腦還沒有經系統管理員允許操作系統管理員畫面；可從系統匣選單「允許操作登入與系統管理員畫面…」允許。";
         int at = line.IndexOf(", UI access: off (", StringComparison.Ordinal);
         if (at >= 0) return "UI 存取：關閉，以系統管理員執行的視窗（例如系統管理員 CMD）暫時無法操作。原因：" + line.Substring(at + 18).TrimEnd(')');
         if (line.Contains("UI access off until the service restarts")) return "UI 存取：連續多次啟動失敗，已關閉到背景服務重新啟動（重開機）為止。";

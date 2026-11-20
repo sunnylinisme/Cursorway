@@ -105,7 +105,8 @@ with tempfile.TemporaryDirectory(prefix="cursorway-resume-") as temporary:
         with socket.socket() as listener:
             listener.bind(("127.0.0.1", 0)); listener.listen(4); listener.settimeout(40)
             port = listener.getsockname()[1]
-            core = subprocess.Popen([str(binary / "cursorway-client.exe"), "-f", "--no-tray", "--debug", "DEBUG1", "--file-clipboard",
+            # --harden: the receiver core the service starts with UI access runs hardened; resuming must work there.
+            core = subprocess.Popen([str(binary / "cursorway-client.exe"), "-f", "--no-tray", "--debug", "DEBUG1", "--file-clipboard", "--harden",
                                      "--profile-dir", str(profile), "--log", str(log), "--name", "windows", "127.0.0.1:" + str(port)],
                                     stdout=console, stderr=subprocess.STDOUT)
 

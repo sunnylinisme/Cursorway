@@ -110,6 +110,12 @@ final class ShareSettings {
         return Bundle.main.executableURL!.deletingLastPathComponent()
     }
     static func profile(_ host: Bool) -> URL { root.appendingPathComponent(host ? "profile-server" : "profile", isDirectory: true) }
+    // Read by the core at start: drop the kept partial transfer so the next one starts from the beginning.
+    static func discardResume(_ host: Bool) {
+        let cache = profile(host).appendingPathComponent("FileClipboardCache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try? Data().write(to: cache.appendingPathComponent("discard-resume"))
+    }
     static func run(_ name: String, _ arguments: [String], allowFailure: Bool = false) throws -> String {
         let process = Process(), output = Pipe(), done = DispatchSemaphore(value: 0)
         process.executableURL = bin.appendingPathComponent(name); process.arguments = arguments
@@ -1514,7 +1520,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     @objc func searchNow() { send("SEARCH"); status.stringValue = "正在搜尋同一區網的電腦…" }
     @objc func resume() {
         // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
-        if transferring { transferring = false; stopBackend(); startBackend(); status.stringValue = "已取消檔案傳送，正在重新連線…"; return }
+        // A cancel also tells the core to throw away the partial copy instead of keeping it for a resume.
+        if transferring { transferring = false; ShareSettings.discardResume(options.host); stopBackend(); startBackend(); status.stringValue = "已取消檔案傳送，正在重新連線…"; return }
         enabled = true; startLink(); updateControls()
     }
     @objc func pause() { enabled = false; stopLink(); stopBackend(); status.stringValue = "已暫停；不接受邀請，也不會自動重連。"; updateControls() }

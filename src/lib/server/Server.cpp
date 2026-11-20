@@ -349,6 +349,18 @@ Server::adoptClient(BaseClientProxy* client)
 		client->screensaver(true);
 	}
 
+	// the screen that had the cursor dropped out moments ago and nobody switched since:
+	// put the cursor back where it was
+	if (!m_rejoinName.empty() && m_rejoinName == getName(client) && m_active == m_primaryClient &&
+			m_activeSaver == NULL && ARCH->time() - m_rejoinTime < 8.0) {
+		SInt32 dx, dy, dw, dh;
+		client->getShape(dx, dy, dw, dh);
+		SInt32 x = std::max(dx, std::min(m_rejoinX, dx + dw - 1)), y = std::max(dy, std::min(m_rejoinY, dy + dh - 1));
+		LOG((CLOG_INFO "client \"%s\" is back, returning the cursor to it", getName(client).c_str()));
+		m_rejoinName.clear();
+		switchScreen(client, x, y, false);
+	}
+
 	// send notification
 	Server::ScreenConnectedInfo* info =
 		new Server::ScreenConnectedInfo(getName(client));
@@ -464,6 +476,8 @@ Server::switchScreen(BaseClientProxy* dst,
 	}
 #endif
 	assert(m_active != NULL);
+	// a deliberate switch: a screen that drops out later starts over
+	m_rejoinName.clear();
 
 	LOG((CLOG_INFO "switch from \"%s\" to \"%s\" at %d,%d", getName(m_active).c_str(), getName(dst).c_str(), x, y));
 
@@ -2336,6 +2350,11 @@ Server::forceLeaveClient(BaseClientProxy* client)
 	BaseClientProxy* active =
 		(m_activeSaver != NULL) ? m_activeSaver : m_active;
 	if (active == client) {
+		// remember where the cursor was, in case this screen reconnects right away
+		if (m_activeSaver == NULL && client != m_primaryClient) {
+			m_rejoinName = getName(client); m_rejoinX = m_x; m_rejoinY = m_y; m_rejoinTime = ARCH->time();
+		}
+
 		// record new position (center of primary screen)
 		m_primaryClient->getCursorCenter(m_x, m_y);
 

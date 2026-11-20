@@ -168,9 +168,13 @@ HANDLE winlogonToken(DWORD session) {
     DWORD uiAccess = 1; SetTokenInformation(result, TokenUIAccess, &uiAccess, sizeof(uiAccess));
     return result;
 }
-// On some computers a user core started with UI access ends at once (before it writes its log);
-// once that is seen the core runs without it, which keeps the connection working.
-bool userUiAccess = true;
+// On some computers a user core started with UI access ends at once (before it writes its log).
+// The core then runs without it, which keeps the connection working, and UI access is tried
+// again after a growing pause; only after several quick exits in a row is it left off until
+// the service restarts. uiAccessOff says why it is off, for the diagnostics.
+constexpr unsigned uiAccessGiveUp = 5;
+unsigned uiAccessFailures = 0; ULONGLONG uiAccessRetryAt = 0; std::string uiAccessOff;
+bool uiAccessAllowed() { return uiAccessFailures == 0 || (uiAccessFailures < uiAccessGiveUp && GetTickCount64() >= uiAccessRetryAt); }
 HANDLE userToken(DWORD session, bool uiAccess = false) {
     HANDLE token = nullptr, primary = nullptr;
     if (!WTSQueryUserToken(session, &token)) return nullptr;
@@ -230,7 +234,7 @@ void stopCore() {
 void startCore(DWORD session, bool asSystem, const std::string& why) {
     stopCore();
     // Only the receiver types into other windows; the host reads input through its hook and needs no UI access.
-    bool uiAccess = !asSystem && !command.host && userUiAccess;
+    bool uiAccess = !asSystem && !command.host && uiAccessAllowed();
     HANDLE token = asSystem ? winlogonToken(session) : userToken(session, uiAccess);
     if (!token) throw std::runtime_error("No signed-in user in the console session");
     std::wstring bin = moduleDirectory(), profile = asSystem ? command.directory : command.userProfile, log = asSystem ? command.log : command.userLog;
@@ -264,7 +268,8 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
     logLine(command.directory, "command: " + narrow(line));
     if (!ok) throw std::runtime_error("Cannot start core (error " + std::to_string(error) + ")");
     coreSession = session; coreSystem = asSystem; coreStartedAt = GetTickCount64(); coreUiAccess = uiAccess;
-    logLine(command.directory, "core now runs as " + std::string(asSystem ? "SYSTEM" : "the signed-in user") + " (" + why + "), " + (command.host ? "host" : "receiver") + ", session " + std::to_string(session) + ", log " + narrow(log));
+    logLine(command.directory, "core now runs as " + std::string(asSystem ? "SYSTEM" : "the signed-in user") + " (" + why + "), " + (command.host ? "host" : "receiver") + ", session " + std::to_string(session) + ", log " + narrow(log) +
+        (asSystem || command.host ? std::string() : uiAccess ? ", UI access: on" : ", UI access: off (" + uiAccessOff + ")"));
 }
 // Starts or switches the core to match the console session and its input desktop; mutex held.
 void apply() {
@@ -279,7 +284,15 @@ void apply() {
     HANDLE user = userToken(session); bool signedIn = user != nullptr; if (user) CloseHandle(user);
     bool secure = !desktop.empty() && _stricmp(desktop.c_str(), "Default") != 0;
     bool asSystem = !signedIn || secure;
-    if (coreRunning() && session == coreSession && asSystem == coreSystem) { failures = 0; return; }
+    if (coreRunning() && session == coreSession && asSystem == coreSystem) {
+        failures = 0;
+        // A core that keeps running with UI access clears the count of quick exits.
+        if (coreUiAccess && uiAccessFailures > 0 && GetTickCount64() - coreStartedAt >= 3000) { uiAccessFailures = 0; uiAccessOff.clear(); logLine(command.directory, "UI access works again"); }
+        // Time to try UI access again: restart the user core with it (the link reconnects in about a second).
+        bool retry = !coreSystem && !command.host && !coreUiAccess && uiAccessFailures > 0 && uiAccessAllowed();
+        if (!retry) return;
+        logLine(command.directory, "trying UI access again (" + std::to_string(uiAccessFailures) + " quick exits so far)");
+    }
     static ULONGLONG retryAt = 0;
     static unsigned quickExits = 0;
     if (core.hProcess && !coreRunning()) {
@@ -291,7 +304,13 @@ void apply() {
             ++quickExits; retryAt = GetTickCount64() + 1000ull * (quickExits < 10 ? quickExits : 10);
             if (quickExits <= 3 || quickExits % 20 == 0)
                 logLine(command.directory, "core ended after " + std::to_string(ran) + " ms (exit " + std::to_string(code) + " / " + hex + ", " + std::to_string(quickExits) + " in a row)");
-            if (coreUiAccess) { userUiAccess = false; logLine(command.directory, "running the core without UI access from now on"); }
+            if (coreUiAccess) {
+                ++uiAccessFailures; unsigned wait = 30 * uiAccessFailures;
+                uiAccessRetryAt = GetTickCount64() + 1000ull * wait;
+                uiAccessOff = "a core with UI access ended after " + std::to_string(ran) + " ms, exit " + hex + ", " + std::to_string(uiAccessFailures) + " in a row";
+                if (uiAccessFailures >= uiAccessGiveUp) { uiAccessOff += "; left off until the service restarts"; logLine(command.directory, "UI access off until the service restarts (" + std::to_string(uiAccessFailures) + " quick exits in a row)"); }
+                else { uiAccessOff += "; retrying in " + std::to_string(wait) + " s"; logLine(command.directory, "running the core without UI access for now; retrying it in " + std::to_string(wait) + " s"); }
+            }
         } else {
             quickExits = 0;
             logLine(command.directory, "core ended after " + std::to_string(ran / 1000) + " s (exit " + std::to_string(code) + " / " + hex + ")");

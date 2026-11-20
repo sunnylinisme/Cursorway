@@ -1945,6 +1945,16 @@ sealed class ShareWindow : Form
         using (var graphics = CreateGraphics()) File.WriteAllText(Path.Combine(directory, "LAYOUT-PASS.txt"),
             "Empty, paired-offline, available, long list with search, long-name, receiver and paused states rendered with no clipped or overlapping visible controls. Actual render DPI: " + graphics.DpiX + " x " + graphics.DpiY + ". No simulated or physical multi-DPI claim.");
     }
+    // The receiver core's UI access, which lets it control windows run as administrator (an elevated CMD, installers).
+    internal static string UiAccessNote(string line)
+    {
+        if (line.Contains(", UI access: on")) return "UI 存取：開啟（可以操作以系統管理員執行的視窗）";
+        int at = line.IndexOf(", UI access: off (", StringComparison.Ordinal);
+        if (at >= 0) return "UI 存取：關閉，以系統管理員執行的視窗（例如系統管理員 CMD）暫時無法操作。原因：" + line.Substring(at + 18).TrimEnd(')');
+        if (line.Contains("UI access off until the service restarts")) return "UI 存取：連續多次啟動失敗，已關閉到背景服務重新啟動（重開機）為止。";
+        if (line.Contains("UI access works again")) return "UI 存取：已恢復。";
+        return null;
+    }
     void FollowServiceLog()
     {
         if (serviceLog == null) return;
@@ -1963,6 +1973,7 @@ sealed class ShareWindow : Form
                         DateTime stamp;
                         if (notes && text.Length > 21 && DateTime.TryParseExact(text.Substring(1, 19), "yyyy-MM-ddTHH:mm:ss", null, System.Globalization.DateTimeStyles.None, out stamp) && stamp < serviceSince) continue;
                         if (text.Length > 0) { if (notes) Diagnose("背景服務：" + text); else LogLine(text); }
+                        string access = notes ? UiAccessNote(text) : null; if (access != null) Diagnose(access);
                     }
                 }
             } catch (IOException) { } catch (UnauthorizedAccessException) { }
@@ -2787,6 +2798,9 @@ static class ShareProgram
             }
             ShareSettings.Position = "right";
             if (!ShareSettings.Config(true).Contains(" keystroke(Control+Alt+Right) = switchInDirection(right)\n keystroke(Control+Alt+Left) = switchInDirection(left)\nend\n")) throw new Exception("Hotkey syntax changed");
+            // The service's UI access lines become readable notes in the diagnostics.
+            if (ShareWindow.UiAccessNote("[2026-11-20T10:00:00] core now runs as the signed-in user (input desktop Default), receiver, session 1, log x, UI access: off (a core with UI access ended after 40 ms, exit 0xC0000142, 1 in a row; retrying in 30 s)") != "UI 存取：關閉，以系統管理員執行的視窗（例如系統管理員 CMD）暫時無法操作。原因：a core with UI access ended after 40 ms, exit 0xC0000142, 1 in a row; retrying in 30 s"
+                || ShareWindow.UiAccessNote("x, UI access: on") == null || ShareWindow.UiAccessNote("core now runs as SYSTEM (input desktop Winlogon), receiver") != null) throw new Exception("UI access diagnostics note is wrong");
             var meter = new ShareProgress(); meter.Reset(); var t0 = DateTime.UtcNow;
             string first = meter.Describe("[2026-11-12T10:00:00] INFO: file clipboard: progress sent 1048576 bytes", t0.AddSeconds(1));
             string second = meter.Describe("[2026-11-12T10:00:01] INFO: file clipboard: progress received 3145728 bytes", t0.AddSeconds(2));

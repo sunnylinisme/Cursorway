@@ -14,6 +14,19 @@ import tempfile
 import time
 
 binary = pathlib.Path(sys.argv[1]).resolve()
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+current = {}
+def report(kind, value, trace):
+    # Job logs need a token to read; an annotation does not.
+    import traceback
+    lines = "".join(traceback.format_exception(kind, value, trace)).splitlines()[-10:]
+    notes = current.get("notes")
+    if notes and notes.exists(): lines += ["-- service.log --"] + notes.read_text(errors="replace").splitlines()[-15:]
+    log = current.get("log")
+    if log and log.exists(): lines += ["-- core.log --"] + [l for l in log.read_text(errors="replace").splitlines() if any(k in l for k in ("ERROR", "WARN", "harden", "clipboard", "connected"))][-15:]
+    print("::error title=Clipboard test " + str(current.get("run")) + "::" + "%0A".join(l[-200:] for l in lines), flush=True)
+    sys.__excepthook__(kind, value, trace)
+sys.excepthook = report
 name = "跨機複製測試.txt"
 # Exercise many production 32 KiB chunks, not only a tiny clipboard message.
 local_bytes = bytes(range(256)) * (262144 + 1)
@@ -268,6 +281,7 @@ for role, direction, via_service in runs:
         expected = root / "expected.bin"; expected.write_bytes(peer_bytes)
         local_expected = root / "local.bin"; local_expected.write_bytes(local_bytes)
         core = None; service_log = None
+        current["run"] = (role, direction, via_service); current["log"] = root / "core.log"; current["notes"] = None
         console = open(root / "console.log", "w", encoding="utf-8")
         try:
             def pair(*args):
@@ -313,6 +327,7 @@ for role, direction, via_service in runs:
                     reply = service_request("START", "receiver", "127.0.0.1:" + str(port), data(client_profile / "SSL/Barrier.pem"),
                                             data(client_profile / "SSL/Fingerprints/TrustedServers.txt"), "", "windows", str(client_profile))
                     service_log = pathlib.Path(reply[2])
+                    current["notes"] = service_log.parent / "service.log"; current["log"] = client_profile / "windows.log"
                 else:
                     core = subprocess.Popen(args, stdout=console, stderr=subprocess.STDOUT)
                 if role == "server":

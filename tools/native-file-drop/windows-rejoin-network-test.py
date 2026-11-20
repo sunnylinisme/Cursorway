@@ -113,6 +113,10 @@ with tempfile.TemporaryDirectory(prefix="cursorway-rejoin-") as temporary:
         assert 'client "windows" is back, returning the cursor to it' in read(server_log), "host log does not say it returned the cursor"
         busy = read(server_log).count('a client with name "windows" is already connected')
         print("::notice title=Rejoin::receiver connected again %.2f s after the drop (%d busy refusals); cursor returned" % (took, busy))
+        # The host replaces the stale connection of the same receiver (same certificate) at once.
+        assert busy == 0, "host refused the reconnecting receiver %d times as already connected" % busy
+        assert "reconnected, dropping its stale connection" in read(server_log), "host did not say it replaced the stale connection"
+        assert took < 2, "reconnecting took %.2f s" % took
         second.drop()
         print("PASS: the receiver's connection dropped while it had the cursor and the host put the cursor back on it (%.2f s)" % took)
     except Exception as failure:

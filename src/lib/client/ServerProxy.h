@@ -115,7 +115,7 @@ private:
     barrier::NativeFileReceiver m_nativeReceiver;
     bool m_nativeAllowed = false;
     std::unique_ptr<barrier::AsyncFileClipboardTransfer> m_files;
-    bool m_filesEnabled = false, m_filesReady = false;
+    bool m_filesEnabled = false, m_filesReady = false, m_peerResume = false;
     Client*            m_client;
     barrier::IStream*    m_stream;
 

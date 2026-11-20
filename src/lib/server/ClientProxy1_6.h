@@ -33,6 +33,7 @@ public:
     virtual void        setClipboard(ClipboardID id, const IClipboard* clipboard);
     virtual bool        recvClipboard();
     void grabClipboard(ClipboardID) override;
+    void setOptions(const OptionsList& options) override;
 protected:
     bool parseMessage(const UInt8*) override;
 

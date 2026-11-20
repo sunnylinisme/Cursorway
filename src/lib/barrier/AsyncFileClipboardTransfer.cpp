@@ -46,7 +46,7 @@ public:
 };
 }
 struct AsyncFileClipboardTransfer::State {
-    struct Job { enum Kind { Start, Receive, Cancel } kind; uint64_t generation; std::string data; ClipboardID clipboard = 0; uint32_t sequence = 0; };
+    struct Job { enum Kind { Start, Receive, Cancel } kind; uint64_t generation; std::string data; ClipboardID clipboard = 0; uint32_t sequence = 0; bool resume = false; };
     std::mutex mutex; std::condition_variable wake;
     std::deque<Job> jobs; std::deque<Result> results;
     uint64_t generation = 0;
@@ -71,14 +71,14 @@ struct AsyncFileClipboardTransfer::State {
             try {
                 // Cancelled queued work must not touch disk. In-flight results are checked below.
                 { std::lock_guard<std::mutex> lock(state->mutex); if (state->stopping) return; if (job.generation != state->generation) continue; }
-                if (job.kind == Job::Start) transfer.start(job.data, job.clipboard, job.sequence);
+                if (job.kind == Job::Start) transfer.start(job.data, job.clipboard, job.sequence, job.resume);
                 else if (job.kind == Job::Cancel) transfer.cancel();
                 else {
                     memory.currentId = packetId(job.data);
                     memory.input = job.data.substr(4);
                     if (!transfer.receive(reinterpret_cast<const unsigned char*>(job.data.data())) || !memory.input.empty())
                         throw std::runtime_error("Invalid file clipboard packet");
-                    if ((job.data.compare(0, 4, "FCAK") == 0 || job.data.compare(0, 4, "FCNO") == 0) && !transfer.sending()) {
+                    if ((job.data.compare(0, 4, "FCAK") == 0 || job.data.compare(0, 4, "FCRS") == 0 || job.data.compare(0, 4, "FCNO") == 0) && !transfer.sending()) {
                         Result result; result.finishedSend = memory.currentId; memory.output.push_back(std::move(result));
                     }
                 }
@@ -138,7 +138,7 @@ void AsyncFileClipboardTransfer::start(const std::string& handle, ClipboardID cl
     cancel();
     { std::lock_guard<std::mutex> lock(state_->mutex);
       if (!state_->available) throw std::runtime_error("File access is unavailable; restart Barrier Share after checking the source drive");
-      state_->jobs.push_back({State::Job::Start, state_->generation, handle, clipboard, sequence}); }
+      state_->jobs.push_back({State::Job::Start, state_->generation, handle, clipboard, sequence, resume_}); }
     state_->wake.notify_one();
 }
 bool AsyncFileClipboardTransfer::receive(const unsigned char* code) {
@@ -148,19 +148,19 @@ bool AsyncFileClipboardTransfer::receive(const unsigned char* code) {
     std::string packet(reinterpret_cast<const char*>(code), 4); packet.resize(size + 4);
     if (stream_->read(&packet[4], size) != size) return false;
     const auto command = packet.substr(0, 4);
-    if (command != "FCBG" && command != "FCEN" && command != "FCHK" && command != "FCFE" && command != "FCDN" && command != "FCAK" && command != "FCAB" && command != "FCNO") return false;
-    if (command == "FCBG") incoming_ = packetId(packet);
+    if (command != "FCBG" && command != "FCBR" && command != "FCRS" && command != "FCEN" && command != "FCHK" && command != "FCFE" && command != "FCDN" && command != "FCAK" && command != "FCAB" && command != "FCNO") return false;
+    if (command == "FCBG" || command == "FCBR") incoming_ = packetId(packet);
     if (command == "FCAB" && incoming_ == packetId(packet)) incoming_ = 0;
     if (command == "FCNO" && outgoing_ == packetId(packet)) outgoing_ = 0;
     bool starting = false; ClipboardID clipboard = 0; uint32_t sequence = 0;
     {
         std::lock_guard<std::mutex> lock(state_->mutex);
         if (!state_->available) {
-            if (command == "FCBG") { std::string reason = "File access is unavailable; restart Barrier Share"; ProtocolUtil::writef(stream_, "FCNO%4i%s", incoming_, &reason); incoming_ = 0; }
+            if (command == "FCBG" || command == "FCBR") { std::string reason = "File access is unavailable; restart Barrier Share"; ProtocolUtil::writef(stream_, "FCNO%4i%s", incoming_, &reason); incoming_ = 0; }
             return true;
         }
         if (state_->jobs.size() >= queueLimit) return false;
-        if (command == "FCBG" && packet.size() >= 13) {
+        if ((command == "FCBG" || command == "FCBR") && packet.size() >= 13) {
             auto p = reinterpret_cast<const unsigned char*>(packet.data());
             starting = true; clipboard = p[8];
             sequence = (uint32_t(p[9]) << 24) | (uint32_t(p[10]) << 16) | (uint32_t(p[11]) << 8) | p[12];
@@ -183,7 +183,7 @@ void AsyncFileClipboardTransfer::poll() {
             if (result.finishedSend && outgoing_ == result.finishedSend) outgoing_ = 0;
             if (!result.packet.empty()) {
                 if (result.packet.compare(0, 4, "FCAK") == 0 && packetId(result.packet) != incoming_ && packetId(result.packet) != published) continue;
-                if (result.packet.compare(0, 4, "FCBG") == 0) outgoing_ = packetId(result.packet);
+                if (result.packet.compare(0, 4, "FCBG") == 0 || result.packet.compare(0, 4, "FCBR") == 0) outgoing_ = packetId(result.packet);
                 if (result.packet.compare(0, 4, "FCAB") == 0 && outgoing_ == packetId(result.packet)) outgoing_ = 0;
                 if (result.packet.compare(0, 4, "FCNO") == 0 && incoming_ == packetId(result.packet)) incoming_ = 0;
                 stream->write(result.packet.data(), static_cast<UInt32>(result.packet.size()));

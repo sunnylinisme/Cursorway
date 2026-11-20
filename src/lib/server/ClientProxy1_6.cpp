@@ -18,6 +18,7 @@
 #include "server/ClientProxy1_6.h"
 
 #include "server/Server.h"
+#include "barrier/option_types.h"
 #include "barrier/ProtocolUtil.h"
 #include "barrier/StreamChunker.h"
 #include "barrier/ClipboardChunk.h"
@@ -64,12 +65,22 @@ ClientProxy1_6::~ClientProxy1_6()
     m_events->removeHandler(m_events->forClipboard().clipboardSending(), this);
 }
 
+void ClientProxy1_6::setOptions(const OptionsList& options)
+{
+    // Older clients ignore options they do not know; newer ones answer FCAP 3.
+    OptionsList all(options);
+    if (m_filesEnabled) { all.push_back(kOptionFileResume); all.push_back(1); }
+    ClientProxy1_5::setOptions(all);
+}
+
 bool ClientProxy1_6::parseMessage(const UInt8* code)
 {
     if (memcmp(code, barrier::fileClipboardCapability, 4) == 0) {
         UInt32 version = 0;
         if (!ProtocolUtil::readf(getStream(), barrier::fileClipboardCapability + 4, &version)) return false;
-        m_filesReady = m_filesEnabled && version == 2;
+        // 3: a client that saw kOptionFileResume and can resume. The reply stays 2 for every client.
+        m_filesReady = m_filesEnabled && (version == 2 || version == 3);
+        m_files->setResume(m_filesReady && version == 3);
         ProtocolUtil::writef(getStream(), barrier::fileClipboardCapability, m_filesReady ? 2 : 0);
         LOG((CLOG_INFO "file clipboard: peer %s", m_filesReady ? "ready (streaming v2)" : "requires matching version"));
         return true;

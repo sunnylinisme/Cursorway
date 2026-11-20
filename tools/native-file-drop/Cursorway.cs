@@ -1934,7 +1934,9 @@ sealed class ShareWindow : Form
         }
     }
     // Restarting the connection drops the partial copy on both sides.
-    void CancelTransfer() { transferring = false; autoPaste.Clear(); popup.Dismiss(); StopBackend(); StartBackend(); status.Text = "已取消檔案傳送，正在重新連線…"; }
+    // The marker tells the next core start to drop the kept partial copy: a cancelled transfer never resumes.
+    static void DiscardResume() { foreach (bool host in new[] { true, false }) try { string cache = Path.Combine(ShareSettings.Profile(host), "FileClipboardCache"); Directory.CreateDirectory(cache); File.WriteAllText(Path.Combine(cache, "discard-resume"), ""); } catch (Exception) { } }
+    void CancelTransfer() { DiscardResume(); transferring = false; autoPaste.Clear(); popup.Dismiss(); StopBackend(); StartBackend(); status.Text = "已取消檔案傳送，正在重新連線…"; }
     void Forget(string command, string question)
     {
         if (MessageBox.Show(this, question, "解除配對", MessageBoxButtons.OKCancel) != DialogResult.OK) return;

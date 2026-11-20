@@ -186,7 +186,7 @@ ServerProxy::parseHandshakeMessage(const UInt8* code)
         // handshake is complete
         m_parser = &ServerProxy::parseMessage;
         m_client->handshakeComplete();
-        if (m_filesEnabled) ProtocolUtil::writef(m_stream, barrier::fileClipboardCapability, 2);
+        if (m_filesEnabled) ProtocolUtil::writef(m_stream, barrier::fileClipboardCapability, m_peerResume ? 3 : 2);
 #if WINAPI_MSWINDOWS
         m_nativeAllowed = App::instance().argsBase().m_nativeFileDrop && App::instance().argsBase().m_enableCrypto;
         if (m_nativeAllowed) ProtocolUtil::writef(m_stream, barrier::nativeCapability, 1);
@@ -254,6 +254,7 @@ ServerProxy::parseMessage(const UInt8* code)
         UInt32 version = 0;
         if (!ProtocolUtil::readf(m_stream, barrier::fileClipboardCapability + 4, &version)) return kUnknown;
         m_filesReady = m_filesEnabled && version == 2;
+        m_files->setResume(m_filesReady && m_peerResume);
         LOG((CLOG_INFO "file clipboard: peer %s", m_filesReady ? "ready (streaming v2)" : "requires matching version"));
     }
     else if (memcmp(code, "FC", 2) == 0) {
@@ -899,6 +900,9 @@ ServerProxy::setOptions()
         }
         else if (options[i] == kOptionModifierMapForSuper) {
             id = kKeyModifierIDSuper;
+        }
+        else if (options[i] == kOptionFileResume) {
+            m_peerResume = options[i + 1] != 0;
         }
         else if (options[i] == kOptionHeartbeat) {
             // update keep alive

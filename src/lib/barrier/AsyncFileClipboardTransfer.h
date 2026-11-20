@@ -11,6 +11,8 @@ public:
                                const fs::path& cache = {}, std::function<void()> beforeOutput = {});
     ~AsyncFileClipboardTransfer();
     void start(const std::string&, ClipboardID, uint32_t);
+    // The peer can resume interrupted transfers (FCBR/FCRS).
+    void setResume(bool resume) { resume_ = resume; }
     bool receive(const unsigned char*);
     void cancel();
     // Called on the event thread when the peer begins sending files, before any data arrives.
@@ -26,6 +28,7 @@ private:
     std::function<void(ClipboardID, uint32_t)> started_;
     IEventQueue* events_;
     uint32_t outgoing_ = 0, incoming_ = 0;
+    bool resume_ = false;
     void ready(const Event&, void*);
 };
 }

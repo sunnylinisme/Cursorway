@@ -343,6 +343,17 @@ static class ShareUpdate
         }
     }
     // Installed copies (uninstaller next to the exe) update themselves; the portable one opens the release page.
+    public static string Folder { get { return Path.Combine(Path.GetTempPath(), "Cursorway-Update"); } }
+    public static string Pending { get { return Path.Combine(Folder, "pending.txt"); } }
+    // At launch: the version a started update was going to install when it did not arrive, else null.
+    // The downloaded installers are removed either way once nothing is waiting to be installed.
+    public static string Unfinished()
+    {
+        string wanted = null; Version target;
+        try { if (File.Exists(Pending)) { wanted = File.ReadAllText(Pending).Trim(); File.Delete(Pending); } } catch (Exception) { }
+        try { if (Directory.Exists(Folder)) foreach (var file in Directory.GetFiles(Folder, "Cursorway-Setup-*")) File.Delete(file); } catch (Exception) { }
+        return wanted != null && Version.TryParse(wanted, out target) && target > Current ? wanted : null;
+    }
     public static bool Installed { get { return File.Exists(Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "unins000.exe")); } }
     // Returns the highest non-draft, non-prerelease Windows release newer than current, or null.
     public static Found Newer(string json, Version current)
@@ -1159,6 +1170,12 @@ sealed class ShareWindow : Form
     void Startup()
     {
         if (started) return; started = true; Diagnose(ShareUpdate.Details);
+        string unfinished = testing ? null : ShareUpdate.Unfinished();
+        if (unfinished != null) {
+            Diagnose("上次更新到 " + unfinished + " 沒有完成，仍是 " + ShareUpdate.Label);
+            bannerText.Text = "上次更新到 " + unfinished + " 沒有完成，目前仍是 " + ShareUpdate.Label + " · 可以再按「更新」重試"; bannerDownload.Text = "更新"; updateUrl = ShareWindow.Project + "/releases/latest"; SetBanner(true);
+            tray.ShowBalloonTip(8000, "Cursorway 更新沒有完成", "上次更新到 " + unfinished + " 沒有完成，目前仍是 " + ShareUpdate.Label + "。請再試一次，或到 GitHub 下載安裝檔。", ToolTipIcon.Warning);
+        }
         Diagnose("權限：" + ShareElevation.Describe());
         ShareSettings.Warn = text => { if (IsHandleCreated) BeginInvoke((Action)(() => Diagnose(text))); };
         if (!testing) { ShareCursor.Restore(); ShareLogin.Refresh(); }
@@ -1280,7 +1297,7 @@ sealed class ShareWindow : Form
         if (updateSetup != null) { InstallUpdate(); return; }
         if (updateDownload != null) { updateDownload.CancelAsync(); return; }
         if (pendingUpdate == null || pendingUpdate.Setup == null || !ShareUpdate.Installed) { OpenUpdate(); return; }
-        var found = pendingUpdate; string folder = Path.Combine(Path.GetTempPath(), "Cursorway-Update");
+        var found = pendingUpdate; string folder = ShareUpdate.Folder;
         string file = Path.Combine(folder, "Cursorway-Setup-" + found.Version + "-x64.exe"), part = file + ".part";
         try { Directory.CreateDirectory(folder); if (File.Exists(part)) File.Delete(part); } catch (Exception e) { Error(e); return; }
         ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
@@ -1315,7 +1332,12 @@ sealed class ShareWindow : Form
     void InstallUpdate()
     {
         if (!File.Exists(updateSetup)) { updateSetup = null; bannerDownload.Text = "更新"; UpdateClicked(); return; }
-        try { Process.Start(new ProcessStartInfo(updateSetup, "/SILENT /SUPPRESSMSGBOXES /NORESTART") { UseShellExecute = true }); bannerText.Text = "正在安裝新版，完成後會自動重新開啟…"; }
+        try {
+            Process.Start(new ProcessStartInfo(updateSetup, "/SILENT /SUPPRESSMSGBOXES /NORESTART") { UseShellExecute = true });
+            bannerText.Text = "正在安裝新版，完成後會自動重新開啟…";
+            // Read at the next launch: still older than this version means the install did not finish.
+            try { File.WriteAllText(ShareUpdate.Pending, pendingUpdate.Version.ToString()); } catch (Exception) { }
+        }
         catch (System.ComponentModel.Win32Exception e) { bannerText.Text = e.NativeErrorCode == 1223 ? "需要按「是」允許安裝，請再按一次「重新啟動」" : "無法啟動安裝程式：" + e.Message; }
     }
     void OpenUpdate() { if (updateUrl != null) try { Process.Start(new ProcessStartInfo(updateUrl) { UseShellExecute = true }); } catch (Exception e) { Error(e); } }
@@ -2670,6 +2692,11 @@ static class ShareProgram
             File.WriteAllText(probe, "abd"); if (ShareWindow.Verify(probe, withSetup) == null) throw new Exception("Installer with a wrong hash was accepted");
             File.WriteAllText(probe, "abcd"); if (ShareWindow.Verify(probe, withSetup) == null) throw new Exception("Installer with a wrong size was accepted");
             File.Delete(probe);
+            // An update that was started but did not arrive is reported once at the next launch; a finished one is not.
+            Directory.CreateDirectory(ShareUpdate.Folder);
+            File.WriteAllText(ShareUpdate.Pending, "99.0.0"); if (ShareUpdate.Unfinished() != "99.0.0" || File.Exists(ShareUpdate.Pending)) throw new Exception("Unfinished update was not reported");
+            File.WriteAllText(ShareUpdate.Pending, "0.0.1"); if (ShareUpdate.Unfinished() != null) throw new Exception("Finished update was reported as unfinished");
+            if (ShareUpdate.Unfinished() != null) throw new Exception("Unfinished update was reported twice");
             if (renamed == null || renamed.Version != new Version(0, 3, 30)) throw new Exception("Update check does not follow the renamed repository");
             var found = ShareUpdate.Newer(releases, new Version(0, 3, 7));
             if (found == null || found.Version != new Version(0, 3, 11) || !found.Url.EndsWith("/v0.3.11")) throw new Exception("Update selection ignored platform, draft or origin rules");

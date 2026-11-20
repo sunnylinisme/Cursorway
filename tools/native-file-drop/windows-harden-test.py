@@ -30,12 +30,13 @@ def report(kind, value, trace):
     sys.__excepthook__(kind, value, trace)
 sys.excepthook = report
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True); kernel32.OpenProcess.restype = wintypes.HANDLE
+kernel32.SetLastError(0)
 with tempfile.TemporaryDirectory(prefix="cursorway-harden-") as temporary:
     root = pathlib.Path(temporary)
-    def basic_user(name, command):
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    def basic_token():
         # The same user as a basic user (SAFER "normal user" level, medium integrity): what any
-        # program of this user without administrator rights would be. Returns the process id.
-        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        # program of this user without administrator rights would be.
         level = wintypes.HANDLE(); token = wintypes.HANDLE()
         assert advapi32.SaferCreateLevel(2, 0x20000, 1, ctypes.byref(level), None), ctypes.WinError(ctypes.get_last_error())
         assert advapi32.SaferComputeTokenFromLevel(level, None, ctypes.byref(token), 0, None), ctypes.WinError(ctypes.get_last_error())
@@ -45,6 +46,19 @@ with tempfile.TemporaryDirectory(prefix="cursorway-harden-") as temporary:
         class LABEL(ctypes.Structure): _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
         label = LABEL(sid, 0x20)
         assert advapi32.SetTokenInformation(token, 25, ctypes.byref(label), ctypes.sizeof(label) + advapi32.GetLengthSid(sid)), ctypes.WinError(ctypes.get_last_error())
+        return token
+    def open_as_basic_user(pid):
+        # What such a program gets when it opens the core to write its memory or start a thread in it.
+        token = basic_token()
+        assert advapi32.ImpersonateLoggedOnUser(token), ctypes.WinError(ctypes.get_last_error())
+        try:
+            handle = kernel32.OpenProcess(0x0020 | 0x0008 | 0x0002, False, pid); error = ctypes.get_last_error()
+        finally:
+            advapi32.RevertToSelf(); kernel32.CloseHandle(token)
+        if handle: kernel32.CloseHandle(handle); return "opened"
+        return "denied %d" % error
+    def basic_user(name, command):
+        token = basic_token()
         class STARTUPINFO(ctypes.Structure):
             _fields_ = [("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR)] + \
                        [(n, wintypes.DWORD) for n in ("dwX", "dwY", "dwXSize", "dwYSize", "dwXCountChars", "dwYCountChars", "dwFillAttribute", "dwFlags")] + \
@@ -81,9 +95,7 @@ with tempfile.TemporaryDirectory(prefix="cursorway-harden-") as temporary:
             pids.append(pid); time.sleep(1.5)
             alive = kernel32.OpenProcess(0x1000, False, pid); code = wintypes.DWORD()
             assert alive and kernel32.GetExitCodeProcess(wintypes.HANDLE(alive), ctypes.byref(code)) and code.value == 259, name + " core exited at once: " + (log.read_text(errors="replace")[-2000:] if log.exists() else "no log")
-            out = root / (name + ".result")
-            basic_user(name + "-probe", '"%s" "%s" --probe %d "%s"' % (sys.executable, pathlib.Path(__file__).resolve(), pid, out))
-            results[name] = wait(lambda: out.exists() and out.read_text(), name + " probe did not answer")
+            results[name] = open_as_basic_user(pid)
             if harden:
                 # GetProcessMitigationPolicy(ProcessSignaturePolicy = 8): bit 0 MicrosoftSignedOnly.
                 handle = kernel32.OpenProcess(0x0400, False, pid); flags = wintypes.DWORD()

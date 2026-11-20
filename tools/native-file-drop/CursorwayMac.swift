@@ -477,8 +477,15 @@ final class ShareTransferPanel {
 
 // Turns "file clipboard: progress sent N bytes" log lines into a size and speed for the status card.
 struct ShareProgress {
-    var lastBytes: Int64 = 0, lastTime = Date(), speed = 0.0
-    mutating func reset() { lastBytes = 0; lastTime = Date(); speed = 0 }
+    var lastBytes: Int64 = 0, lastTime = Date(), speed = 0.0, resumed = false
+    mutating func reset() { lastBytes = 0; lastTime = Date(); speed = 0; resumed = false }
+    // "file clipboard: resuming at N items, B bytes": the part already there counts toward the total but not the speed.
+    mutating func resume(_ line: String, now: Date = Date()) -> Bool {
+        guard let range = line.range(of: #"file clipboard: resuming at [0-9]+ items, [0-9]+ bytes"#, options: .regularExpression) else { return false }
+        let words = line[range].split(separator: " ")
+        resumed = true; lastBytes = Int64(words[6]) ?? 0; lastTime = now; speed = 0
+        return true
+    }
     mutating func describe(_ line: String, now: Date = Date()) -> String? {
         guard let range = line.range(of: #"file clipboard: progress (sent|received) [0-9]+ bytes"#, options: .regularExpression) else { return nil }
         let words = line[range].split(separator: " "), sent = words[3] == "sent"
@@ -486,7 +493,7 @@ struct ShareProgress {
         let seconds = now.timeIntervalSince(lastTime)
         if seconds > 0.05 && bytes >= lastBytes { let current = Double(bytes - lastBytes) / seconds; speed = speed == 0 ? current : speed * 0.6 + current * 0.4 }
         lastBytes = bytes; lastTime = now
-        return (sent ? "正在傳送檔案… 已傳 " : "正在接收檔案… 已收 ") + ShareProgress.size(bytes) + (speed > 0 ? " · " + ShareProgress.size(Int64(speed)) + "/s" : "")
+        return (resumed ? (sent ? "續傳中… 已傳 " : "續傳中… 已收 ") : (sent ? "正在傳送檔案… 已傳 " : "正在接收檔案… 已收 ")) + ShareProgress.size(bytes) + (speed > 0 ? " · " + ShareProgress.size(Int64(speed)) + "/s" : "")
     }
     static func size(_ bytes: Int64) -> String {
         let units = ["B", "KB", "MB", "GB", "TB"]; var value = Double(bytes), unit = 0
@@ -1787,6 +1794,9 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         let was = transferring
         if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; receiving = false; progress.reset() }
         if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; receiving = true; autoPaste.target = nil; lastProgress = ""; progress.reset() }
+        if transferring, progress.resume(line) {
+            status.stringValue = "續傳中… 從上次中斷的地方繼續"; transferPanel.title.stringValue = receiving ? "續傳接收檔案…" : "續傳送出檔案…"; log("檔案從上次中斷的地方繼續傳送。")
+        }
         if let moved = progress.describe(line), transferring { status.stringValue = moved; lastProgress = moved; transferPanel.progress(moved) }
         if line.contains("file clipboard: sent ") { status.stringValue = "檔案已送出 · 可在另一台貼上"; transferring = false }
         if line.contains("received and verified") {
@@ -1893,6 +1903,11 @@ func selfTest(_ directory: URL) throws {
     var meter = ShareProgress(); meter.reset(); let t0 = Date()
     let first = meter.describe("[2026-11-12T10:00:00] INFO: file clipboard: progress sent 1048576 bytes", now: t0.addingTimeInterval(1))
     let second = meter.describe("[2026-11-12T10:00:01] INFO: file clipboard: progress received 3145728 bytes", now: t0.addingTimeInterval(2))
+    var again = ShareProgress()
+    guard again.resume("[2026-11-12T10:00:00] INFO: file clipboard: resuming at 3 items, 2097152 bytes", now: t0), again.lastBytes == 2097152,
+          let resumedText = again.describe("INFO: file clipboard: progress received 3145728 bytes", now: t0.addingTimeInterval(1)), resumedText.hasPrefix("續傳中… 已收 3.0 MB"), resumedText.contains("1.0 MB/s"),
+          !again.resume("file clipboard: resuming soon") else { throw ShareError.message("Resume progress parsing failed") }
+    again.reset(); guard !again.resumed else { throw ShareError.message("Resume state survived a new transfer") }
     guard let a = first, a.contains("1.0 MB"), let b = second, b.hasPrefix("正在接收"), b.contains("3.0 MB"), b.contains("MB/s"), meter.describe("file clipboard: sent 5 bytes") == nil else { throw ShareError.message("Transfer progress parsing failed") }
     let pop = ShareTransferPanel(target: NSObject(), cancelAction: #selector(NSWindow.orderOut(_:)))
     pop.begin("正在接收檔案…", showAfter: 0); pop.progress(b)

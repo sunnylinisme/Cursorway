@@ -38,6 +38,7 @@
 #include <atomic>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -449,11 +450,42 @@ DWORD WINAPI control(DWORD code, DWORD, LPVOID, LPVOID) {
     if (code == SERVICE_CONTROL_STOP || code == SERVICE_CONTROL_SHUTDOWN) { report(SERVICE_STOP_PENDING); stopping = true; SetEvent(stopEvent); }
     return NO_ERROR;
 }
+// Ctrl+Alt+Del from the paired computer. The receiver core cannot send it itself: on that key it
+// signals the named event below (MSWindowsKeyState::fakeCtrlAltDel), and this service, running as
+// SYSTEM, asks Windows for the secure attention sequence. SendSAS works for a service only while the
+// SoftwareSASGeneration policy allows services (set by the installer).
+using SendSasFunction = void (WINAPI*)(BOOL);
+void WINAPI realSendSas(BOOL asUser) {
+    static SendSasFunction send = nullptr;
+    if (!send) if (HMODULE sas = LoadLibraryW(L"sas.dll")) send = reinterpret_cast<SendSasFunction>(GetProcAddress(sas, "SendSAS"));
+    if (send) send(asUser);
+}
+// Only the console user's cores may signal it: SYSTEM (the winlogon-token core) and interactive
+// users get no more than EVENT_MODIFY_STATE (set the event), nobody else gets anything.
+HANDLE createSasEvent(const wchar_t* name, const wchar_t* access = L"D:P(A;;GA;;;SY)(A;;0x0002;;;IU)") {
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(access, SDDL_REVISION_1, &descriptor, nullptr)) return nullptr;
+    SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
+    HANDLE event = CreateEventW(&attributes, FALSE, FALSE, name);
+    LocalFree(descriptor); return event;
+}
+// Waits for the event; calls send for a receiver core only (a host types nothing into this computer).
+void watchSas(HANDLE event, SendSasFunction send, const std::function<bool()>& receiver) {
+    HANDLE waits[2] = { event, stopEvent };
+    while (WaitForMultipleObjects(2, waits, FALSE, INFINITE) == WAIT_OBJECT_0) {
+        if (!receiver()) continue;
+        send(FALSE);
+        std::lock_guard<std::mutex> lock(mutex); logLine(command.directory, "Ctrl+Alt+Del from the paired computer: sent the secure attention sequence");
+    }
+}
 void run() {
     stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE sas = createSasEvent(L"Global\\SendSAS");
     std::thread follower(monitor), server(serve);
+    std::thread sasWatcher;
+    if (sas) sasWatcher = std::thread(watchSas, sas, realSendSas, []() { std::lock_guard<std::mutex> lock(mutex); return wanted && !command.host; });
     if (statusHandle) report(SERVICE_RUNNING);
-    server.join(); follower.join();
+    server.join(); follower.join(); if (sasWatcher.joinable()) sasWatcher.join(); if (sas) CloseHandle(sas);
     { std::lock_guard<std::mutex> lock(mutex); stopCore(); stopWatcher(); }
 }
 void WINAPI serviceMain(DWORD, LPWSTR*) {
@@ -482,8 +514,37 @@ int watchDesktop() {
 }
 }
 
+// --sas-test: the Ctrl+Alt+Del path with a stand-in for SendSAS, on an event of its own name.
+int sasTest() {
+    stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    std::wstring name = L"Global\\CursorwaySasTest-" + std::to_wstring(GetCurrentProcessId());
+    // The test runs as an administrator, not as an interactive user: it gets the same narrow right.
+    HANDLE event = createSasEvent(name.c_str(), L"D:P(A;;GA;;;SY)(A;;0x0002;;;IU)(A;;0x0002;;;BA)");
+    if (!event) { std::printf("FAIL: cannot create the event (error %lu)\n", GetLastError()); return 1; }
+    static std::atomic<int> calls{0}; static std::atomic<bool> receiver{true};
+    command.directory = L"."; command.host = false;
+    std::thread watcher(watchSas, event, [](BOOL asUser) { if (!asUser) ++calls; }, []() { return receiver.load(); });
+    auto signal = [&]() {
+        // Opened the way the core opens it: only the right to set it.
+        HANDLE core = OpenEventW(EVENT_MODIFY_STATE, FALSE, name.c_str());
+        if (!core) return false;
+        BOOL ok = SetEvent(core); CloseHandle(core); return ok != FALSE;
+    };
+    auto waitFor = [&](int count) { for (int i = 0; i < 40 && calls < count; ++i) Sleep(50); return calls == count; };
+    bool ok = signal() && waitFor(1) && signal() && waitFor(2);
+    receiver = false; ok = ok && signal(); Sleep(300); ok = ok && calls == 2;
+    // Nobody may take more than the right to set it (for example to wait on it and steal the signal).
+    HANDLE wide = OpenEventW(EVENT_ALL_ACCESS, FALSE, name.c_str());
+    bool narrow = true;
+    if (wide) { CloseHandle(wide); narrow = false; }
+    SetEvent(stopEvent); watcher.join(); CloseHandle(event);
+    if (!ok || !narrow) { std::printf("FAIL: calls=%d narrow=%d\n", calls.load(), narrow ? 1 : 0); return 1; }
+    std::printf("PASS: Ctrl+Alt+Del event reached SendSAS twice for a receiver, not for a host, and only allows setting it\n");
+    return 0;
+}
 int wmain(int argc, wchar_t** argv) {
     if (argc == 2 && std::wstring(argv[1]) == L"--desk-watch") return watchDesktop();
+    if (argc == 2 && std::wstring(argv[1]) == L"--sas-test") return sasTest();
     // --console runs the same loop in the foreground for testing as an administrator.
     if (argc == 2 && std::wstring(argv[1]) == L"--console") { SetConsoleCtrlHandler([](DWORD) -> BOOL { stopping = true; SetEvent(stopEvent); return TRUE; }, TRUE); run(); return 0; }
     SERVICE_TABLE_ENTRYW table[] = { { const_cast<wchar_t*>(kServiceName), serviceMain }, { nullptr, nullptr } };

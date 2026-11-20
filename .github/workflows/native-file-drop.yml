@@ -114,6 +114,8 @@ jobs:
         run: python tools/native-file-drop/windows-server-network-test.py build/bin/Release
       - name: Bidirectional file clipboard and actual Explorer paste
         run: python tools/native-file-drop/windows-clipboard-network-test.py build/bin/Release
+      - name: Ctrl+Alt+Del event reaches SendSAS in the service
+        run: build/bin/Release/cursorway-service.exe --sas-test
       - name: File clipboard resume after a dropped connection
         run: python tools/native-file-drop/windows-resume-network-test.py build/bin/Release
       - name: Wide arrangement (host + 8 in a row) connects every receiver

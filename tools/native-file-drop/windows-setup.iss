@@ -261,6 +261,35 @@ begin
   if DelTree(OldDir, True, True, True) then Log('Removed ' + OldDir) else Log('Could not remove all of ' + OldDir);
 end;
 
+{ Ctrl+Alt+Del from the paired computer: the service calls SendSAS, which Windows allows a service
+  only while SoftwareSASGeneration includes services (1 or 3). A value that already allows it is left
+  alone; otherwise the old state is noted under Software\Cursorway and put back on uninstall. }
+const
+  SasKey = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System';
+  SasValue = 'SoftwareSASGeneration';
+  OwnKey = 'SOFTWARE\Cursorway';
+procedure AllowServiceSas();
+var
+  Old: Cardinal;
+  Had: Boolean;
+begin
+  Had := RegQueryDWordValue(HKLM64, SasKey, SasValue, Old);
+  if Had and ((Old = 1) or (Old = 3)) then exit;
+  if RegValueExists(HKLM64, OwnKey, 'SasBefore') then exit;
+  if Had then RegWriteStringValue(HKLM64, OwnKey, 'SasBefore', IntToStr(Old)) else RegWriteStringValue(HKLM64, OwnKey, 'SasBefore', 'none');
+  { 2 (ease of access apps) becomes 3 (both); nothing or 0 becomes 1 (services). }
+  if Had and (Old = 2) then RegWriteDWordValue(HKLM64, SasKey, SasValue, 3) else RegWriteDWordValue(HKLM64, SasKey, SasValue, 1);
+end;
+procedure RestoreSas();
+var
+  Before: String;
+begin
+  if not RegQueryStringValue(HKLM64, OwnKey, 'SasBefore', Before) then exit;
+  if Before = 'none' then RegDeleteValue(HKLM64, SasKey, SasValue) else RegWriteDWordValue(HKLM64, SasKey, SasValue, StrToIntDef(Before, 0));
+  RegDeleteValue(HKLM64, OwnKey, 'SasBefore');
+  RegDeleteKeyIfEmpty(HKLM64, OwnKey);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   Binary: String;
@@ -275,6 +304,7 @@ begin
   { The service from before the rename is stopped by now; one service remains. }
   Sc('delete BarrierShare');
   AddFirewallRules();
+  AllowServiceSas();
   { sc takes binPath= as one argument; the quotes the service manager needs around a path with
     spaces are escaped inside it. }
   Binary := '\"' + ExpandConstant('{app}\cursorway-service.exe') + '\"';
@@ -298,4 +328,5 @@ begin
   Sc('delete Cursorway');
   Sc('delete BarrierShare');
   RemoveFirewallRules();
+  RestoreSas();
 end;

@@ -31,6 +31,9 @@ function Get-Profile {
 }
 $programFilesNew = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Cursorway'
 # 0.3.9 installs for all users (administrator) with the Barrier Share service.
+# Ctrl+Alt+Del: the installer lets services send it (SoftwareSASGeneration) and uninstall puts the old state back.
+$sasKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Policies\System'
+$sasBefore = (Get-ItemProperty -LiteralPath $sasKey -Name SoftwareSASGeneration -ErrorAction SilentlyContinue).SoftwareSASGeneration
 $uninstallKey = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1'
 $machineKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\org.barriershare.desktop_is1'
 $shortcuts = @(
@@ -95,6 +98,8 @@ function Assert-Installed {
     if (-not $service -or $service.State -ne 'Running' -or $service.StartMode -ne 'Auto' -or -not $service.PathName.Contains((Join-Path $installDir 'cursorway-service.exe'))) {
         throw "Barrier Share service is not installed and running from this installation: $($service | Out-String)"
     }
+    $sas = (Get-ItemProperty -LiteralPath $sasKey -Name SoftwareSASGeneration -ErrorAction SilentlyContinue).SoftwareSASGeneration
+    if ($sas -ne 1 -and $sas -ne 3) { throw "SoftwareSASGeneration does not let the service send Ctrl+Alt+Del: '$sas' (before: '$sasBefore')" }
     $entry = Get-ItemProperty -LiteralPath $uninstallKey
     $fileVersion = [Version][Diagnostics.FileVersionInfo]::GetVersionInfo((Join-Path $installDir 'Cursorway.exe')).FileVersion
     $expectedVersion = '{0}.{1}.{2}' -f $fileVersion.Major, $fileVersion.Minor, $fileVersion.Build
@@ -269,6 +274,8 @@ Invoke-TestProcess $InstallerPath ($arguments + "/LOG=$(Join-Path $TestRoot 'rei
 Assert-Installed
 Assert-Profile $beforeReinstall
 Invoke-TestProcess (Join-Path $installDir 'unins000.exe') @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$(Join-Path $TestRoot 'uninstall.log')")
+$sasAfter = (Get-ItemProperty -LiteralPath $sasKey -Name SoftwareSASGeneration -ErrorAction SilentlyContinue).SoftwareSASGeneration
+if ("$sasAfter" -ne "$sasBefore") { throw "Uninstall did not put SoftwareSASGeneration back: '$sasAfter', was '$sasBefore'" }
 foreach ($file in Get-ChildItem -LiteralPath $PackageDir -File -Recurse) {
     if (Test-Path -LiteralPath (Join-Path $installDir ([IO.Path]::GetRelativePath($PackageDir, $file.FullName)))) { throw "Uninstall left packaged file: $($file.Name)" }
 }

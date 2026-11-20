@@ -23,12 +23,19 @@ if len(sys.argv) == 4 and sys.argv[1] == "--probe":
     sys.exit(0)
 
 binary = pathlib.Path(sys.argv[1]).resolve()
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+def report(kind, value, trace):
+    import traceback
+    print("::error title=Harden::" + "%0A".join("".join(traceback.format_exception(kind, value, trace)).splitlines()[-12:]), flush=True)
+    sys.__excepthook__(kind, value, trace)
+sys.excepthook = report
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True); kernel32.OpenProcess.restype = wintypes.HANDLE
 with tempfile.TemporaryDirectory(prefix="cursorway-harden-") as temporary:
     root = pathlib.Path(temporary)
     def basic_user(name, command):
         script = root / (name + ".cmd"); script.write_text("@" + command + "\r\n", encoding="mbcs")
-        subprocess.run(["runas", "/trustlevel:0x20000", str(script)], check=True, capture_output=True)
+        done = subprocess.run(["runas", "/trustlevel:0x20000", str(script)], capture_output=True)
+        assert done.returncode == 0, "runas failed (%d): %s %s" % (done.returncode, done.stdout.decode("mbcs", "replace"), done.stderr.decode("mbcs", "replace"))
     def wait(check, what, seconds=20):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:

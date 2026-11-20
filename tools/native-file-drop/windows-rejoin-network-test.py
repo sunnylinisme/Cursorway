@@ -72,8 +72,7 @@ with tempfile.TemporaryDirectory(prefix="cursorway-rejoin-") as temporary:
         console.flush()
         # Job logs need a token to read; annotations do not.
         lines = [l for l in read(server_log).splitlines() if any(k in l for k in ("switch", "connected", "disconnected", "is back", "jump", "ERROR", "WARN"))]
-        print("::error title=Rejoin::%s%%0A%s" % (str(failure).replace("
-", " "), "%0A".join(l[-160:] for l in lines[-25:])))
+        print("::error title=Rejoin::%s%%0A%s" % (" ".join(str(failure).splitlines()), "%0A".join(l[-160:] for l in lines[-25:])))
         for log in [server_log, client_log, root / "console.log"]:
             if log.exists(): print("==", log.name); print(read(log)[-6000:])
         raise

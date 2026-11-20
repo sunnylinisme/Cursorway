@@ -2,7 +2,7 @@
 // Run with `swift generate.swift OUTPUT_DIRECTORY`; resize the approved PNG master.
 import AppKit
 let destination = URL(fileURLWithPath: CommandLine.arguments[1])
-let master = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("BarrierShare.png")
+let master = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("Cursorway.png")
 guard let source = NSImage(contentsOf: master) else { fatalError("Missing icon master: \(master.path)") }
 try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
 for size in [16, 32, 64, 128, 256, 512, 1024] {

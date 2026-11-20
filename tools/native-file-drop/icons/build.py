@@ -17,9 +17,9 @@ with tempfile.TemporaryDirectory(prefix='barrier-icons-') as temporary:
         entries.append(struct.pack('<BBBBHHII', size % 256, size % 256, 0, 0, 1, 32, len(png), offset))
         data.append(png)
         offset += len(png)
-    (root / 'BarrierShare.ico').write_bytes(struct.pack('<HHH', 0, 1, len(sizes)) + b''.join(entries + data))
+    (root / 'Cursorway.ico').write_bytes(struct.pack('<HHH', 0, 1, len(sizes)) + b''.join(entries + data))
     # Let macOS encode small icons correctly instead of interpreting PNG bytes as pixels.
-    iconset = p / 'BarrierShare.iconset'
+    iconset = p / 'Cursorway.iconset'
     iconset.mkdir()
     for size in [16, 32, 128, 256, 512]:
         for scale in [1, 2]:

@@ -35,7 +35,7 @@ WizardStyle=modern
 ShowLanguageDialog=auto
 OutputDir={#OutputDir}
 OutputBaseFilename=Cursorway-Setup-{#AppVersion}-x64
-SetupIconFile={#AddBackslash(SourcePath)}icons\BarrierShare.ico
+SetupIconFile={#AddBackslash(SourcePath)}icons\Cursorway.ico
 UninstallDisplayName=Cursorway
 UninstallDisplayIcon={app}\Cursorway.exe
 VersionInfoVersion={#AppVersion}.0
@@ -104,7 +104,7 @@ Type: files; Name: "{app}\barrier-service.exe"
 const
   { The current app and one from before the rename (Barrier Share, 0.3.21 and earlier). }
   AppMutexName = 'Local\Cursorway.Desktop,Local\BarrierShare.Desktop';
-  { BarrierShare.cs (ShareProgram.QuitEvent) waits on this event and exits cleanly. }
+  { Cursorway.cs (ShareProgram.QuitEvent) waits on this event and exits cleanly. }
   QuitEventName = 'Local\Cursorway.Quit';
   OldQuitEventName = 'Local\BarrierShare.Quit';
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';

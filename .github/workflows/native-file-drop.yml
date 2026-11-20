@@ -116,6 +116,8 @@ jobs:
         run: python tools/native-file-drop/windows-clipboard-network-test.py build/bin/Release
       - name: File clipboard resume after a dropped connection
         run: python tools/native-file-drop/windows-resume-network-test.py build/bin/Release
+      - name: Wide arrangement (host + 8 in a row) connects every receiver
+        run: python tools/native-file-drop/windows-wide-layout-network-test.py build/bin/Release
       - name: LAN discovery, consent and automatic reconnection
         shell: pwsh
         run: |

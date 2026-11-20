@@ -12,7 +12,7 @@ struct ShareOptions: Codable {
     var address = ""
     var position = "right"
     var advanced = ShareAdvanced()
-    // Where each paired receiver sits relative to this host on a 5x5 grid: fingerprint -> [x, y], y grows downwards.
+    // Where each paired receiver sits relative to this host (up to 8 cells away each way): fingerprint -> [x, y], y grows downwards.
     var layout: [String: [Int]] = [:]
     // Operating system each paired computer reported over the link: fingerprint -> mac / windows / linux.
     var platforms: [String: String] = [:]
@@ -22,6 +22,11 @@ struct ShareOptions: Codable {
     var screenNumbers: [String: Int] = [:]
     // 外觀: "system" follows macOS light/dark, or "light" / "dark".
     var appearance = "system"
+    // Arrange editor: grid size and where this host sits in it (nil = 5x5 with the host in the middle),
+    // the chosen preset layout (nil = decided from layout), and the user's own "自訂" arrangement.
+    var grid: ShareGrid?
+    var preset: String?
+    var custom: ShareGrid?
     init() {}
     // Settings saved by older versions lack newer keys; keep their defaults.
     init(from decoder: Decoder) throws {
@@ -32,10 +37,20 @@ struct ShareOptions: Codable {
         advanced = (try? c.decodeIfPresent(ShareAdvanced.self, forKey: .advanced)) ?? ShareAdvanced()
         platforms = (try? c.decodeIfPresent([String: String].self, forKey: .platforms)) ?? [:]
         edgeRange = ((try? c.decodeIfPresent([String: String].self, forKey: .edgeRange)) ?? [:]).filter { ["first", "second"].contains($0.value) }
-        layout = ((try? c.decodeIfPresent([String: [Int]].self, forKey: .layout)) ?? [:]).filter { $0.value.count == 2 && abs($0.value[0]) <= 2 && abs($0.value[1]) <= 2 }
+        layout = ((try? c.decodeIfPresent([String: [Int]].self, forKey: .layout)) ?? [:]).filter { $0.value.count == 2 && abs($0.value[0]) <= ShareGrid.reach && abs($0.value[1]) <= ShareGrid.reach }
         screenNumbers = ((try? c.decodeIfPresent([String: Int].self, forKey: .screenNumbers)) ?? [:]).filter { (2...9).contains($0.value) }
         appearance = (try? c.decodeIfPresent(String.self, forKey: .appearance)).flatMap { $0 }.flatMap { ["system", "light", "dark"].contains($0) ? $0 : nil } ?? "system"
+        grid = (try? c.decodeIfPresent(ShareGrid.self, forKey: .grid)).flatMap { $0 }.flatMap { $0.valid ? $0 : nil }
+        preset = (try? c.decodeIfPresent(String.self, forKey: .preset)).flatMap { $0 }.flatMap { ShareLayoutView.presetIds.contains($0) ? $0 : nil }
+        custom = (try? c.decodeIfPresent(ShareGrid.self, forKey: .custom)).flatMap { $0 }.flatMap { $0.valid ? $0 : nil }
     }
+}
+// Size of the arrange grid (1...9 each way), this host's cell in it, and (for 自訂) each receiver's place relative to the host.
+struct ShareGrid: Codable, Equatable {
+    static let maxSide = 9, reach = 8
+    var cols = 5, rows = 5, hostX = 2, hostY = 2
+    var layout: [String: [Int]] = [:]
+    var valid: Bool { (1...Self.maxSide).contains(cols) && (1...Self.maxSide).contains(rows) && (0..<cols).contains(hostX) && (0..<rows).contains(hostY) && layout.values.allSatisfy { $0.count == 2 } }
 }
 // Host-side Barrier options from the advanced settings dialog.
 struct ShareAdvanced: Codable, Equatable {
@@ -508,49 +523,194 @@ struct ShareProgress {
     }
 }
 
-// Drag the paired receivers around this host on a 5x5 grid. Neighbouring cells are linked edges;
-// every screen must touch the group, or the cursor could never reach it.
+// Arrange editor: a grid of 1...9 columns and rows. Every computer, this host included, can be dragged to
+// any cell (onto another computer swaps them). Neighbouring cells are linked edges; every screen must touch
+// the group, or the cursor could never reach it. Cells are kept in grid coordinates; `placement` gives
+// each receiver's place relative to this host, which is what the screen config uses.
 final class ShareLayoutView: NSView {
-    static let cell = CGSize(width: 104, height: 64), span = 2
-    var names: [String: String], placement: [String: ShareSettings.Cell], blue: NSColor, onChange: (() -> Void)?
-    var colors: [String: NSColor] = [:], defaults: (() -> [String: ShareSettings.Cell])?
-    @objc func restoreDefaults() { if let d = defaults?() { placement = d; needsDisplay = true; onChange?() } }
+    typealias Cell = ShareSettings.Cell
+    static let area = CGSize(width: 520, height: 320), host = ""
+    static let presets: [(id: String, title: String)] = [("center", "主控在中間"), ("rowL", "一排・主控最左"), ("rowR", "一排・主控最右"), ("rowM", "一排・主控中間"), ("colT", "直排・主控最上"),
+        ("twoTL", "兩排・主控左上"), ("twoBM", "兩排・主控下中"), ("L", "L 形・主控轉角"), ("ring", "口字形・主控中央"), ("T", "T 形・主控上中"), ("custom", "自訂")]
+    static var presetIds: [String] { presets.map { $0.id } }
+    var names: [String: String], blue: NSColor, onChange: (() -> Void)?
+    var colors: [String: NSColor] = [:]
+    // Receivers in pairing order, and the classic arrangement for "center" (relative to the host).
+    var order: [String], center: [String: Cell]
+    var cols = 5, rows = 5, spots: [String: Cell] = [:]
+    var preset = "custom", custom: ShareGrid?
     var dragging: String?, pointer = NSPoint.zero
     override var isFlipped: Bool { true }
-    init(names: [String: String], placement: [String: ShareSettings.Cell], blue: NSColor) {
-        self.names = names; self.placement = placement; self.blue = blue
-        super.init(frame: NSRect(x: 0, y: 0, width: ShareLayoutView.cell.width * 5, height: ShareLayoutView.cell.height * 5))
+    init(names: [String: String], placement: [String: Cell], blue: NSColor, order: [String]? = nil, grid: ShareGrid = ShareGrid()) {
+        self.names = names; self.blue = blue; self.order = order ?? placement.keys.sorted(); self.center = placement
+        super.init(frame: NSRect(origin: .zero, size: Self.area))
+        load(ShareGrid(cols: grid.cols, rows: grid.rows, hostX: grid.hostX, hostY: grid.hostY, layout: placement.mapValues { [$0.x, $0.y] }))
     }
     required init?(coder: NSCoder) { fatalError("unused") }
-    func rect(_ c: ShareSettings.Cell) -> NSRect { NSRect(x: CGFloat(c.x + 2) * Self.cell.width + 5, y: CGFloat(c.y + 2) * Self.cell.height + 5, width: Self.cell.width - 10, height: Self.cell.height - 10) }
+    // Receivers relative to this host.
+    var placement: [String: Cell] {
+        let h = spots[Self.host] ?? Cell(x: 0, y: 0)
+        return spots.filter { $0.key != Self.host }.mapValues { Cell(x: $0.x - h.x, y: $0.y - h.y) }
+    }
+    var snapshot: ShareGrid { let h = spots[Self.host]!; return ShareGrid(cols: cols, rows: rows, hostX: h.x, hostY: h.y, layout: placement.mapValues { [$0.x, $0.y] }) }
+    // Puts a saved arrangement on the grid, growing the grid (up to 9x9) when a receiver falls outside it.
+    // Receivers it does not mention, or that cannot fit, go to the first free cell next to the group.
+    func load(_ g: ShareGrid) {
+        var host = Cell(x: g.hostX, y: g.hostY), rel: [String: Cell] = [:]
+        for fp in order { if let v = g.layout[fp], v.count == 2, Cell(x: v[0], y: v[1]) != Cell(x: 0, y: 0) { rel[fp] = Cell(x: v[0], y: v[1]) } }
+        let xs = rel.values.map { $0.x + host.x } + [0, g.cols - 1], ys = rel.values.map { $0.y + host.y } + [0, g.rows - 1]
+        var w = xs.max()! - xs.min()! + 1, h = ys.max()! - ys.min()! + 1
+        if w > ShareGrid.maxSide || h > ShareGrid.maxSide { rel = [:]; w = g.cols; h = g.rows } else { host = Cell(x: host.x - xs.min()!, y: host.y - ys.min()!) }
+        cols = w; rows = h; spots = [Self.host: host]
+        for fp in order { if let r = rel[fp], !spots.values.contains(Cell(x: host.x + r.x, y: host.y + r.y)) { spots[fp] = Cell(x: host.x + r.x, y: host.y + r.y) } }
+        for fp in order where spots[fp] == nil { if let c = freeNeighbour() { spots[fp] = c } }
+        needsDisplay = true
+    }
+    func freeNeighbour() -> Cell? {
+        let taken = Set(spots.values)
+        for c in Self.bfs(from: spots[Self.host]!, cols: cols, rows: rows) { if !taken.contains(c) { return c } }
+        return nil
+    }
+    // Cells of a shape ordered by distance from `from` (neighbours right, left, up, down), only through the shape.
+    static func bfs(from: Cell, cols: Int, rows: Int, shape: ((Cell) -> Bool)? = nil) -> [Cell] {
+        var seen: Set<Cell> = [from], queue = [from], out: [Cell] = []
+        while !queue.isEmpty {
+            let c = queue.removeFirst()
+            for n in [Cell(x: c.x + 1, y: c.y), Cell(x: c.x - 1, y: c.y), Cell(x: c.x, y: c.y - 1), Cell(x: c.x, y: c.y + 1)]
+            where (0..<cols).contains(n.x) && (0..<rows).contains(n.y) && !seen.contains(n) && (shape?(n) ?? true) { seen.insert(n); queue.append(n); out.append(n) }
+        }
+        return out
+    }
+    // The arrangement a preset gives for `count` receivers: grid size, host cell, receiver cells in pairing order.
+    static func layout(_ id: String, count n: Int, center: [Cell] = []) -> (cols: Int, rows: Int, host: Cell, cells: [Cell]) {
+        var cols = n + 1, rows = 1, host = Cell(x: 0, y: 0)
+        var shape: ((Cell) -> Bool)? = nil
+        switch id {
+        case "rowR": host = Cell(x: n, y: 0)
+        case "rowM": host = Cell(x: n / 2, y: 0)
+        case "colT": cols = 1; rows = n + 1
+        case "twoTL": cols = max(1, (n + 2) / 2); rows = 2
+        case "twoBM": cols = (n + 2) / 2; if cols % 2 == 0 { cols += 1 }; rows = 2; host = Cell(x: cols / 2, y: 1)
+        case "L": var side = 1; while 2 * side - 1 < n + 1 { side += 1 }; cols = side; rows = side; host = Cell(x: 0, y: side - 1); shape = { $0.x == 0 || $0.y == side - 1 }
+        case "ring": cols = 3; rows = 3; host = Cell(x: 1, y: 1)
+        case "T": let w = n >= 4 ? 5 : 3; cols = w; rows = 1 + max(0, n + 1 - w); host = Cell(x: w / 2, y: 0); shape = { $0.y == 0 || $0.x == w / 2 }
+        case "center": cols = 5; rows = 5; host = Cell(x: 2, y: 2)
+            if center.count == n { return (cols, rows, host, center.map { Cell(x: $0.x + 2, y: $0.y + 2) }) }
+        default: break
+        }
+        cols = min(cols, ShareGrid.maxSide); rows = min(rows, ShareGrid.maxSide)
+        return (cols, rows, host, Array(bfs(from: host, cols: cols, rows: rows, shape: shape).prefix(n)))
+    }
+    func choose(_ id: String) {
+        if id == "custom" { if let c = custom { load(c) } }
+        else {
+            let l = Self.layout(id, count: order.count, center: order.map { center[$0] ?? Cell(x: 0, y: 0) })
+            cols = l.cols; rows = l.rows; spots = [Self.host: l.host]
+            for (fp, c) in zip(order, l.cells) { spots[fp] = c }
+            for fp in order where spots[fp] == nil { if let c = freeNeighbour() { spots[fp] = c } }
+        }
+        preset = id; needsDisplay = true; onChange?()
+    }
+    // A change the user made by hand becomes their 自訂 arrangement.
+    func edited() { preset = "custom"; custom = snapshot; needsDisplay = true; onChange?() }
+    @discardableResult func resize(cols c: Int, rows r: Int) -> String? {
+        guard (1...ShareGrid.maxSide).contains(c), (1...ShareGrid.maxSide).contains(r) else { return "最多 9 欄 × 9 列。" }
+        guard spots.values.allSatisfy({ $0.x < c && $0.y < r }) else { return "最右或最下那排還有電腦，先把它移開再縮小。" }
+        cols = c; rows = r; edited(); return nil
+    }
+    var cellSize: CGSize {
+        let w = min(104, Self.area.width / CGFloat(cols)), h = min(64, Self.area.height / CGFloat(rows))
+        return CGSize(width: min(w, h * 1.625), height: min(h, w / 1.625))
+    }
+    var origin: CGPoint { let s = cellSize; return CGPoint(x: (bounds.width - s.width * CGFloat(cols)) / 2, y: (bounds.height - s.height * CGFloat(rows)) / 2) }
+    func rect(_ c: Cell) -> NSRect {
+        let s = cellSize, o = origin, inset = min(5, s.width * 0.06)
+        return NSRect(x: o.x + CGFloat(c.x) * s.width + inset, y: o.y + CGFloat(c.y) * s.height + inset, width: s.width - 2 * inset, height: s.height - 2 * inset)
+    }
+    func cell(at p: NSPoint) -> Cell? {
+        let s = cellSize, o = origin, x = Int(floor((p.x - o.x) / s.width)), y = Int(floor((p.y - o.y) / s.height))
+        return (0..<cols).contains(x) && (0..<rows).contains(y) ? Cell(x: x, y: y) : nil
+    }
     func reachable() -> Bool {
-        let all = Set(placement.values); var seen: Set<ShareSettings.Cell> = [ShareSettings.Cell(x: 0, y: 0)]
-        var queue = Array(seen)
+        let all = Set(spots.values); var seen: Set<Cell> = [spots[Self.host]!], queue = Array(seen)
         while let c = queue.popLast() {
-            for n in [ShareSettings.Cell(x: c.x + 1, y: c.y), ShareSettings.Cell(x: c.x - 1, y: c.y), ShareSettings.Cell(x: c.x, y: c.y + 1), ShareSettings.Cell(x: c.x, y: c.y - 1)] where all.contains(n) && !seen.contains(n) { seen.insert(n); queue.append(n) }
+            for n in [Cell(x: c.x + 1, y: c.y), Cell(x: c.x - 1, y: c.y), Cell(x: c.x, y: c.y + 1), Cell(x: c.x, y: c.y - 1)] where all.contains(n) && !seen.contains(n) { seen.insert(n); queue.append(n) }
         }
         return all.isSubset(of: seen)
     }
-    @discardableResult func place(_ fp: String, _ c: ShareSettings.Cell) -> Bool {
-        guard abs(c.x) <= Self.span, abs(c.y) <= Self.span, c != ShareSettings.Cell(x: 0, y: 0), !placement.contains(where: { $0.key != fp && $0.value == c }) else { return false }
-        placement[fp] = c; needsDisplay = true; onChange?(); return true
+    // Moves a computer ("" = this host) to a grid cell; a computer already there takes its old place.
+    @discardableResult func place(_ key: String, _ c: Cell) -> Bool {
+        guard let old = spots[key], (0..<cols).contains(c.x), (0..<rows).contains(c.y), c != old else { return false }
+        if let other = spots.first(where: { $0.value == c })?.key { spots[other] = old }
+        spots[key] = c; edited(); return true
     }
-    override func mouseDown(with event: NSEvent) { pointer = convert(event.locationInWindow, from: nil); dragging = placement.first { rect($0.value).contains(pointer) }?.key }
+    override func mouseDown(with event: NSEvent) { pointer = convert(event.locationInWindow, from: nil); dragging = spots.first { rect($0.value).contains(pointer) }?.key }
     override func mouseDragged(with event: NSEvent) { pointer = convert(event.locationInWindow, from: nil); if dragging != nil { needsDisplay = true } }
     override func mouseUp(with event: NSEvent) {
-        let p = convert(event.locationInWindow, from: nil)
-        if let fp = dragging { place(fp, ShareSettings.Cell(x: Int(p.x / Self.cell.width) - 2, y: Int(p.y / Self.cell.height) - 2)) }
+        if let key = dragging, let c = cell(at: convert(event.locationInWindow, from: nil)) { place(key, c) }
         dragging = nil; needsDisplay = true
     }
     override func draw(_ dirtyRect: NSRect) {
         ShareStyle.mapBack.setFill(); bounds.fill()
-        let dash = ShareStyle.border
-        for y in -2...2 { for x in -2...2 { let path = NSBezierPath(rect: rect(ShareSettings.Cell(x: x, y: y))); path.setLineDash([4, 3], count: 2, phase: 0); dash.setStroke(); path.stroke() } }
-        ShareScreenMap.drawTile(.init(cell: .init(x: 0, y: 0), name: "這台", isSelf: true), rect(ShareSettings.Cell(x: 0, y: 0)), fontSize: 12)
-        for (fp, c) in placement {
-            var r = rect(c); if fp == dragging { r.origin = NSPoint(x: pointer.x - r.width / 2, y: pointer.y - r.height / 2) }
-            ShareScreenMap.drawTile(.init(cell: c, name: names[fp] ?? "", color: colors[fp] ?? blue), r, fontSize: 12)
+        let font = max(9, min(12, cellSize.width / 8.5))
+        for y in 0..<rows { for x in 0..<cols { let path = NSBezierPath(rect: rect(Cell(x: x, y: y))); path.setLineDash([4, 3], count: 2, phase: 0); ShareStyle.border.setStroke(); path.stroke() } }
+        for (key, c) in spots.sorted(by: { ($0.key == dragging ? 1 : 0) < ($1.key == dragging ? 1 : 0) }) {
+            var r = rect(c); if key == dragging { r.origin = NSPoint(x: pointer.x - r.width / 2, y: pointer.y - r.height / 2) }
+            if key == Self.host { ShareScreenMap.drawTile(.init(cell: c, name: "這台", isSelf: true), r, fontSize: font) }
+            else { ShareScreenMap.drawTile(.init(cell: c, name: names[key] ?? "", color: colors[key] ?? blue), r, fontSize: font) }
         }
+    }
+}
+// Preset layouts as small pictures (blue = this host, grey = receivers) drawn for the real number of receivers.
+final class SharePresetBar: NSView {
+    weak var layout: ShareLayoutView?
+    static let card = CGSize(width: 112, height: 58), gap: CGFloat = 8
+    override var isFlipped: Bool { true }
+    var perRow: Int { max(1, Int((bounds.width + Self.gap) / (Self.card.width + Self.gap))) }
+    static func height(width: CGFloat, count: Int) -> CGFloat {
+        let per = max(1, Int((width + gap) / (card.width + gap))), lines = (count + per - 1) / per
+        return CGFloat(lines) * card.height + CGFloat(lines - 1) * gap
+    }
+    func frame(_ i: Int) -> NSRect { NSRect(x: CGFloat(i % perRow) * (Self.card.width + Self.gap), y: CGFloat(i / perRow) * (Self.card.height + Self.gap), width: Self.card.width, height: Self.card.height) }
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if let i = ShareLayoutView.presets.indices.first(where: { frame($0).contains(p) }) { layout?.choose(ShareLayoutView.presets[i].id); needsDisplay = true }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        guard let layout = layout else { return }
+        for (i, p) in ShareLayoutView.presets.enumerated() {
+            let r = frame(i), on = layout.preset == p.id
+            let back = NSBezierPath(roundedRect: r.insetBy(dx: on ? 1 : 0.5, dy: on ? 1 : 0.5), xRadius: 8, yRadius: 8)
+            ShareStyle.cell.setFill(); back.fill(); back.lineWidth = on ? 2 : 1; (on ? ShareStyle.blue : ShareStyle.border).setStroke(); back.stroke()
+            var g: (cols: Int, rows: Int, host: ShareSettings.Cell, cells: [ShareSettings.Cell])?
+            if p.id == "custom" { if let c = layout.custom { g = (c.cols, c.rows, .init(x: c.hostX, y: c.hostY), c.layout.values.map { .init(x: $0[0] + c.hostX, y: $0[1] + c.hostY) }) } }
+            else { g = ShareLayoutView.layout(p.id, count: layout.order.count, center: layout.order.map { layout.center[$0] ?? .init(x: 0, y: 0) }) }
+            let pic = NSRect(x: r.minX + 10, y: r.minY + 6, width: r.width - 20, height: 30)
+            if let g = g {
+                let u = min(pic.width / CGFloat(g.cols), pic.height / CGFloat(g.rows), 12)
+                let ox = pic.midX - u * CGFloat(g.cols) / 2, oy = pic.midY - u * CGFloat(g.rows) / 2
+                for y in 0..<g.rows { for x in 0..<g.cols {
+                    let empty = NSBezierPath(rect: NSRect(x: ox + CGFloat(x) * u + 1, y: oy + CGFloat(y) * u + 1, width: u - 2, height: u - 2)); empty.lineWidth = 0.5; ShareStyle.border.setStroke(); empty.stroke()
+                } }
+                for (k, c) in ([g.host] + g.cells).enumerated() {
+                    let box = NSBezierPath(roundedRect: NSRect(x: ox + CGFloat(c.x) * u + 1, y: oy + CGFloat(c.y) * u + 1, width: u - 2, height: u - 2), xRadius: 1.5, yRadius: 1.5)
+                    (k == 0 ? ShareStyle.tint : ShareStyle.field).setFill(); box.fill(); (k == 0 ? ShareStyle.blue : ShareStyle.muted).setStroke(); box.lineWidth = 1; box.stroke()
+                }
+            } else {
+                let box = NSBezierPath(roundedRect: NSRect(x: pic.midX - 15, y: pic.minY, width: 30, height: 30), xRadius: 4, yRadius: 4); box.setLineDash([3, 3], count: 2, phase: 0); ShareStyle.faint.setStroke(); box.stroke()
+            }
+            let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
+            NSAttributedString(string: p.title, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: on ? ShareStyle.blueInk : ShareStyle.muted, .paragraphStyle: style]).draw(in: NSRect(x: r.minX + 4, y: r.maxY - 19, width: r.width - 8, height: 16))
+        }
+    }
+}
+// Steps the grid's columns or rows; a refusal is shown under the grid.
+final class ShareGridStepper: NSObject {
+    weak var layout: ShareLayoutView?; var report: ((String?) -> Void)?
+    @objc func step(_ sender: NSButton) {
+        guard let l = layout else { return }
+        let d = sender.tag % 2 == 0 ? -1 : 1
+        report?(sender.tag < 2 ? l.resize(cols: l.cols + d, rows: l.rows) : l.resize(cols: l.cols, rows: l.rows + d))
     }
 }
 
@@ -1133,7 +1293,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         return "NUMBERS\t" + peers.compactMap { p in numbers[p.fingerprint].map { n in
             // n/dx/dy: the receiver's place in this host's arrangement, so it can draw the host on the right side.
             let cell = grid.first { $0.0 == ShareSettings.screenName(p.fingerprint) }?.1
-            return "\(p.fingerprint)=\(n)" + (cell.map { abs($0.x) <= 2 && abs($0.y) <= 2 ? "/\($0.x)/\($0.y)" : "" } ?? "")
+            return "\(p.fingerprint)=\(n)" + (cell.map { abs($0.x) <= ShareGrid.reach && abs($0.y) <= ShareGrid.reach ? "/\($0.x)/\($0.y)" : "" } ?? "")
         } }.joined(separator: ",")
     }
     func sendNumbers() {
@@ -1579,7 +1739,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         } else if (f[0] == "REQUEST" || f[0] == "VERIFY") && f.count == 5 { showConsent(f) }
         else if f[0] == "NUMBER" && (f.count == 3 || f.count == 4) && !options.host && peers.contains(where: { $0.fingerprint == f[1] }), let n = Int(f[2]), (1...9).contains(n) {
             let d = f.count == 4 ? f[3].split(separator: ",").compactMap { Int($0) } : []
-            hostCell = d.count == 2 && d != [0, 0] && d.allSatisfy({ abs($0) <= 2 }) ? .init(x: -d[0], y: -d[1]) : nil
+            hostCell = d.count == 2 && d != [0, 0] && d.allSatisfy({ abs($0) <= ShareGrid.reach }) ? .init(x: -d[0], y: -d[1]) : nil
             hostNumber = n
         }
         else if f[0] == "CLOSED" && f.count == 2 && consentId == f[1] { closeConsent() }
@@ -1682,25 +1842,44 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         var placement: [String: ShareSettings.Cell] = [:]
         for p in peers { if let cell = grid.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { placement[p.fingerprint] = cell } }
         let colors = Dictionary(uniqueKeysWithValues: peers.enumerated().map { ($0.element.fingerprint, ShareStyle.peer($0.offset)) })
-        let layoutView = ShareLayoutView(names: Dictionary(uniqueKeysWithValues: peers.map { ($0.fingerprint, $0.name) }), placement: placement, blue: blue); layoutView.colors = colors
-        let width = layoutView.frame.width + 248, height = layoutView.frame.height + 140
+        let layoutView = ShareLayoutView(names: Dictionary(uniqueKeysWithValues: peers.map { ($0.fingerprint, $0.name) }), placement: placement, blue: blue, order: peers.map { $0.fingerprint }, grid: options.grid ?? ShareGrid()); layoutView.colors = colors
+        let fresh = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: [:])
+        for p in peers { if let c = fresh.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { layoutView.center[p.fingerprint] = c } }
+        layoutView.preset = options.preset ?? (options.layout.isEmpty ? "center" : "custom")
+        layoutView.custom = options.custom ?? (layoutView.preset == "custom" ? layoutView.snapshot : nil)
+        let width = layoutView.frame.width + 248, barHeight = SharePresetBar.height(width: width - 48, count: ShareLayoutView.presets.count)
+        let gridY = 76 + barHeight + 48, height = gridY + layoutView.frame.height + 104
         let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "排列螢幕"
         let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: height)); view.fill = ShareStyle.card; panel.contentView = view
         let title = NSTextField(labelWithString: "排列螢幕"); title.font = .systemFont(ofSize: 18, weight: .bold); title.frame = NSRect(x: 24, y: 18, width: 300, height: 24); view.addSubview(title)
-        let hint = NSTextField(labelWithString: "拖曳電腦到這台的上下左右；相鄰的邊就是游標可以移過去的地方。螢幕大小不同時，可在右側選擇只相接上半段或下半段。"); hint.textColor = ShareStyle.muted; hint.font = .systemFont(ofSize: 12); hint.frame = NSRect(x: 24, y: 46, width: width - 48, height: 18); view.addSubview(hint)
-        layoutView.frame.origin = NSPoint(x: 24, y: 76); view.addSubview(layoutView)
+        let hint = NSTextField(labelWithString: "先點一個接近的佈局，再拖曳微調；「這台」也可以拖。相鄰的邊就是游標可以移過去的地方。"); hint.textColor = ShareStyle.muted; hint.font = .systemFont(ofSize: 12); hint.frame = NSRect(x: 24, y: 46, width: width - 48, height: 18); view.addSubview(hint)
+        let bar = SharePresetBar(frame: NSRect(x: 24, y: 76, width: width - 48, height: barHeight)); bar.layout = layoutView; view.addSubview(bar)
+        // Columns and rows: − value + for each, limited to 9 × 9.
+        let stepper = ShareGridStepper(); stepper.layout = layoutView
+        let sizeLabels = [NSTextField(labelWithString: ""), NSTextField(labelWithString: "")]
+        var sx: CGFloat = 24
+        for (k, word) in ["欄", "列"].enumerated() {
+            let label = NSTextField(labelWithString: word); label.font = .systemFont(ofSize: 13); label.textColor = ShareStyle.muted; label.frame = NSRect(x: sx, y: 76 + barHeight + 17, width: 20, height: 18); view.addSubview(label)
+            let minus = NSButton(title: "−", target: stepper, action: #selector(ShareGridStepper.step(_:))); minus.tag = k * 2; minus.bezelStyle = .rounded; minus.frame = NSRect(x: sx + 20, y: 76 + barHeight + 12, width: 32, height: 28); view.addSubview(minus)
+            sizeLabels[k].font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold); sizeLabels[k].alignment = .center; sizeLabels[k].frame = NSRect(x: sx + 54, y: 76 + barHeight + 17, width: 20, height: 18); view.addSubview(sizeLabels[k])
+            let plus = NSButton(title: "+", target: stepper, action: #selector(ShareGridStepper.step(_:))); plus.tag = k * 2 + 1; plus.bezelStyle = .rounded; plus.frame = NSRect(x: sx + 76, y: 76 + barHeight + 12, width: 32, height: 28); view.addSubview(plus)
+            minus.toolTip = "減少" + word; plus.toolTip = "增加" + word; sx += 128
+        }
+        let limit = NSTextField(labelWithString: "上限 9 × 9"); limit.font = .systemFont(ofSize: 12); limit.textColor = ShareStyle.faint; limit.frame = NSRect(x: sx, y: 76 + barHeight + 18, width: 120, height: 16); view.addSubview(limit)
+        layoutView.frame.origin = NSPoint(x: 24, y: gridY); view.addSubview(layoutView)
         // The per-computer list scrolls once several receivers each have their range and number pickers.
-        let listScroll = NSScrollView(frame: NSRect(x: layoutView.frame.maxX + 20, y: 76, width: 214, height: layoutView.frame.height)); listScroll.drawsBackground = false; listScroll.hasVerticalScroller = true; listScroll.autohidesScrollers = true
+        let listScroll = NSScrollView(frame: NSRect(x: layoutView.frame.maxX + 20, y: gridY, width: 214, height: layoutView.frame.height)); listScroll.drawsBackground = false; listScroll.hasVerticalScroller = true; listScroll.autohidesScrollers = true
         let list = FlippedView(frame: NSRect(x: 0, y: 0, width: 204, height: layoutView.frame.height)); listScroll.documentView = list; view.addSubview(listScroll)
         let ranges = ShareRangeTarget(options.edgeRange), numbers = ShareNumberTarget(options.screenNumbers)
         let warning = NSTextField(wrappingLabelWithString: ""); warning.textColor = ShareStyle.danger; warning.font = .systemFont(ofSize: 12); warning.frame = NSRect(x: 24, y: layoutView.frame.maxY + 10, width: width - 48, height: 32); view.addSubview(warning)
         let buttonsY = height - 56
-        let reset = NSButton(title: "恢復預設", target: nil, action: nil); reset.bezelStyle = .rounded; reset.frame = NSRect(x: 24, y: buttonsY, width: 100, height: 32); view.addSubview(reset)
         let cancel = NSButton(title: "取消", target: nil, action: nil); cancel.bezelStyle = .rounded; cancel.keyEquivalent = "\u{1b}"; cancel.frame = NSRect(x: width - 248, y: buttonsY, width: 108, height: 32); view.addSubview(cancel)
         let save = SharePrimaryButton(title: "儲存", target: nil, action: nil); save.frame = NSRect(x: width - 132, y: buttonsY, width: 108, height: 32); view.addSubview(save)
         let words = [ShareSettings.Cell(x: 1, y: 0): "右", ShareSettings.Cell(x: -1, y: 0): "左", ShareSettings.Cell(x: 0, y: -1): "上", ShareSettings.Cell(x: 0, y: 1): "下"]
-        let refresh = { [weak layoutView, weak list, weak warning, weak save] in
+        var refusal: String?
+        let refresh = { [weak layoutView, weak list, weak warning, weak save, weak bar] in
             guard let layoutView = layoutView, let list = list else { return }
+            sizeLabels[0].stringValue = String(layoutView.cols); sizeLabels[1].stringValue = String(layoutView.rows); bar?.needsDisplay = true
             list.subviews.forEach { $0.removeFromSuperview() }
             var y: CGFloat = 0
             for (i, p) in self.peers.enumerated() {
@@ -1732,19 +1911,13 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
             }
             list.frame.size.height = max(y, layoutView.frame.height)
             let ok = layoutView.reachable()
-            warning?.stringValue = ok ? "" : "有螢幕和這台連不上。請讓每台都緊鄰這台或其他螢幕。"; save?.isEnabled = ok
+            warning?.stringValue = refusal ?? (ok ? "" : "有螢幕和這台連不上。請讓每台都緊鄰這台或其他螢幕。"); save?.isEnabled = ok; refusal = nil
         }
-        layoutView.onChange = refresh; numbers.onChange = refresh
-        reset.target = layoutView; reset.action = #selector(ShareLayoutView.restoreDefaults)
-        layoutView.defaults = { [weak self] in
-            guard let self = self else { return [:] }
-            let fresh = ShareSettings.cells(self.options.position, receivers: self.peers.map { $0.fingerprint }, layout: [:])
-            var d: [String: ShareSettings.Cell] = [:]; for p in self.peers { if let c = fresh.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { d[p.fingerprint] = c } }; return d
-        }
+        layoutView.onChange = refresh; numbers.onChange = refresh; stepper.report = { refusal = $0; refresh() }
         var saved = false
         cancel.target = panel; cancel.action = #selector(NSWindow.close)
         let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
-        objc_setAssociatedObject(panel, "closer", [closer, ranges, numbers], .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(panel, "closer", [closer, ranges, numbers, stepper], .OBJC_ASSOCIATION_RETAIN)
         refresh()
         return (panel, layoutView, { saved = closer.accepted; return saved }, ranges, numbers)
     }
@@ -1753,6 +1926,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         panel.center(); NSApp.runModal(for: panel); panel.orderOut(nil)
         guard accepted(), view.reachable() else { return }
         for (fp, cell) in view.placement { options.layout[fp] = [cell.x, cell.y] }
+        let g = view.snapshot; options.grid = ShareGrid(cols: g.cols, rows: g.rows, hostX: g.hostX, hostY: g.hostY); options.preset = view.preset; options.custom = view.custom
         options.edgeRange = ranges.ranges.filter { $0.value != "all" }; options.screenNumbers = numbers.numbers
         do { try ShareSettings.save(options); status.stringValue = "已儲存螢幕排列。"; peersChanged(); applyHostConfig() } catch { showError(error) }
     }
@@ -1905,7 +2079,34 @@ func selfTest(_ directory: URL) throws {
     var withLayout = ShareOptions(); withLayout.layout = [fb: [0, -1], "bad": [9, 9]]; try ShareSettings.save(withLayout)
     guard try ShareSettings.load().layout == [fb: [0, -1]] else { throw ShareError.message("Screen layout roundtrip failed") }
     let layout = ShareLayoutView(names: [fa: "書房 Windows", fb: "MacBook Air", fc: "客廳電腦"], placement: [fa: .init(x: 1, y: 0), fb: .init(x: 0, y: -1), fc: .init(x: -1, y: 0)], blue: .systemBlue)
-    guard layout.reachable(), !layout.place(fc, .init(x: 1, y: 0)), layout.place(fc, .init(x: 2, y: 2)), !layout.reachable(), layout.place(fc, .init(x: -1, y: 0)), layout.reachable() else { throw ShareError.message("Layout editor rules failed") }
+    // Grid cells: this host at (2,2) of 5x5. Dropping on a computer swaps; the host can move too.
+    guard layout.reachable(), layout.place(fc, .init(x: 4, y: 4)), !layout.reachable(), layout.place(fc, .init(x: 1, y: 2)), layout.reachable(),
+          layout.place(ShareLayoutView.host, .init(x: 3, y: 2)), layout.placement[fa] == .init(x: -1, y: 0), layout.placement[fc] == .init(x: -2, y: 0), layout.reachable(),
+          !layout.place(fa, .init(x: 5, y: 0)), layout.preset == "custom" else { throw ShareError.message("Layout editor rules failed") }
+    // Presets fill the grid for the real receiver count; 自訂 survives looking at other presets.
+    let row = ShareLayoutView.layout("rowL", count: 8), rowCells: [ShareSettings.Cell] = (1...8).map { ShareSettings.Cell(x: $0, y: 0) }
+    guard row.cols == 9, row.rows == 1, row.host == ShareSettings.Cell(x: 0, y: 0), row.cells == rowCells,
+          ShareLayoutView.layout("rowR", count: 8).cells.first == ShareSettings.Cell(x: 7, y: 0), ShareLayoutView.layout("colT", count: 8).rows == 9 else { throw ShareError.message("Preset layouts failed") }
+    for p in ShareLayoutView.presets where p.id != "custom" { for n in 1...8 {
+        let l = ShareLayoutView.layout(p.id, count: n)
+        if l.cells.count != n || l.cols > 9 || l.rows > 9 || Set(l.cells).count != n || l.cells.contains(l.host) { throw ShareError.message("Preset \(p.id) failed for \(n) receivers") }
+    } }
+    let mine = layout.snapshot
+    layout.choose("rowL"); guard layout.cols == 4, layout.rows == 1, layout.placement.values.allSatisfy({ $0.y == 0 && $0.x > 0 }), layout.reachable() else { throw ShareError.message("Row preset failed") }
+    guard layout.resize(cols: 3, rows: 1) != nil, layout.resize(cols: 10, rows: 1) != nil, layout.resize(cols: 4, rows: 2) == nil, layout.preset == "custom" else { throw ShareError.message("Grid resize rules failed") }
+    layout.custom = mine; layout.choose("ring"); layout.choose("custom")
+    guard layout.snapshot == mine else { throw ShareError.message("自訂 layout was not restored") }
+    // A wide row (host + 8 receivers in a line) gives a chained config: each screen links only to its neighbours.
+    let eight = (0..<8).map { String(repeating: String($0), count: 64) }
+    let line = try ShareSettings.config("right", receivers: eight, layout: Dictionary(uniqueKeysWithValues: eight.enumerated().map { ($0.element, [$0.offset + 1, 0]) }))
+    let wide = eight.map(ShareSettings.screenName)
+    var chain = [" windows-host:\n  right = \(wide[0])\n ", " \(wide[0]):\n  right = \(wide[1])\n  left = windows-host\n ", " \(wide[7]):\n  left = \(wide[6])\n"]
+    for i in 1..<7 { chain.append(" \(wide[i]):\n  right = \(wide[i + 1])\n  left = \(wide[i - 1])\n ") }
+    for expected in chain where !line.contains(expected) { throw ShareError.message("Wide row config missing: \(expected)") }
+    var wideOptions = ShareOptions(); wideOptions.layout = [eight[0]: [8, 0]]; wideOptions.grid = ShareGrid(cols: 9, rows: 1, hostX: 0, hostY: 0); wideOptions.preset = "rowL"; wideOptions.custom = ShareGrid(cols: 9, rows: 9, hostX: 4, hostY: 4, layout: [eight[0]: [-4, 4]])
+    try ShareSettings.save(wideOptions); let wideBack = try ShareSettings.load()
+    guard wideBack.layout == wideOptions.layout, wideBack.grid == wideOptions.grid, wideBack.preset == "rowL", wideBack.custom == wideOptions.custom else { throw ShareError.message("Wide layout settings roundtrip failed") }
+    if let dir = ProcessInfo.processInfo.environment["CURSORWAY_WIDE_CONFIG"] { try line.write(toFile: dir, atomically: true, encoding: .utf8) }
     guard try ShareSettings.config("right").contains(" keystroke(Control+Alt+Right) = switchInDirection(right)\n keystroke(Control+Alt+Left) = switchInDirection(left)\nend\n") else { throw ShareError.message("Hotkey syntax changed") }
     var meter = ShareProgress(); meter.reset(); let t0 = Date()
     let first = meter.describe("[2026-11-12T10:00:00] INFO: file clipboard: progress sent 1048576 bytes", now: t0.addingTimeInterval(1))
@@ -2124,7 +2325,8 @@ func selfTest(_ directory: URL) throws {
     try snapshot(app.window.contentView, "gui-mac-paired.png")
     let (layoutPanel, layoutView, _, _, _) = app.buildLayout()
     guard layoutView.reachable(), !layoutView.place(peer, .init(x: 2, y: 2)) || !layoutView.reachable() else { throw ShareError.message("Arrange editor rules failed") }
-    layoutView.restoreDefaults(); try snapshot(layoutPanel.contentView, "gui-arrange.png")
+    layoutView.choose("center"); try snapshot(layoutPanel.contentView, "gui-arrange.png")
+    layoutView.choose("rowL"); try snapshot(layoutPanel.contentView, "gui-arrange-row.png"); layoutView.choose("center")
     let (advancedPanel, readAdvanced, _, complain) = app.buildAdvanced(ShareAdvanced())
     guard readAdvanced() == ShareAdvanced() else { throw ShareError.message("Advanced settings did not round-trip the defaults") }
     // 手動位址: an invalid entry is named in red under the box (no dialog) and typing hides it again.

@@ -303,8 +303,9 @@ function Get-Cores { @(Get-CimInstance Win32_Process -Filter "Name='cursorway-cl
 $cores = Get-Cores
 if ($cores.Count -ne 2) { throw "Expected the user core and the system core, found $($cores.Count)." }
 $reply = Invoke-Service "DESKTOP`tWinlogon"; Start-Sleep -Seconds 1
-$reply = Invoke-Service "DESKTOP`tauto"; Start-Sleep -Seconds 1
-$text = Get-Content -LiteralPath $notes -Raw
+$reply = Invoke-Service "DESKTOP`tauto"
+$deadline = [DateTime]::UtcNow.AddSeconds(10)
+do { Start-Sleep -Milliseconds 250; $text = Get-Content -LiteralPath $notes -Raw } while (-not ($text.Contains('route: system core (input desktop Winlogon') -and $text.LastIndexOf('route: user core') -gt $text.IndexOf('route: system core')) -and [DateTime]::UtcNow -lt $deadline)
 if (-not ($text.Contains('route: system core (input desktop Winlogon') -and $text.LastIndexOf('route: user core') -gt $text.IndexOf('route: system core'))) { throw "The route did not follow the input desktop: $text" }
 if (((Get-Cores) -join ',') -ne ($cores -join ',')) { throw 'A core was restarted when the desktop changed; it must only change the route.' }
 # A real second desktop, switched to and back: the service sees it and routes to the system core.

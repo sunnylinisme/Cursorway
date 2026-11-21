@@ -100,7 +100,8 @@ struct Relay {
         emit(std::string(name(c->role)) + " disconnected: " + why);
         if (c == host) { host = nullptr; hostReady = false; hostWantsInfo = false; sentInfo.clear(); options.clear(); entered = false; heldKeys.clear(); heldButtons.clear(); clipboard.clear(); clipboardPartial.clear();
             // The cores belong to that host session: they reconnect and start over with the next one.
-            for (auto& o : conns) if (o.get() != c && o->role != Role::Pending && !o->closed) close(o.get(), "the host connection ended");
+            // A host that never answered had no session: the cores stay and only the host is retried.
+            if (c->stage == 2) for (auto& o : conns) if (o.get() != c && o->role != Role::Pending && !o->closed) close(o.get(), "the host connection ended");
             hostRetry = Clock::now() + std::chrono::milliseconds(500); }
         if (c == user) { user = nullptr; }
         if (c == system) { system = nullptr; }

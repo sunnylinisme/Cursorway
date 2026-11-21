@@ -486,18 +486,18 @@ static class ShareService
 {
     public const string Pipe = "Cursorway.Service";
     public static bool Installed { get { return File.Exists(Path.Combine(ShareSettings.Bin, "cursorway-service.exe")); } }
+    // Ask the pipe for the server's session directly: ProcessIdToSessionId would need to open the
+    // SYSTEM service process, which a standard user is not allowed to do (0.3.31 then refused the real service).
     [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool GetNamedPipeServerProcessId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint process);
-    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
-    static extern bool ProcessIdToSessionId(uint process, out uint session);
+    static extern bool GetNamedPipeServerSessionId(Microsoft.Win32.SafeHandles.SafePipeHandle pipe, out uint session);
     public static string[] Request(string line, int timeout = 1500)
     {
         using (var pipe = new System.IO.Pipes.NamedPipeClientStream(".", Pipe, System.IO.Pipes.PipeDirection.InOut)) {
             pipe.Connect(timeout); pipe.ReadMode = System.IO.Pipes.PipeTransmissionMode.Message;
             // The pairing key goes over this pipe: talk only to the real service (session 0, where no
             // signed-in user can start a process), not to a program that created the pipe name first.
-            uint server, session;
-            if (!GetNamedPipeServerProcessId(pipe.SafePipeHandle, out server) || !ProcessIdToSessionId(server, out session) || session != 0)
+            uint session;
+            if (!GetNamedPipeServerSessionId(pipe.SafePipeHandle, out session) || session != 0)
                 throw new IOException("背景服務：連到的不是 Cursorway 服務");
             byte[] request = Encoding.UTF8.GetBytes(line); pipe.Write(request, 0, request.Length); pipe.Flush();
             var reply = new MemoryStream(); var buffer = new byte[4096];

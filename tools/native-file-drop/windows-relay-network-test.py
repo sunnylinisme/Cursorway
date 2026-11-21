@@ -129,6 +129,9 @@ with tempfile.TemporaryDirectory(prefix="cursorway-relay-") as temporary:
         host = Host(context.wrap_socket(peer, server_side=True))
         assert hashlib.sha256(host.wire.getpeercert(binary_form=True)).hexdigest() == fp["relay"].split(":", 2)[2], "relay showed another identity"
         info = host.until(b"DINF"); host.send(b"CIAK"); host.send(b"CROP")
+        # The host must see the user desktop's real shape, or it cannot tell when the pointer leaves an edge.
+        shape = struct.unpack("!hhhh", info[4:12]); metrics = tuple(user32.GetSystemMetrics(i) for i in (76, 77, 78, 79))
+        assert shape == metrics, "the host was given the shape %r, the desktop is %r" % (shape, metrics)
         host.send(b"DSOP" + struct.pack("!I", 2) + b"CLPS" + struct.pack("!I", 1))
         assert host.until(b"FCAP") == b"FCAP" + struct.pack("!I", 2), "the user core's file clipboard did not reach the host"
         host.send(b"FCAP" + struct.pack("!I", 2))

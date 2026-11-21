@@ -148,11 +148,16 @@ struct Relay {
         if (k == "CCLP" || k == "FCAP" || k.compare(0, 2, "FC") == 0 || k.compare(0, 3, "NDF") == 0) { toUser(m); return; }
         toActive(m);
     }
+    static std::string describeInfo(const std::string& m) {
+        if (m.size() < 18) return "(short)";
+        return std::to_string(sget16(m, 4)) + "," + std::to_string(sget16(m, 6)) + " " + std::to_string(sget16(m, 8)) + "x" + std::to_string(sget16(m, 10))
+            + " cursor " + std::to_string(sget16(m, 14)) + "," + std::to_string(sget16(m, 16));
+    }
     void sendInfo() {
         Conn* source = shapeSource();
         if (!host || host->stage != 2 || !hostWantsInfo || !source || source->dinf.empty()) return;
         if (source->dinf == sentInfo) return;
-        sentInfo = source->dinf; host->send(sentInfo); hostReady = false;
+        sentInfo = source->dinf; host->send(sentInfo); hostReady = false; emit("host given the " + std::string(name(source->role)) + " info " + describeInfo(sentInfo));
     }
 
     // ---- core side -------------------------------------------------------------------------
@@ -188,7 +193,9 @@ struct Relay {
             if (m.compare(0, 7, "Barrier") != 0) return close(c, "not a Barrier core");
             c->send("QINF"); c->stage = 1; return;
         }
-        if (k == "DINF") { c->dinf = m; if (c->stage == 1) coreReady(c); else sendInfo(); return; }
+        // A core that sends new info ignores the mouse until it is acknowledged: the relay answers it
+        // (the host's own CIAK goes to the relay, not to the core).
+        if (k == "DINF") { c->dinf = m; if (c->stage == 1) coreReady(c); else { c->send("CIAK"); sendInfo(); } emit(std::string(name(c->role)) + " info " + describeInfo(m)); return; }
         if (c->stage != 2) return;
         if (k == "CALV" || k == "CNOP") return;
         bool userData = k == "CCLP" || k == "DCLP" || k == "FCAP" || k.compare(0, 2, "FC") == 0 || k.compare(0, 3, "NDF") == 0;

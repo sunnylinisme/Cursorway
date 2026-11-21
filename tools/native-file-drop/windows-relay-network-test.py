@@ -177,9 +177,11 @@ with tempfile.TemporaryDirectory(prefix="cursorway-relay-") as temporary:
         # 2b. A large transfer while the pointer keeps moving: the relay's writes to the core back up and are
         # retried with a grown buffer; the connections must stay (a file drag dropped the host link in 0.3.34).
         big = ("Cursorway " * 300000).encode(); blob = struct.pack("!III", 1, 0, len(big)) + big
-        for mark, body in ((1, str(len(blob)).encode()), (2, blob), (3, b"")):
+        # As a real host sends it: the data in 32 KB DCLP chunks (one message may not exceed the core's limit).
+        chunks = [(1, str(len(blob)).encode())] + [(2, blob[i:i + 32768]) for i in range(0, len(blob), 32768)] + [(3, b"")]
+        for n, (mark, body) in enumerate(chunks):
             host.send(b"DCLP" + struct.pack("!BIB", 0, 8, mark) + string(body))
-            for i in range(50): host.send(b"DMMV" + struct.pack("!hh", 100 + i, 100))
+            if n % 10 == 0: host.send(b"DMMV" + struct.pack("!hh", 100 + n % 100, 100))
         host.send(b"DMMV" + struct.pack("!hh", 222, 233)); wait(lambda: abs(cursor()[0] - 222) <= 1 and abs(cursor()[1] - 233) <= 1, "the pointer stopped after a large transfer", 15)
         assert "disconnected" not in log_text(relay_log), log_text(relay_log)
         # 2c. Windows -> host: a copy on Windows grabs the clipboard at once; the text follows when the input leaves.

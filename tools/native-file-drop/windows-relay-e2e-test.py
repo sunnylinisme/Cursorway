@@ -146,9 +146,17 @@ end
             before = switches("windows-host"); user32.SetCursorPos(width // 2, height // 2); time.sleep(.2)
             leave_over_edge("the pointer did not come back to the host over the edge")
 
+        # One machine, one clipboard: the receiver sees every copy too and offers it to the host. Its offers carry
+        # the sequence number of its last entry; one trip there and back makes them older than the host's own.
+        def host_grabs(): return text("server").count('screen "windows-host" grabbed clipboard 0')
+        def copy_on_host(put, value):
+            before = host_grabs(); put(value)
+            wait(lambda: host_grabs() > before, "the host did not take the copy as its own:\n" + text("server")[-2000:])
+            time.sleep(.3)
+        enter(); leave_over_edge("the pointer did not come back to the host over the edge (warm-up)")
         # 1. Text from the host reaches the receiver.
         updates = text("user").count("clipboard was updated")
-        put_text("Cursorway 端到端 %d" % time.time_ns()); time.sleep(.5)
+        copy_on_host(put_text, "Cursorway 端到端 %d" % time.time_ns())
         enter()
         wait(lambda: text("user").count("clipboard was updated") > updates, "the receiver did not get the host's text")
         leave_over_edge("the pointer did not come back to the host over the edge")
@@ -157,7 +165,7 @@ end
         payload = os.urandom(1 << 20) + hashlib.sha256(b"cursorway").digest() * 4000
         source = root / "來源" / "主控端的檔案 測試.bin"; source.parent.mkdir(); source.write_bytes(payload)
         verified = text("user").count("file clipboard: received and verified")
-        put_files([source]); time.sleep(.5)
+        copy_on_host(put_files, [source])
         enter()
         wait(lambda: "file clipboard: sending" in text("server")[-20000:], "the host did not start sending the file")
         put_files([source])

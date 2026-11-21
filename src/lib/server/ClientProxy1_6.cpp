@@ -92,7 +92,10 @@ bool ClientProxy1_6::parseMessage(const UInt8* code)
 void ClientProxy1_6::grabClipboard(ClipboardID id)
 {
     if (m_filesEnabled && id != kClipboardClipboard) return;
-    if (id == kClipboardClipboard) m_files->cancel();
+    // Don't cancel a file transfer here: macOS often reports a second "clipboard changed" for the
+    // same copy right after the cursor leaves, which cancelled the transfer that had just started
+    // (seen with the slower relay path). New content still replaces it: a new file list restarts
+    // the transfer in start(), and text cancels it in setClipboard().
     ClientProxy1_5::grabClipboard(id);
 }
 

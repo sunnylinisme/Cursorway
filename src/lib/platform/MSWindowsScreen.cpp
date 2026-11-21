@@ -1520,6 +1520,10 @@ MSWindowsScreen::warpCursorNoFlush(SInt32 x, SInt32 y)
     // send an event that we can recognize before the mouse warp
     PostThreadMessage(GetCurrentThreadId(), BARRIER_MSG_PRE_WARP, x, y);
 
+    // A receiver in an end-to-end test shares the pointer with the host: leave it alone.
+    static const bool noPointer = GetEnvironmentVariableW(L"CURSORWAY_TEST_NO_POINTER", NULL, 0) > 0;
+    if (noPointer && !isPrimary()) return;
+
     // warp mouse.  hopefully this inserts a mouse motion event
     // between the previous message and the following message.
     SetCursorPos(x, y);

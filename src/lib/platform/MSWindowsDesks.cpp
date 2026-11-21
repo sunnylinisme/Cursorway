@@ -374,6 +374,10 @@ MSWindowsDesks::fakeMouseWheel(SInt32 xDelta, SInt32 yDelta) const
 void
 MSWindowsDesks::sendMessage(UINT msg, WPARAM wParam, LPARAM lParam) const
 {
+    // End-to-end tests run the host and the receiver on one Windows machine: the receiver must not
+    // move the one pointer, or the host would take its moves for the user's.
+    static const bool noPointer = GetEnvironmentVariableW(L"CURSORWAY_TEST_NO_POINTER", NULL, 0) > 0;
+    if (noPointer && (msg == BARRIER_MSG_FAKE_MOVE || msg == BARRIER_MSG_FAKE_REL_MOVE || msg == BARRIER_MSG_FAKE_BUTTON || msg == BARRIER_MSG_FAKE_WHEEL)) return;
     if (m_activeDesk != NULL && m_activeDesk->m_window != NULL) {
         PostThreadMessage(m_activeDesk->m_threadID, msg, wParam, lParam);
         waitForDesk();

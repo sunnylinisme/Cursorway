@@ -27,11 +27,11 @@ def report(kind, value, trace):
     print("::error title=Relay end to end::" + "%0A".join("".join(traceback.format_exception(kind, value, trace)).splitlines()[-12:]), flush=True)
     sys.__excepthook__(kind, value, trace)
 sys.excepthook = report
-user32 = ctypes.WinDLL("user32", use_last_error=True); kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+user32 = ctypes.WinDLL("user32", use_last_error=True); kernel32 = ctypes.WinDLL("kernel32", use_last_error=True); shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 user32.GetClipboardData.restype = wintypes.HANDLE; user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
 kernel32.GlobalAlloc.restype = wintypes.HGLOBAL; kernel32.GlobalLock.restype = ctypes.c_void_p
 kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]; kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-user32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
+shell32.DragQueryFileW.argtypes = [wintypes.HANDLE, wintypes.UINT, wintypes.LPWSTR, wintypes.UINT]
 
 
 def wait(check, what, seconds=15):
@@ -61,9 +61,9 @@ def clipboard_files():
     try:
         handle = user32.GetClipboardData(15)
         if not handle: return None
-        count = user32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0); result = []
+        count = shell32.DragQueryFileW(handle, 0xFFFFFFFF, None, 0); result = []
         for i in range(count):
-            buffer = ctypes.create_unicode_buffer(32768); user32.DragQueryFileW(handle, i, buffer, 32768); result.append(pathlib.Path(buffer.value))
+            buffer = ctypes.create_unicode_buffer(32768); shell32.DragQueryFileW(handle, i, buffer, 32768); result.append(pathlib.Path(buffer.value))
         return result
     finally: user32.CloseClipboard()
 

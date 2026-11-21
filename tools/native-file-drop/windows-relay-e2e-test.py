@@ -185,7 +185,7 @@ end
         print("PASS: real host -> relay -> receiver core")
     except Exception:
         for name, path in logs.items():
-            if path.exists(): print("==", name); print(path.read_text(encoding="utf-8", errors="replace")[-5000:])
+            if path.exists(): print("==", name); print(path.read_text(encoding="utf-8", errors="replace")[-5000:]); print("::error title=" + str(name) + "::" + "%0A".join(path.read_text(encoding="utf-8", errors="replace")[-2500:].replace("%", "%25").splitlines()), flush=True)
         raise
     finally:
         for p in processes:

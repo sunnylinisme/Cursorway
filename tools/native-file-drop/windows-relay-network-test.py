@@ -239,7 +239,7 @@ with tempfile.TemporaryDirectory(prefix="cursorway-relay-") as temporary:
         host.alive = False
     except Exception:
         for path in [root / "relay.log", root / "user.log", root / "system.log"]:
-            if path.exists(): print("==", path.name); print(path.read_text(errors="replace")[-4000:])
+            if path.exists(): print("==", path.name); print(path.read_text(errors="replace")[-4000:]); print("::error title=" + str(path.name) + "::" + "%0A".join(path.read_text(encoding="utf-8", errors="replace")[-2500:].replace("%", "%25").splitlines()), flush=True)
         raise
     finally:
         for p in processes:

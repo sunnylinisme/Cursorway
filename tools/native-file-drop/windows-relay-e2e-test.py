@@ -171,9 +171,12 @@ end
         put_files([source])
         wait(lambda: text("user").count("file clipboard: received and verified") > verified,
              "the file did not reach the receiver:\n" + text("server")[-2000:] + "\n" + text("user")[-2000:], 30)
-        files = wait(lambda: (lambda f: f if f and f[0] != source else None)(clipboard_files()), "the receiver did not put the received file on the clipboard")
-        assert files[0].name == source.name, files
-        assert hashlib.sha256(files[0].read_bytes()).digest() == hashlib.sha256(payload).digest(), "the received file differs"
+        # The shared clipboard is the host's again at once (it sees the receiver's paste-ready files as a new
+        # copy), so check the receiver's own copy in its file clipboard cache.
+        cache = profiles["user"] / "FileClipboardCache"
+        files = [f for f in cache.rglob(source.name) if "resume" not in f.parts] if cache.exists() else []
+        assert files, "the received file is not in the receiver's cache: %r" % (sorted(str(f) for f in cache.rglob("*"))[:20] if cache.exists() else "no cache")
+        assert any(hashlib.sha256(f.read_bytes()).digest() == hashlib.sha256(payload).digest() for f in files), "the received file differs"
         leave_over_edge("the pointer did not come back to the host after the file")
 
         # 3. One host connection so far.

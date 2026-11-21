@@ -410,7 +410,7 @@ ServerProxy::onGrabClipboard(ClipboardID id)
 {
     if (m_filesEnabled && id != kClipboardClipboard) return true;
     if (id == kClipboardClipboard) m_files->cancel();
-    LOG((CLOG_DEBUG1 "sending clipboard %d changed", id));
+    LOG((CLOG_INFO "clipboard: copied here, telling the host (clipboard %d, seq %u)", id, m_seqNum));
     ProtocolUtil::writef(m_stream, kMsgCClipboard, id, m_seqNum);
     return true;
 }
@@ -427,7 +427,7 @@ ServerProxy::onClipboardChanged(ClipboardID id, const IClipboard* clipboard)
     }
     if (id == kClipboardClipboard) m_files->cancel();
     std::string data = IClipboard::marshall(clipboard);
-    LOG((CLOG_DEBUG "sending clipboard %d seqnum=%d", id, m_seqNum));
+    LOG((CLOG_INFO "clipboard: sending text/data to the host (clipboard %d, seq %u)", id, m_seqNum));
 
     StreamChunker::sendClipboard(data, data.size(), id, m_seqNum, m_events, this);
 }

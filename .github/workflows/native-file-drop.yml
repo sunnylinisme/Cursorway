@@ -138,6 +138,10 @@ jobs:
         run: python tools/native-file-drop/windows-harden-test.py build/bin/Release
       - name: Relay keeps one host connection while the input moves between receiver cores
         run: python tools/native-file-drop/windows-relay-network-test.py build/bin/Release
+      - name: Real host, relay and receiver core end to end (clipboard, files, edge return, relay restart)
+        if: env.FULL == 'true'
+        timeout-minutes: 5
+        run: python tools/native-file-drop/windows-relay-e2e-test.py build/bin/Release
       - name: Ctrl+Alt+Del event reaches SendSAS in the service
         if: env.FULL == 'true'
         run: build/bin/Release/cursorway-service.exe --sas-test

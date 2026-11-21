@@ -53,6 +53,18 @@ def windows_clipboard():
     finally: user32.CloseClipboard()
 
 
+def set_windows_clipboard(text):
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]; kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.restype = ctypes.c_void_p; kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]; kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    wait(lambda: user32.OpenClipboard(None), "cannot open the clipboard", 3)
+    try:
+        data = (text + "\0").encode("utf-16-le"); handle = kernel32.GlobalAlloc(2, len(data)); pointer = kernel32.GlobalLock(handle)
+        ctypes.memmove(pointer, data, len(data)); kernel32.GlobalUnlock(handle); user32.EmptyClipboard()
+        assert user32.SetClipboardData(13, handle), "SetClipboardData failed"
+    finally: user32.CloseClipboard()
+
+
 class Host:
     """The simulated host: accepts the relay, answers keep-alives in the background."""
     def __init__(self, connection):
@@ -155,6 +167,16 @@ with tempfile.TemporaryDirectory(prefix="cursorway-relay-") as temporary:
             for i in range(50): host.send(b"DMMV" + struct.pack("!hh", 100 + i, 100))
         host.send(b"DMMV" + struct.pack("!hh", 222, 233)); wait(lambda: abs(cursor()[0] - 222) <= 1 and abs(cursor()[1] - 233) <= 1, "the pointer stopped after a large transfer", 15)
         assert "disconnected" not in log_text(relay_log), log_text(relay_log)
+        # 2c. Windows -> host: a copy on Windows grabs the clipboard at once; the text follows when the input leaves.
+        host.inbox[:] = [m for m in host.inbox if not m.startswith(b"CCLP") and not m.startswith(b"DCLP")]
+        outgoing = "from Windows ✓ %d" % time.time_ns(); set_windows_clipboard(outgoing)
+        host.until(b"CCLP", 10)
+        host.send(b"COUT"); deadline = time.monotonic() + 10; data = b""
+        while outgoing.encode() not in data:
+            assert time.monotonic() < deadline, "the Windows clipboard did not reach the host when the input left: %r" % data[-200:]
+            try: data += host.until(b"DCLP", max(.1, deadline - time.monotonic()))
+            except AssertionError: pass
+        host.send(b"CINN" + struct.pack("!hhIH", 60, 60, 2, 0))
         # 3. Shift held on the host; the input moves to the system core: Shift must not stay down.
         host.send(b"DKDN" + struct.pack("!HHH", 0xEFE1, 0, 42)); time.sleep(.3)
         assert user32.GetAsyncKeyState(0x10) & 0x8000, "the user core did not press Shift"

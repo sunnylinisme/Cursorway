@@ -253,6 +253,12 @@ $reply = Invoke-Service "DESKTOP`tauto"
 Wait-Core $me (Join-Path $serviceProfile 'server.log') 'back on the normal desktop'
 $switches = (Get-Content -LiteralPath (Join-Path (Split-Path $reply[2]) 'service.log') -Raw)
 if (-not ($switches.Contains('core now runs as SYSTEM') -and $switches.Contains('core now runs as the signed-in user'))) { throw "Service log does not record the switches: $switches" }
+# The app as a user without administrator rights (CI itself runs as one): 0.3.31 refused the real service then.
+$checkFile = Join-Path $TestRoot 'service-check.txt'
+& python (Join-Path $PSScriptRoot 'windows-basic-user-run.py') 30 ('"' + (Join-Path $installDir 'Cursorway.exe') + '" --service-check "' + $checkFile + '"')
+$check = if (Test-Path -LiteralPath $checkFile) { Get-Content -LiteralPath $checkFile -Raw } else { 'no answer' }
+if ($LASTEXITCODE -ne 0 -or -not $check.StartsWith('OK')) { throw "The app without administrator rights cannot use the service: $check (exit $LASTEXITCODE)" }
+Write-Output "::notice title=Service as a basic user::$check"
 $reply = Invoke-Service 'STOP'
 if ($reply[0] -ne 'OK' -or $reply[1] -ne '0') { throw "Service did not stop the core: $($reply -join ' ')" }
 Start-Sleep -Seconds 1

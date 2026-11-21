@@ -50,8 +50,11 @@ static class ShareSettings
         }
         result.Append('\\', slashes * 2); result.Append('"'); return result.ToString();
     }
+    // Set when Windows signs out or shuts down: nothing new is started from then on.
+    public static volatile bool Ending;
     public static ProcessStartInfo Command(string exe, params string[] args)
     {
+        if (Ending) throw new IOException("Windows 正在登出或關機。");
         return new ProcessStartInfo(Path.Combine(Bin, exe), String.Join(" ", args.Select(Quote).ToArray())) {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
             RedirectStandardError = true, WorkingDirectory = Bin,
@@ -1209,9 +1212,15 @@ sealed class ShareWindow : Form
             if (Width>available.Width || Height>available.Height) { Size=new Size(Math.Min(Width,available.Width),Math.Min(Height,available.Height)); Location=available.Location; }
             Startup();
         };
+        // Sign-out or shutdown: before any window is asked to close, stop the timers and every helper
+        // start and let the windows close, so the app never holds Windows up.
+        Microsoft.Win32.SystemEvents.SessionEnding += (sender, e) => {
+            ShareSettings.Ending = true; closing = true; keepServiceCore = true;
+            retry.Stop(); updateTimer.Stop(); serviceTail.Stop();
+        };
         FormClosing += delegate(object sender, FormClosingEventArgs e) {
             // On sign-out or shutdown the service keeps the core running for the sign-in screen.
-            if (e.CloseReason == CloseReason.WindowsShutDown) { closing = true; keepServiceCore = true; }
+            if (e.CloseReason == CloseReason.WindowsShutDown || ShareSettings.Ending) { closing = true; keepServiceCore = true; ShareSettings.Ending = true; }
             if (!closing && !testing) { e.Cancel = true; Hide(); Balloon(1500, "Cursorway", "程式已收至系統匣；可從圖示開啟或結束。", ToolTipIcon.Info); return; }
             closing = true; retry.Stop(); updateTimer.Stop(); StopLink(); StopBackend(); autoPaste.Dispose(); popup.Dismiss(); popup.Dispose(); tray.Dispose();
         };
@@ -1894,7 +1903,7 @@ sealed class ShareWindow : Form
             copyAll.Click += delegate { if (details.TextLength > 0) { Clipboard.SetText(details.Text); copyAll.Text = "已複製"; } };
             details.TextChanged += delegate { copyAll.Text = "全部複製"; };
             diagnostics.Controls.Add(bar); ShareStyle.Theme(diagnostics);
-            diagnostics.FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!closing) { e.Cancel=true; diagnostics.Hide(); } };
+            diagnostics.FormClosing += delegate(object sender, FormClosingEventArgs e) { if (!closing && !ShareSettings.Ending && e.CloseReason != CloseReason.WindowsShutDown) { e.Cancel=true; diagnostics.Hide(); } };
         }
         diagnostics.Show(this); diagnostics.Activate();
     }
@@ -2789,11 +2798,20 @@ static class ShareProgram
 {
     // windows-setup.iss signals this before replacing files; keep the name in sync.
     public const string QuitEvent = "Local\\Cursorway.Quit";
+    [System.Runtime.InteropServices.DllImport("kernel32.dll")] static extern uint SetErrorMode(uint mode);
     [STAThread]
     static int Main(string[] args)
     {
+        // SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX, inherited by the helpers:
+        // a helper that cannot start (for example while Windows shuts down) never shows an error box.
+        SetErrorMode(0x0001 | 0x0002 | 0x8000);
         Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
         if (args.Length == 2 && args[0] == "--self-test") return SelfTest(args[1]);
+        // Test hook: talk to the service the way the app does and write what happened (CI runs this without administrator rights).
+        if (args.Length == 2 && args[0] == "--service-check") {
+            try { File.WriteAllText(args[1], "OK " + String.Join(" ", ShareService.Request("STATUS", 5000))); return 0; }
+            catch (Exception e) { File.WriteAllText(args[1], "ERROR " + e.Message); return 1; }
+        }
         if (args.Length == 3 && args[0] == "--layout-scale") {
             // Renders the main window laid out at another scale, to find controls placed outside the scaling.
             ShareWindow.LayoutScale = float.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture);
@@ -2878,6 +2896,10 @@ static class ShareProgram
             }
             ShareSettings.Position = "right";
             if (!ShareSettings.Config(true).Contains(" keystroke(Control+Alt+Right) = switchInDirection(right)\n keystroke(Control+Alt+Left) = switchInDirection(left)\nend\n")) throw new Exception("Hotkey syntax changed");
+            // While Windows signs out or shuts down no helper is started (it could not start, and its error box would hold Windows up).
+            ShareSettings.Ending = true; bool endingRefused = false;
+            try { ShareSettings.Pair("init", Path.Combine(directory, "ending-probe")); } catch (IOException) { endingRefused = true; } finally { ShareSettings.Ending = false; }
+            if (!endingRefused || Directory.Exists(Path.Combine(directory, "ending-probe"))) throw new Exception("A helper was started while Windows was signing out");
             // The service's UI access lines become readable notes in the diagnostics.
             if (ShareWindow.UiAccessNote("[2026-11-20T10:00:00] core now runs as the signed-in user (input desktop Default), receiver, session 1, log x, UI access: off (a core with UI access ended after 40 ms, exit 0xC0000142, 1 in a row; retrying in 30 s)") != "UI 存取：關閉，以系統管理員執行的視窗（例如系統管理員 CMD）暫時無法操作。原因：a core with UI access ended after 40 ms, exit 0xC0000142, 1 in a row; retrying in 30 s"
                 || ShareWindow.UiAccessNote("x, UI access: on") == null || ShareWindow.UiAccessNote("core now runs as SYSTEM (input desktop Winlogon), receiver") != null) throw new Exception("UI access diagnostics note is wrong");

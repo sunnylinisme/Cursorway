@@ -199,6 +199,8 @@ void writeApprovedTrust(const Command& c) {
 // may query and wait for it (the same as --harden sets inside; this closes the gap before that runs).
 const wchar_t* kHardenedCore = L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x101000;;;OW)";
 bool hardenOff = false; std::string hardenOffReason; bool coreHardened = false;
+// A quick exit waiting to be put down to the hardening or UI access (see apply()).
+struct Blame { bool pending = false, hardened = false, uiAccess = false; ULONGLONG at = 0; std::string reason; } blame;
 HANDLE winlogonToken(DWORD session) {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0); PROCESSENTRY32W entry{sizeof(entry)}; HANDLE result = nullptr;
     for (BOOL more = Process32FirstW(snapshot, &entry); more && !result; more = Process32NextW(snapshot, &entry)) {
@@ -340,6 +342,33 @@ void apply() {
     HANDLE user = userToken(session); bool signedIn = user != nullptr; if (user) CloseHandle(user);
     bool secure = !desktop.empty() && _stricmp(desktop.c_str(), "Default") != 0;
     bool asSystem = !signedIn || secure;
+    static ULONGLONG retryAt = 0;
+    static unsigned quickExits = 0;
+    // Signing out, signing in or switching users changes the console session or whether a user is in
+    // it. Cores die and fail to start for a moment around that; start the next one at once rather than
+    // after the pause that a core that keeps ending would get.
+    static DWORD lastSession = 0xFFFFFFFF; static bool lastSignedIn = false;
+    if (session != lastSession || signedIn != lastSignedIn) {
+        if (lastSession != 0xFFFFFFFF) logLine(command.directory, "console session " + std::to_string(session) + ": " + (signedIn ? "a user is signed in" : "nobody signed in"));
+        lastSession = session; lastSignedIn = signedIn; quickExits = 0; failures = 0; retryAt = 0; blame.pending = false;
+    }
+    // A quick exit is put down to the hardening or to UI access only if nothing like that happened
+    // within 5 s: while a user signs out, every core in the dying session ends at once.
+    if (blame.pending && GetTickCount64() - blame.at >= 5000) {
+        blame.pending = false;
+        if (blame.hardened) {
+            hardenOff = true; hardenOffReason = blame.reason;
+            logLine(command.directory, "running the core without hardening from now on (" + hardenOffReason + ")");
+        } else if (blame.uiAccess) {
+            ++uiAccessFailures; unsigned wait = 30 * uiAccessFailures;
+            uiAccessRetryAt = GetTickCount64() + 1000ull * wait;
+            uiAccessOff = blame.reason + ", " + std::to_string(uiAccessFailures) + " in a row";
+            if (uiAccessFailures >= uiAccessGiveUp) { uiAccessOff += "; left off until the service restarts"; logLine(command.directory, "UI access off until the service restarts (" + std::to_string(uiAccessFailures) + " quick exits in a row)"); }
+            else { uiAccessOff += "; retrying in " + std::to_string(wait) + " s"; logLine(command.directory, "running the core without UI access for now; retrying it in " + std::to_string(wait) + " s"); }
+        }
+        // Started again without what it was blamed on.
+        if (coreRunning() && (blame.hardened || blame.uiAccess)) stopCore();
+    }
     if (coreRunning() && session == coreSession && asSystem == coreSystem) {
         failures = 0;
         // A core that keeps running with UI access clears the count of quick exits.
@@ -349,8 +378,6 @@ void apply() {
         if (!retry) return;
         logLine(command.directory, "trying UI access again (" + std::to_string(uiAccessFailures) + " quick exits so far)");
     }
-    static ULONGLONG retryAt = 0;
-    static unsigned quickExits = 0;
     if (core.hProcess && !coreRunning()) {
         DWORD code = 0; GetExitCodeProcess(core.hProcess, &code);
         ULONGLONG ran = GetTickCount64() - coreStartedAt;
@@ -360,15 +387,9 @@ void apply() {
             ++quickExits; retryAt = GetTickCount64() + 1000ull * (quickExits < 10 ? quickExits : 10);
             if (quickExits <= 3 || quickExits % 20 == 0)
                 logLine(command.directory, "core ended after " + std::to_string(ran) + " ms (exit " + std::to_string(code) + " / " + hex + ", " + std::to_string(quickExits) + " in a row)");
-            if (coreHardened) {
-                hardenOff = true; hardenOffReason = "a hardened core ended after " + std::to_string(ran) + " ms, exit " + hex;
-                logLine(command.directory, "running the core without hardening from now on (" + hardenOffReason + ")");
-            } else if (coreUiAccess) {
-                ++uiAccessFailures; unsigned wait = 30 * uiAccessFailures;
-                uiAccessRetryAt = GetTickCount64() + 1000ull * wait;
-                uiAccessOff = "a core with UI access ended after " + std::to_string(ran) + " ms, exit " + hex + ", " + std::to_string(uiAccessFailures) + " in a row";
-                if (uiAccessFailures >= uiAccessGiveUp) { uiAccessOff += "; left off until the service restarts"; logLine(command.directory, "UI access off until the service restarts (" + std::to_string(uiAccessFailures) + " quick exits in a row)"); }
-                else { uiAccessOff += "; retrying in " + std::to_string(wait) + " s"; logLine(command.directory, "running the core without UI access for now; retrying it in " + std::to_string(wait) + " s"); }
+            if ((coreHardened || coreUiAccess) && !blame.pending) {
+                blame.pending = true; blame.at = GetTickCount64(); blame.hardened = coreHardened; blame.uiAccess = coreUiAccess;
+                blame.reason = std::string(coreHardened ? "a hardened core" : "a core with UI access") + " ended after " + std::to_string(ran) + " ms, exit " + hex;
             }
         } else {
             quickExits = 0;

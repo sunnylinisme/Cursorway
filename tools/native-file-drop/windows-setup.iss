@@ -6,7 +6,7 @@
 #ifndef OutputDir
   #error OutputDir must be specified.
 #endif
-#define AppVersion "0.3.33"
+#define AppVersion "0.3.34"
 
 [Setup]
 ; No finish page to forget: the app starts on its own and setup closes.

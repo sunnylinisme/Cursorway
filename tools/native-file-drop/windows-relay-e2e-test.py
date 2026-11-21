@@ -189,9 +189,10 @@ end
         wait(lambda: 'jump from "windows" to "windows-host"' in text("server"), "the host did not notice the relay going away", 30)
         relay, _ = start_relay(relay_port)
         wait(lambda: text("server").count('client "windows" has connected') >= 2, "the relay did not reconnect to the host", 30)
-        time.sleep(1); user32.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(.5)
-        if text("server").rfind('to "windows"') > text("server").rfind('to "windows-host"'):
-            leave_over_edge("after the restart with the button held, the pointer could not leave the receiver")
+        time.sleep(1)
+        # With the button held the host keeps the pointer: it must not hand it back to the receiver.
+        assert "is back, returning the cursor" not in text("server"), "the host returned the pointer to the receiver while the button was held"
+        user32.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(.5)
         enter(); back_again()
         print("::notice title=Relay end to end::text and a %d byte file reached the receiver through the relay (with a second grab mid-transfer); edge return and a relay restart with the button held work" % len(payload))
         print("PASS: real host -> relay -> receiver core")

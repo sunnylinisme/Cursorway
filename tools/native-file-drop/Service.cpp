@@ -61,6 +61,14 @@ std::mutex mutex;
 bool wanted = false; Command command;
 PROCESS_INFORMATION core{};
 DWORD coreSession = 0xFFFFFFFF;
+// Relay mode (receiver, every requested host approved): cursorway-relay keeps the one connection to
+// the host; the user core (the user's desktop) and the system core (sign-in, lock, UAC screens) both
+// stay connected to it, and the service tells it which desktop is active (ROUTE). If the relay
+// cannot run, the service goes back to one core connecting directly (relayOff, with the reason).
+PROCESS_INFORMATION relay{}, systemCore{}; HANDLE relayIn = nullptr, relayOut = nullptr; std::string relayBuffer, relayRoute;
+unsigned relayPort = 0, relayQuickExits = 0, systemQuickExits = 0; ULONGLONG relayStartedAt = 0, relayRetryAt = 0, systemStartedAt = 0, systemRetryAt = 0;
+DWORD systemCoreSession = 0xFFFFFFFF; bool relayOff = false, relayMode = false, modeLogged = false, modeWasRelay = false; std::string relayOffReason;
+std::wstring relayUserIdentity, relaySystemIdentity, relayTrust; std::string relayUserFp, relaySystemFp;
 bool coreSystem = false;
 unsigned failures = 0;
 // Input desktop reported by the watcher, and a test override.
@@ -132,7 +140,8 @@ std::wstring quote(const std::wstring& value) {
 }
 // Directory only SYSTEM/Administrators can change; the user named by sid may read it.
 void secureDirectory(const std::wstring& path, const std::wstring& sid) {
-    std::wstring sddl = L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" + (sid.empty() ? std::wstring() : L"(A;OICI;0x1200a9;;;" + sid + L")");
+    // LocalService (the relay) may read: it shows the receiver's identity to the host.
+    std::wstring sddl = L"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;LS)" + (sid.empty() ? std::wstring() : L"(A;OICI;0x1200a9;;;" + sid + L")");
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) throw std::runtime_error("Cannot build folder permissions");
     SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
@@ -296,8 +305,12 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
     // the copy in the user's folder: on one computer the user's core could not open that file.
     // The UI access core trusts only approved hosts (a file the user cannot change), and is hardened
     // against other programs of the user unless that kept it from starting.
-    if (uiAccess) line += L" --trusted-servers " + quote(approvedTrustFile(command)) + (harden ? L" --harden" : L"");
-    line += command.host ? L" -c " + quote(command.directory + L"\\windows-windows.conf") : command.wheel + L" " + command.address;
+    if (relayMode) {
+        // Toward the local relay: its own identity per core, and only the relay is trusted.
+        line += L" --tls-identity " + quote(asSystem ? relaySystemIdentity : relayUserIdentity) + L" --trusted-servers " + quote(relayTrust) + (harden ? L" --harden" : L"");
+        if (asSystem) { auto files = line.find(L" --file-clipboard"); if (files != std::wstring::npos) line.erase(files, 17); }
+    } else if (uiAccess) line += L" --trusted-servers " + quote(approvedTrustFile(command)) + (harden ? L" --harden" : L"");
+    line += command.host ? L" -c " + quote(command.directory + L"\\windows-windows.conf") : command.wheel + L" " + (relayMode ? L"127.0.0.1:" + std::to_wstring(relayPort) : command.address);
     if (!asSystem) {
         // Note whether the signed-in user's core can open its profile folder (for the log only).
         if (ImpersonateLoggedOnUser(token)) {
@@ -329,6 +342,134 @@ void startCore(DWORD session, bool asSystem, const std::string& why) {
     logLine(command.directory, "core now runs as " + std::string(asSystem ? "SYSTEM" : "the signed-in user") + " (" + why + "), " + (command.host ? "host" : "receiver") + ", session " + std::to_string(session) + ", log " + narrow(log) +
         (asSystem || command.host ? std::string() : uiAccess ? std::string(", UI access: on") + (harden ? ", hardened" : ", not hardened (" + hardenOffReason + ")") : ", UI access: off (" + accessOff + ")"));
 }
+// Runs a helper as SYSTEM and returns what it prints (cursorway-pair.exe init: a fingerprint).
+std::string runHelper(const std::wstring& line) {
+    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE}; HANDLE read = nullptr, write = nullptr;
+    if (!CreatePipe(&read, &write, &inherit, 0)) throw std::runtime_error("Cannot create helper pipe");
+    SetHandleInformation(read, HANDLE_FLAG_INHERIT, 0);
+    STARTUPINFOW startup{sizeof(startup)}; startup.dwFlags = STARTF_USESTDHANDLES; startup.hStdOutput = startup.hStdError = write;
+    std::vector<wchar_t> buffer(line.begin(), line.end()); buffer.push_back(0); PROCESS_INFORMATION p{};
+    BOOL ok = CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, moduleDirectory().c_str(), &startup, &p);
+    CloseHandle(write); std::string out;
+    if (ok) {
+        char chunk[512]; DWORD got = 0;
+        while (ReadFile(read, chunk, sizeof(chunk), &got, nullptr) && got) out.append(chunk, got);
+        WaitForSingleObject(p.hProcess, 15000); DWORD code = 1; GetExitCodeProcess(p.hProcess, &code); CloseHandle(p.hProcess); CloseHandle(p.hThread);
+        if (code != 0) ok = FALSE;
+    }
+    CloseHandle(read);
+    if (!ok) throw std::runtime_error("helper failed: " + narrow(line));
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' ')) out.pop_back();
+    auto last = out.find_last_of('\n'); return last == std::string::npos ? out : out.substr(last + 1);
+}
+void stopProcess(PROCESS_INFORMATION& p) {
+    if (!p.hProcess) return;
+    if (running(p)) { TerminateProcess(p.hProcess, 0); WaitForSingleObject(p.hProcess, 5000); }
+    CloseHandle(p.hProcess); CloseHandle(p.hThread); p = PROCESS_INFORMATION{};
+}
+void stopRelay() {
+    stopProcess(systemCore); systemCoreSession = 0xFFFFFFFF;
+    if (relayIn) { DWORD written; WriteFile(relayIn, "QUIT\n", 5, &written, nullptr); }
+    if (relay.hProcess && running(relay)) WaitForSingleObject(relay.hProcess, 1000);
+    stopProcess(relay);
+    if (relayIn) { CloseHandle(relayIn); relayIn = nullptr; }
+    if (relayOut) { CloseHandle(relayOut); relayOut = nullptr; }
+    relayPort = 0; relayRoute.clear(); relayBuffer.clear();
+}
+void relayCommand(const std::string& line) {
+    std::string text = line + "\n"; DWORD written = 0;
+    if (relayIn) WriteFile(relayIn, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
+}
+// The relay's lines go to the service log; the first one names the port the cores connect to.
+void readRelay() {
+    DWORD available = 0;
+    while (relayOut && PeekNamedPipe(relayOut, nullptr, 0, nullptr, &available, nullptr) && available) {
+        char chunk[1024]; DWORD got = 0;
+        if (!ReadFile(relayOut, chunk, (std::min)(available, static_cast<DWORD>(sizeof(chunk))), &got, nullptr) || !got) break;
+        relayBuffer.append(chunk, got);
+        for (size_t end; (end = relayBuffer.find('\n')) != std::string::npos; relayBuffer.erase(0, end + 1)) {
+            auto text = relayBuffer.substr(0, end); if (!text.empty() && text.back() == '\r') text.pop_back();
+            const std::string prefix = "listening on 127.0.0.1:";
+            if (text.compare(0, prefix.size(), prefix) == 0) relayPort = static_cast<unsigned>(std::stoul(text.substr(prefix.size())));
+            logLine(command.directory, "relay: " + text);
+        }
+    }
+}
+// Local identities of the two cores toward the relay, and the relay's own (the receiver's) fingerprint.
+void prepareRelay() {
+    std::wstring base = moduleDirectory() + L"\\state\\" + command.sid, pair = quote(moduleDirectory() + L"\\cursorway-pair.exe") + L" init ";
+    for (auto name : { L"\\relay-user", L"\\relay-system" }) { secureDirectory(base + name, command.sid); for (auto sub : { L"\\SSL", L"\\SSL\\Fingerprints" }) secureDirectory(base + name + sub, command.sid); }
+    std::string userFp = runHelper(pair + quote(base + L"\\relay-user")), systemFp = runHelper(pair + quote(base + L"\\relay-system"));
+    std::string relayFp = runHelper(pair + quote(command.directory));
+    relayUserIdentity = base + L"\\relay-user\\SSL\\Barrier.pem"; relaySystemIdentity = base + L"\\relay-system\\SSL\\Barrier.pem";
+    relayTrust = base + L"\\relay-trust.txt"; writeFile(relayTrust, relayFp + "\n");
+    relayUserFp = userFp; relaySystemFp = systemFp;
+}
+// cursorway-relay as LocalService (not SYSTEM: it is the part that talks to the network).
+void startRelay() {
+    prepareRelay();
+    HANDLE token = nullptr;
+    if (!LogonUserW(L"LocalService", L"NT AUTHORITY", nullptr, LOGON32_LOGON_SERVICE, LOGON32_PROVIDER_DEFAULT, &token)) throw std::runtime_error("Cannot get the LocalService account (error " + std::to_string(GetLastError()) + ")");
+    SECURITY_ATTRIBUTES inherit{sizeof(inherit), nullptr, TRUE}; HANDLE inRead = nullptr, inWrite = nullptr, outRead = nullptr, outWrite = nullptr;
+    CreatePipe(&inRead, &inWrite, &inherit, 0); CreatePipe(&outRead, &outWrite, &inherit, 0);
+    SetHandleInformation(inWrite, HANDLE_FLAG_INHERIT, 0); SetHandleInformation(outRead, HANDLE_FLAG_INHERIT, 0);
+    std::wstring line = quote(moduleDirectory() + L"\\cursorway-relay.exe") + L" --profile " + quote(command.directory) + L" --host " + command.address +
+        L" --listen 0 --user-core " + widen(relayUserFp) + L" --system-core " + widen(relaySystemFp) + L" --name " + command.name;
+    std::vector<wchar_t> buffer(line.begin(), line.end()); buffer.push_back(0);
+    // An empty desktop name gives the account a window station of its own.
+    STARTUPINFOW startup{sizeof(startup)}; startup.lpDesktop = const_cast<wchar_t*>(L""); startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = inRead; startup.hStdOutput = startup.hStdError = outWrite;
+    BOOL ok = CreateProcessAsUserW(token, nullptr, buffer.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, moduleDirectory().c_str(), &startup, &relay);
+    DWORD error = GetLastError(); CloseHandle(token); CloseHandle(inRead); CloseHandle(outWrite);
+    if (!ok) { CloseHandle(inWrite); CloseHandle(outRead); throw std::runtime_error("Cannot start the relay (error " + std::to_string(error) + ")"); }
+    relayIn = inWrite; relayOut = outRead; relayStartedAt = GetTickCount64(); relayPort = 0; relayRoute.clear();
+    logLine(command.directory, "relay started as LocalService: " + narrow(line));
+}
+void relayFailed(const std::string& why) {
+    relayOff = true; relayOffReason = why; stopRelay(); stopCore();
+    logLine(command.directory, "mode: direct (" + why + ")");
+}
+// Relay mode; returns false while the relay is not ready yet. The user core runs in the `core` slot.
+bool applyRelay(DWORD session, bool signedIn, bool secure, const std::string& desktop) {
+    ULONGLONG now = GetTickCount64();
+    if (relay.hProcess && !running(relay)) {
+        DWORD code = 0; GetExitCodeProcess(relay.hProcess, &code);
+        logLine(command.directory, "relay ended (exit " + std::to_string(code) + ") after " + std::to_string((now - relayStartedAt) / 1000) + " s");
+        bool quick = now - relayStartedAt < 10000; stopRelay();
+        if (quick && ++relayQuickExits >= 3) { relayFailed("the relay keeps ending"); return false; }
+        relayRetryAt = now + 1000;
+    }
+    if (!relay.hProcess) {
+        if (now < relayRetryAt) return false;
+        try { startRelay(); } catch (const std::exception& e) { relayFailed(e.what()); return false; }
+    }
+    readRelay();
+    if (!relayPort) return false;
+    if (now - relayStartedAt > 30000) relayQuickExits = 0;
+    // The system core: always there for the sign-in, lock and UAC screens of this session.
+    if (systemCore.hProcess && !running(systemCore)) {
+        bool quick = now - systemStartedAt < 3000; stopProcess(systemCore); systemCoreSession = 0xFFFFFFFF;
+        if (quick && ++systemQuickExits >= 5) { relayFailed("the sign-in screen core keeps ending"); return false; }
+        systemRetryAt = now + (quick ? 1000 : 0);
+    }
+    if ((!systemCore.hProcess || systemCoreSession != session) && now >= systemRetryAt) {
+        // startCore works on the `core` slot: borrow it for the system core.
+        std::swap(core, systemCore);
+        DWORD s1 = coreSession; bool s2 = coreSystem, s3 = coreUiAccess, s4 = coreHardened; ULONGLONG s5 = coreStartedAt;
+        try { startCore(session, true, "relay: sign-in, lock and UAC screens"); systemCoreSession = session; systemStartedAt = GetTickCount64(); }
+        catch (const std::exception& e) { logLine(command.directory, std::string("system core: ") + e.what()); systemRetryAt = now + 2000; }
+        std::swap(core, systemCore);
+        coreSession = s1; coreSystem = s2; coreUiAccess = s3; coreHardened = s4; coreStartedAt = s5;
+    }
+    if (now - systemStartedAt > 30000) systemQuickExits = 0;
+    // The relay sends the input to the core of the active desktop.
+    std::string to = signedIn && !secure ? "user" : "system";
+    if (to != relayRoute) {
+        relayRoute = to; relayCommand("ROUTE " + to);
+        logLine(command.directory, "route: " + to + " core (input desktop " + (desktop.empty() ? std::string("Default") : desktop) + (signedIn ? "" : ", nobody signed in") + ")");
+    }
+    return true;
+}
 // Starts or switches the core to match the console session and its input desktop; mutex held.
 void apply() {
     DWORD session = WTSGetActiveConsoleSessionId();
@@ -337,11 +478,28 @@ void apply() {
         try { startWatcher(session); } catch (const std::exception& e) { if (wanted) logLine(command.directory, std::string("desktop watcher: ") + e.what()); }
     }
     readWatcher();
-    if (!wanted) { if (core.hProcess) stopCore(); return; }
+    if (!wanted) { if (core.hProcess) stopCore(); if (relay.hProcess) stopRelay(); return; }
     std::string desktop = forcedDesktop.empty() ? inputDesktop : forcedDesktop;
     HANDLE user = userToken(session); bool signedIn = user != nullptr; if (user) CloseHandle(user);
     bool secure = !desktop.empty() && _stricmp(desktop.c_str(), "Default") != 0;
     bool asSystem = !signedIn || secure;
+    // Relay mode for a receiver whose hosts are all approved (they get the sign-in screen anyway).
+    bool useRelay = !command.host && !relayOff && pendingHosts(command).empty() && !fingerprints(command.trusted).empty();
+    if (useRelay != modeWasRelay || !modeLogged) {
+        modeLogged = true; modeWasRelay = useRelay;
+        if (useRelay) logLine(command.directory, "mode: relay (the connection to the host stays up across desktops)");
+        else if (!command.host && !relayOff) logLine(command.directory, "mode: direct (" + std::string(pendingHosts(command).empty() ? "no paired host" : "a paired host is not approved yet") + ")");
+        stopCore(); if (!useRelay) stopRelay();
+    }
+    relayMode = useRelay;
+    if (useRelay) {
+        if (!applyRelay(session, signedIn, secure, desktop)) { if (relayOff) relayMode = false; else return; }
+        else {
+            asSystem = false;
+            // Nobody signed in: only the system core.
+            if (!signedIn) { if (core.hProcess) stopCore(); return; }
+        }
+    }
     static ULONGLONG retryAt = 0;
     static unsigned quickExits = 0;
     // Signing out, signing in or switching users changes the console session or whether a user is in
@@ -442,7 +600,7 @@ std::string handle(HANDLE pipe, const std::string& request) {
         for (auto& fp : pending) list += (list.empty() ? "" : ",") + fp;
         return "OK\t" + std::to_string(pending.size()) + "\t" + list;
     }
-    if (f[0] == "STOP") { wanted = false; stopCore(); return reply(); }
+    if (f[0] == "STOP") { wanted = false; stopCore(); stopRelay(); return reply(); }
     // DESKTOP is a test hook: acting as if a secure desktop were shown starts the core with the
     // SYSTEM token on the user's desktop, so only an elevated administrator may use it.
     if (f[0] == "DESKTOP" && !callerIsAdministrator(pipe)) throw std::runtime_error("DESKTOP needs an administrator");
@@ -497,7 +655,7 @@ std::string handle(HANDLE pipe, const std::string& request) {
     }
     if (host) writeFile(next.directory + L"\\windows-windows.conf", config);
     next.log = next.directory + (host ? L"\\server.log" : L"\\windows.log");
-    stopCore(); command = next; wanted = true; failures = 0;
+    stopCore(); stopRelay(); command = next; wanted = true; failures = 0; relayOff = false; relayQuickExits = systemQuickExits = 0; modeLogged = false;
     apply();
     return reply();
 }
@@ -592,7 +750,7 @@ void run() {
     if (sas) sasWatcher = std::thread(watchSas, sas, realSendSas, []() { std::lock_guard<std::mutex> lock(mutex); return wanted && !command.host; });
     if (statusHandle) report(SERVICE_RUNNING);
     server.join(); follower.join(); if (sasWatcher.joinable()) sasWatcher.join(); if (sas) CloseHandle(sas);
-    { std::lock_guard<std::mutex> lock(mutex); stopCore(); stopWatcher(); }
+    { std::lock_guard<std::mutex> lock(mutex); stopCore(); stopRelay(); stopWatcher(); }
 }
 void WINAPI serviceMain(DWORD, LPWSTR*) {
     statusHandle = RegisterServiceCtrlHandlerExW(kServiceName, control, nullptr);
@@ -615,7 +773,8 @@ int watchDesktop() {
             if (!WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), line.data(), static_cast<DWORD>(line.size()), &written, nullptr)) return 0;
             last = name;
         }
-        Sleep(200);
+        // Fast enough that the input follows Ctrl+Alt+Del or a UAC prompt at once.
+        Sleep(50);
     }
 }
 }

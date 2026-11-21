@@ -85,7 +85,7 @@ function Assert-Profile([hashtable]$Expected) {
     }
 }
 function Assert-Installed {
-    foreach ($name in 'Cursorway.exe', 'cursorway-server.exe', 'cursorway-client.exe', 'cursorway-pair.exe', 'cursorway-link.exe', 'cursorway-service.exe', 'GUI-README.txt', 'LICENSE', 'COMMIT.txt') {
+    foreach ($name in 'Cursorway.exe', 'cursorway-server.exe', 'cursorway-client.exe', 'cursorway-pair.exe', 'cursorway-link.exe', 'cursorway-service.exe', 'cursorway-relay.exe', 'GUI-README.txt', 'LICENSE', 'COMMIT.txt') {
         if (-not (Test-Path -LiteralPath (Join-Path $installDir $name) -PathType Leaf)) { throw "Missing installed file: $name" }
     }
     foreach ($file in Get-ChildItem -LiteralPath $PackageDir -File -Recurse) {
@@ -289,6 +289,32 @@ $deadline = [DateTime]::UtcNow.AddSeconds(20)
 while (-not (Get-Content -LiteralPath (Join-Path $receiverState 'service.log') -Raw).Contains(', UI access: on, hardened') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
 if (-not (Get-Content -LiteralPath (Join-Path $receiverState 'service.log') -Raw).Contains(', UI access: on, hardened')) { throw "The approved host did not get the hardened UI access core: $(Get-Content -LiteralPath (Join-Path $receiverState 'service.log') -Raw)" }
 if (-not (Get-Content -LiteralPath $systemTrust -Raw).Contains($hostFp)) { throw 'The approved host is missing from the trust list of the SYSTEM core.' }
+# Relay mode: the relay (LocalService) and both cores run; the input desktop only changes the route.
+$notes = Join-Path $receiverState 'service.log'
+$deadline = [DateTime]::UtcNow.AddSeconds(20)
+while (-not ((Get-Content -LiteralPath $notes -Raw).Contains('relay: user core ready') -and (Get-Content -LiteralPath $notes -Raw).Contains('relay: system core ready')) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
+$text = Get-Content -LiteralPath $notes -Raw
+foreach ($expected in 'mode: relay', 'relay started as LocalService', 'relay: user core ready', 'relay: system core ready', 'route: user core') { if (-not $text.Contains($expected)) { throw "Relay mode did not come up ($expected missing): $text" } }
+$relayProcess = @(Get-CimInstance Win32_Process -Filter "Name='cursorway-relay.exe'")
+if ($relayProcess.Count -ne 1) { throw "Expected one relay, found $($relayProcess.Count)." }
+$relayOwner = Invoke-CimMethod -InputObject $relayProcess[0] -MethodName GetOwner
+if ($relayOwner.User -ne 'LOCAL SERVICE') { throw "The relay runs as $($relayOwner.Domain)\$($relayOwner.User), not LocalService." }
+function Get-Cores { @(Get-CimInstance Win32_Process -Filter "Name='cursorway-client.exe'" | Where-Object { $_.ExecutablePath -ieq (Join-Path $installDir 'cursorway-client.exe') } | ForEach-Object { $_.ProcessId } | Sort-Object) }
+$cores = Get-Cores
+if ($cores.Count -ne 2) { throw "Expected the user core and the system core, found $($cores.Count)." }
+$reply = Invoke-Service "DESKTOP`tWinlogon"; Start-Sleep -Seconds 1
+$reply = Invoke-Service "DESKTOP`tauto"; Start-Sleep -Seconds 1
+$text = Get-Content -LiteralPath $notes -Raw
+if (-not ($text.Contains('route: system core (input desktop Winlogon') -and $text.LastIndexOf('route: user core') -gt $text.IndexOf('route: system core'))) { throw "The route did not follow the input desktop: $text" }
+if ((Get-Cores) -join ',' -ne $cores -join ',') { throw 'A core was restarted when the desktop changed; it must only change the route.' }
+# A real second desktop, switched to and back: the service sees it and routes to the system core.
+& python (Join-Path $PSScriptRoot 'windows-switch-desktop.py') 2
+if ($LASTEXITCODE -ne 0) { throw "Switching to a test desktop failed (exit $LASTEXITCODE)." }
+Start-Sleep -Seconds 1
+$text = Get-Content -LiteralPath $notes -Raw
+if (-not $text.Contains('route: system core (input desktop CursorwayTest')) { throw "The route did not follow a real desktop switch: $text" }
+if ((Get-Cores) -join ',' -ne $cores -join ',') { throw 'A core was restarted when switching to a real desktop.' }
+Write-Output "::notice title=Relay mode::relay as LocalService, two cores, routes followed DESKTOP and a real SwitchDesktop without restarting a core"
 $reply = Invoke-Service 'STOP'
 
 $startupRoot = Join-Path $TestRoot '已安裝啟動 startup'

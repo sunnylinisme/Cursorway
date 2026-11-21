@@ -152,6 +152,10 @@ ArgParser::parseClientArgs(ClientArgs& args, int argc, const char* const* argv)
         else if (isArg(i, argc, argv, NULL, "--wheel-invert")) {
             args.m_wheelInvert = true;
         }
+        else if (isArg(i, argc, argv, NULL, "--tls-identity", 1)) {
+            // the certificate and key shown to the host (the Windows service's relay)
+            barrier::DataDirectories::certificate_file(barrier::fs::u8path(argv[++i]));
+        }
         else if (isArg(i, argc, argv, NULL, "--trusted-servers", 1)) {
             // the hosts this receiver accepts, from a file the user cannot change (Windows service)
             barrier::DataDirectories::trusted_servers_file(barrier::fs::u8path(argv[++i]));

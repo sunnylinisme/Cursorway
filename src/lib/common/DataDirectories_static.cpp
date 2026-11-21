@@ -23,6 +23,12 @@ fs::path DataDirectories::_profile;
 fs::path DataDirectories::_global;
 fs::path DataDirectories::_systemconfig;
 fs::path DataDirectories::_trustedServers;
+fs::path DataDirectories::_certificate;
+
+void DataDirectories::certificate_file(const fs::path& path)
+{
+    _certificate = path;
+}
 
 void DataDirectories::trusted_servers_file(const fs::path& path)
 {
@@ -57,6 +63,7 @@ fs::path DataDirectories::trusted_clients_ssl_fingerprints_path()
 
 fs::path DataDirectories::ssl_certificate_path()
 {
+    if (!_certificate.empty()) return _certificate;
     return profile() / "SSL" / "Barrier.pem";
 }
 

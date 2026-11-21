@@ -60,6 +60,7 @@ Source: "{#PackageDir}\cursorway-client.exe"; DestDir: "{app}"; Flags: ignorever
 Source: "{#PackageDir}\cursorway-pair.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\cursorway-link.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\cursorway-service.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#PackageDir}\cursorway-relay.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\GUI-README.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#PackageDir}\COMMIT.txt"; DestDir: "{app}"; Flags: ignoreversion

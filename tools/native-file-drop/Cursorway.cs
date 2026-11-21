@@ -2042,6 +2042,11 @@ sealed class ShareWindow : Form
         if (at >= 0) return "UI 存取：關閉，以系統管理員執行的視窗（例如系統管理員 CMD）暫時無法操作。原因：" + line.Substring(at + 18).TrimEnd(')');
         if (line.Contains("UI access off until the service restarts")) return "UI 存取：連續多次啟動失敗，已關閉到背景服務重新啟動（重開機）為止。";
         if (line.Contains("UI access works again")) return "UI 存取：已恢復。";
+        if (line.Contains("mode: relay (")) return "連線模式：relay（切換到登入、鎖定、UAC 畫面時不斷線）";
+        int direct = line.IndexOf("mode: direct (", StringComparison.Ordinal);
+        if (direct >= 0) return "連線模式：直連（切換桌面時會重新連線約 1 秒）。原因：" + line.Substring(direct + 14).TrimEnd(')');
+        if (line.Contains("route: user core")) return "輸入切到：一般桌面";
+        if (line.Contains("route: system core")) return "輸入切到：登入／鎖定／UAC 畫面";
         return null;
     }
     void FollowServiceLog()

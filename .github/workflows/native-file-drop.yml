@@ -59,12 +59,19 @@ jobs:
       # Branch and PR runs: build, unit/OLE tests and the desktop self-test (a few minutes).
       # The service, installer, clipboard, network and layout tests run on vX.Y.Z tags (which
       # the release needs green) and when the workflow is started by hand.
-      FULL: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
+      # A tools/native-file-drop/ci-full file asks for the full tests on a branch too (while a change needs them).
+      FULL_RUN: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
           persist-credentials: false
+      - name: Decide how much to test
+        shell: pwsh
+        run: |
+          $full = $env:FULL_RUN -eq 'true' -or (Test-Path tools/native-file-drop/ci-full)
+          "FULL=$($full.ToString().ToLower())" >> $env:GITHUB_ENV
+          Write-Output "::notice title=Test depth::$(if ($full) { 'full Windows tests' } else { 'quick checks (the full tests run on vX.Y.Z tags)' })"
       - uses: actions/cache/restore@v4
         with:
           path: C:/Users/runneradmin/AppData/Local/vcpkg/archives
@@ -192,7 +199,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory build/package | Out-Null
-          Copy-Item build/bin/Release/cursorway-client.exe, build/bin/Release/cursorway-server.exe, build/bin/Release/cursorway-pair.exe, build/bin/Release/cursorway-link.exe, build/bin/Release/cursorway-service.exe, build/bin/Release/Cursorway.exe build/package/
+          Copy-Item build/bin/Release/cursorway-client.exe, build/bin/Release/cursorway-server.exe, build/bin/Release/cursorway-pair.exe, build/bin/Release/cursorway-link.exe, build/bin/Release/cursorway-service.exe, build/bin/Release/cursorway-relay.exe, build/bin/Release/Cursorway.exe build/package/
           Copy-Item tools/native-file-drop/GUI-README.txt build/package/
           Copy-Item LICENSE build/package/
           Copy-Item -Recurse tools/native-file-drop/licenses build/package/

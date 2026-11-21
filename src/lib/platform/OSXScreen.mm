@@ -309,12 +309,15 @@ OSXScreen::getJumpZoneSize() const
 bool
 OSXScreen::isAnyMouseButtonDown(UInt32& buttonID) const
 {
-	if (m_buttonState.test(0)) {
+	// On the host the hardware state decides: a release missed while the cursor was on
+	// another screen (e.g. that screen dropped mid-drag) must not lock the cursor there forever.
+	UInt32 hardware = GetCurrentButtonState();
+	if (m_buttonState.test(0) && (!m_isPrimary || hardware != 0)) {
 		buttonID = kButtonLeft;
 		return true;
 	}
 
-	return (GetCurrentButtonState() != 0);
+	return (hardware != 0);
 }
 
 void

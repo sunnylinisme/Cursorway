@@ -252,7 +252,7 @@ jobs:
         if: env.FULL == 'true'
         with:
           name: barriershare-windows-setup
-          path: build/Cursorway-Setup-0.3.35-x64.exe
+          path: build/Cursorway-Setup-0.3.36-x64.exe
           if-no-files-found: error
           retention-days: 30
       - uses: actions/upload-artifact@v4

@@ -24,6 +24,12 @@ Cursorway（原名 Barrier Share）— Windows／Mac 共用鍵盤滑鼠與雙向
    按「權限設定」可開啟設定；必要時重開程式。
    Windows 安裝程式會自動允許 Cursorway 使用私人／網域網路；若網路被設為「公用」，請改成「私人」。
 
+0.3.36 更新（Windows）
+- 診斷紀錄新增剪貼簿流程：Windows 按 Ctrl+C 時記「copied here, telling the host」，離開時記送出內容，方便找出 Windows→Mac 複製失敗的原因。
+
+0.3.36 更新（Mac）
+- 修正：從 Mac 拷貝檔案到 Windows（不斷線模式）時，macOS 重複回報剪貼簿變更，把剛開始的傳輸取消，檔案貼不出來。
+
 0.3.35 更新（Windows）
 - 修正不斷線模式（relay）傳送較大的剪貼簿或檔案時連線中斷，導致複製貼上失效、游標回不到 Mac。
 - 修正 relay 模式下接收端畫面資訊更新後滑鼠被忽略的問題；Mac 不在線時 relay 只重試連線，不再讓背景程式反覆重連。

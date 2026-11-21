@@ -1535,12 +1535,30 @@ sealed class ShareWindow : Form
     }
     bool AskRoleChange(string text, string action)
     {
+        // First line is the question (bold), the rest the explanation. Everything is measured after DPI
+        // scaling so long text wraps instead of being cut off, and the buttons sit right-aligned below it.
+        string[] parts = text.Split(new[] { "\r\n\r\n" }, 2, StringSplitOptions.None);
         using (var dialog = new Form { Text = "Cursorway", FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false, StartPosition = FormStartPosition.CenterParent, ShowInTaskbar = false,
-            Font = new Font(Font.FontFamily, 10F), BackColor = Color.White, ClientSize = new Size(440, 168), AutoScaleDimensions = ShareWindow.Dpi96, AutoScaleMode = AutoScaleMode.Dpi }) {
-            dialog.Controls.Add(new Label { Text = text, Bounds = new Rectangle(22, 18, 396, 90), ForeColor = ShareStyle.Ink });
-            var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Bounds = new Rectangle(196, 116, 100, 34), DialogResult = DialogResult.Cancel };
-            var ok = new ShareButton { Text = action, Primary = true, BackColor = Color.White, Bounds = new Rectangle(306, 116, 112, 34), DialogResult = DialogResult.OK };
-            dialog.Controls.Add(cancel); dialog.Controls.Add(ok); dialog.CancelButton = cancel; dialog.AcceptButton = cancel; ShareStyle.Theme(dialog);
+            Font = new Font(Font.FontFamily, 10F), BackColor = Color.White, ClientSize = new Size(420, 160), AutoScaleDimensions = ShareWindow.Dpi96, AutoScaleMode = AutoScaleMode.Dpi }) {
+            var title = new Label { Text = parts[0], AutoSize = false, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily, 11.5F, FontStyle.Bold) };
+            var body = new Label { Text = parts.Length > 1 ? parts[1] : "", AutoSize = false, ForeColor = ShareStyle.Muted };
+            var cancel = new ShareButton { Text = "取消", BackColor = Color.White, Size = new Size(96, 34), DialogResult = DialogResult.Cancel };
+            var ok = new ShareButton { Text = action, Primary = true, BackColor = Color.White, Size = new Size(120, 34), DialogResult = DialogResult.OK };
+            dialog.Controls.AddRange(new Control[] { title, body, cancel, ok }); dialog.CancelButton = cancel; dialog.AcceptButton = cancel;
+            dialog.Load += delegate {
+                float k = dialog.DeviceDpi / 96F; Func<int, int> px = v => (int)Math.Round(v * k);
+                int pad = px(24), width = px(420) - 2 * pad, flags = (int)(TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+                int th = TextRenderer.MeasureText(title.Text, title.Font, new Size(width, 0), (TextFormatFlags)flags).Height;
+                int bh = body.Text.Length == 0 ? 0 : TextRenderer.MeasureText(body.Text, body.Font, new Size(width, 0), (TextFormatFlags)flags).Height;
+                title.Bounds = new Rectangle(pad, pad, width, th);
+                body.Bounds = new Rectangle(pad, title.Bottom + px(10), width, bh);
+                int y = (bh > 0 ? body.Bottom : title.Bottom) + px(24);
+                ok.Size = new Size(Math.Max(px(112), TextRenderer.MeasureText(action, ok.Font).Width + px(36)), px(36)); cancel.Size = new Size(px(96), px(36));
+                ok.Location = new Point(pad + width - ok.Width, y); cancel.Location = new Point(ok.Left - px(10) - cancel.Width, y);
+                dialog.ClientSize = new Size(px(420), y + ok.Height + pad);
+                if (dialog.Owner != null) dialog.Location = new Point(dialog.Owner.Left + (dialog.Owner.Width - dialog.Width) / 2, dialog.Owner.Top + (dialog.Owner.Height - dialog.Height) / 2);
+            };
+            ShareStyle.Theme(dialog);
             return dialog.ShowDialog(this) == DialogResult.OK;
         }
     }

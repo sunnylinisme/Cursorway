@@ -185,7 +185,8 @@ end
         # 4. Left button held on the receiver while the relay restarts: the host must not stay stuck.
         enter(); user32.mouse_event(0x0002, 0, 0, 0, 0); time.sleep(.3)
         relay.kill(); relay.wait()
-        wait(lambda: 'client "windows" has disconnected' in text("server"), "the host did not notice the relay going away")
+        # The host notices on its next write ("error writing") or read ("has disconnected") and jumps home.
+        wait(lambda: 'jump from "windows" to "windows-host"' in text("server"), "the host did not notice the relay going away", 30)
         relay, _ = start_relay(relay_port)
         wait(lambda: text("server").count('client "windows" has connected') >= 2, "the relay did not reconnect to the host", 30)
         time.sleep(1); user32.mouse_event(0x0004, 0, 0, 0, 0); time.sleep(.5)

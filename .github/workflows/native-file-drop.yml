@@ -129,6 +129,8 @@ jobs:
       - name: Hardened receiver core cannot be opened by the same user
         if: env.FULL == 'true'
         run: python tools/native-file-drop/windows-harden-test.py build/bin/Release
+      - name: Relay keeps one host connection while the input moves between receiver cores
+        run: python tools/native-file-drop/windows-relay-network-test.py build/bin/Release
       - name: Ctrl+Alt+Del event reaches SendSAS in the service
         if: env.FULL == 'true'
         run: build/bin/Release/cursorway-service.exe --sas-test

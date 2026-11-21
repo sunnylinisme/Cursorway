@@ -66,6 +66,11 @@ if(WIN32)
     target_compile_definitions(barrier-service PRIVATE UNICODE _UNICODE)
     target_compile_options(barrier-service PRIVATE /utf-8)
     target_link_libraries(barrier-service advapi32 userenv wtsapi32 user32)
+    # Holds the host connection while the receiver cores switch desktops (Relay.cpp).
+    add_executable(barrier-relay Relay.cpp)
+    target_link_libraries(barrier-relay ${OPENSSL_LIBS} ws2_32 crypt32 user32 advapi32)
+    target_compile_options(barrier-relay PRIVATE /utf-8)
+    set_target_properties(barrier-relay PROPERTIES OUTPUT_NAME cursorway-relay)
     # Windows ships the helpers under the product name (Cursorway); the Mac keeps its names.
     set_target_properties(barrier-pair PROPERTIES OUTPUT_NAME cursorway-pair)
     set_target_properties(barrier-link PROPERTIES OUTPUT_NAME cursorway-link)

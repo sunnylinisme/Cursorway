@@ -65,6 +65,21 @@ def set_windows_clipboard(text):
     finally: user32.CloseClipboard()
 
 
+def set_windows_files(paths):
+    """CF_HDROP with the given files, as Explorer's Copy puts it."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]; kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.restype = ctypes.c_void_p; kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]; kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    names = ("\0".join(str(p) for p in paths) + "\0\0").encode("utf-16-le")
+    data = struct.pack("<IiiII", 20, 0, 0, 0, 1) + names
+    wait(lambda: user32.OpenClipboard(None), "cannot open the clipboard", 3)
+    try:
+        handle = kernel32.GlobalAlloc(2, len(data)); pointer = kernel32.GlobalLock(handle)
+        ctypes.memmove(pointer, data, len(data)); kernel32.GlobalUnlock(handle); user32.EmptyClipboard()
+        assert user32.SetClipboardData(15, handle), "SetClipboardData(CF_HDROP) failed"
+    finally: user32.CloseClipboard()
+
+
 class Host:
     """The simulated host: accepts the relay, answers keep-alives in the background."""
     def __init__(self, connection):
@@ -177,6 +192,25 @@ with tempfile.TemporaryDirectory(prefix="cursorway-relay-") as temporary:
             try: data += host.until(b"DCLP", max(.1, deadline - time.monotonic()))
             except AssertionError: pass
         host.send(b"CINN" + struct.pack("!hhIH", 60, 60, 2, 0))
+        # 2d. Windows -> host files: copied on Windows, streamed to the host (FC*) when the input leaves.
+        payload = hashlib.sha256(b"cursorway").digest() * 40000; source = root / "從 Windows 複製.bin"; source.write_bytes(payload)
+        set_windows_files([source]); time.sleep(.5)
+        host.send(b"COUT"); digest = hashlib.sha256(); received = 0; transfer = None; counter = 0; done = False; deadline = time.monotonic() + 30
+        while not done:
+            assert time.monotonic() < deadline, "the file from Windows did not reach the host (%d of %d bytes)" % (received, len(payload))
+            message = next((m for m in list(host.inbox) if m[:2] == b"FC" and m[:4] not in (b"FCAP", b"FCAK")), None)
+            if message is None: time.sleep(.02); continue
+            host.inbox.remove(message); kind = message[:4]
+            assert kind not in (b"FCNO", b"FCAB"), "the file transfer was rejected: %r" % message[:200]
+            if kind == b"FCBG": transfer, = struct.unpack_from("!I", message, 4)
+            elif kind == b"FCEN":
+                _, _, length = struct.unpack_from("!IBI", message, 4); assert message[13:13 + length].decode() == source.name, message[:200]
+            elif kind == b"FCHK": length, = struct.unpack_from("!I", message, 8); digest.update(message[12:12 + length]); received += length
+            elif kind == b"FCDN": done = True
+            host.send(b"FCAK" + struct.pack("!II", transfer or 0, counter))
+            if not done: counter += 1
+        assert received == len(payload) and digest.digest() == hashlib.sha256(payload).digest(), "the file from Windows arrived damaged (%d bytes)" % received
+        host.send(b"CINN" + struct.pack("!hhIH", 60, 60, 3, 0))
         # 3. Shift held on the host; the input moves to the system core: Shift must not stay down.
         host.send(b"DKDN" + struct.pack("!HHH", 0xEFE1, 0, 42)); time.sleep(.3)
         assert user32.GetAsyncKeyState(0x10) & 0x8000, "the user core did not press Shift"

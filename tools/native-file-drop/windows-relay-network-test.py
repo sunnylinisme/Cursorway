@@ -157,7 +157,9 @@ with tempfile.TemporaryDirectory(prefix="cursorway-relay-") as temporary:
         system.kill(); system.wait(); system, system_log2 = core("system", False)
         wait(lambda: log_text(relay_log).count("system core ready") >= 2, "the restarted system core did not get ready", 15)
         host.send(b"DMMV" + struct.pack("!hh", 410, 420)); wait(lambda: abs(cursor()[0] - 410) <= 1 and abs(cursor()[1] - 420) <= 1, "the restarted system core did not get the input")
-        route("user")
+        # The route goes over the relay's stdin, the input over the network: wait for the switch.
+        switches = log_text(relay_log).count("route: user desktop"); route("user")
+        wait(lambda: log_text(relay_log).count("route: user desktop") > switches, "the relay did not switch back to the user core")
         host.send(b"DMMV" + struct.pack("!hh", 500, 510)); wait(lambda: abs(cursor()[0] - 500) <= 1 and abs(cursor()[1] - 510) <= 1, "the user core did not get the input back")
         # 5. One connection from the relay the whole time.
         try: listener.accept(); raise AssertionError("the relay connected to the host a second time")

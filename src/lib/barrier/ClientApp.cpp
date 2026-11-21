@@ -76,6 +76,10 @@ ClientApp::parseArgs(int argc, const char* const* argv)
     ArgParser argParser(this);
     bool result = argParser.parseClientArgs(args(), argc, argv);
 
+    if ((args().m_nativeFileDrop || args().m_fileClipboard) && !args().m_enableCrypto) {
+        LOG((CLOG_PRINT "Native file transfer requires authenticated encryption"));
+        m_bye(kExitArgs);
+    }
     if (!result || args().m_shouldExit) {
         m_bye(kExitArgs);
     }
@@ -125,6 +129,8 @@ ClientApp::help()
            << HELP_COMMON_INFO_1 << WINAPI_INFO << HELP_SYS_INFO
            << "      --yscroll <delta>    defines the vertical scrolling delta, which is\n"
            << "                           120 by default.\n"
+           << "      --wheel-scale <pct>  scale scrolling from the server (10-500, default 100).\n"
+           << "      --wheel-invert       reverse the scrolling direction from the server.\n"
            << HELP_COMMON_INFO_2
            << "\n"
            << "Default options are marked with a *\n"
@@ -190,18 +196,27 @@ ClientApp::updateStatus(const String& msg)
 }
 
 
+// Retries right after a start or a dropped connection come quickly (the Windows service swaps
+// the core when the desktop changes, and the host may need a moment), then at the usual pace.
+static int s_quickRetries = 0;
+static const int kQuickRetries = 4;
+static const double kQuickRetryTime = 0.25;
+
 void
 ClientApp::resetRestartTimeout()
 {
-    // retry time can nolonger be changed
-    //s_retryTime = 0.0;
+    s_quickRetries = 0;
 }
 
 
 double
 ClientApp::nextRestartTimeout()
 {
-    // retry at a constant rate (Issue 52)
+    // retry at a constant rate (Issue 52), after a few quick ones
+    if (s_quickRetries < kQuickRetries) {
+        ++s_quickRetries;
+        return kQuickRetryTime;
+    }
     return RETRY_TIME;
 
     /*

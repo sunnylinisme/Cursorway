@@ -248,6 +248,7 @@ private:
     // update switch state due to a mouse move at \p x, \p y that
     // doesn't switch screens.
     void                noSwitch(SInt32 x, SInt32 y);
+    void                reportEdgeBlock(const std::string& reason, SInt32 x, SInt32 y);
 
     // stop switch timers
     void                stopSwitch();
@@ -407,6 +408,13 @@ private:
     // whichever screen is active
     SInt32                m_x, m_y;
 
+    // the screen that had the cursor when it disconnected, and where; if it reconnects
+    // within a few seconds (a Windows receiver switching between the user's and the
+    // sign-in desktop restarts its core) the cursor goes back to it.
+    std::string           m_rejoinName;
+    SInt32                m_rejoinX = 0, m_rejoinY = 0;
+    double                m_rejoinTime = 0;
+
     // last mouse deltas.  this is needed to smooth out double tap
     // on win32 which reports bogus mouse motion at the edge of
     // the screen when using low level hooks, synthesizing motion
@@ -481,4 +489,6 @@ private:
 
     ClientListener*        m_clientListener;
     ServerArgs            m_args;
+    // reason last reported for not crossing the current edge; cleared away from it
+    std::string         m_edgeBlock;
 };

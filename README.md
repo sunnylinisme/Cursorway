@@ -1,148 +1,59 @@
-# Barrier
+# Cursorway
 
-Eliminate the barrier between your machines.
-Find [releases for windows and macOS here](https://github.com/debauchee/barrier/releases).
-Your distro probably already has barrier packaged for it, see [distro specific packages](#distro-specific-packages)
-below for a list. Alternatively, we also provide a [flatpak](https://github.com/flathub/com.github.debauchee.barrier)
-and a [snap](https://snapcraft.io/barrier).
+在 Mac 和 Windows 之間共用一組鍵盤滑鼠，並且雙向複製貼上文字、檔案和資料夾。
 
-### Contact info:
+把滑鼠移到螢幕邊緣，就會跑到另一台電腦；在一台按複製，到另一台直接貼上。一台主控端可以接多台接收端。
 
-- `#barrier` on LiberaChat IRC network
+<p align="center"><img src="doc/cursorway-demo.svg" width="760" alt="Cursorway 示範：滑鼠移過螢幕邊緣到 Mac、在 Windows 複製檔案到 Mac 貼上、按 Ctrl+Alt+1 跳回 Windows"></p>
 
-#### CI Build Status
+**[下載最新版](https://github.com/sunnylinisme/Cursorway/releases/latest)**
 
-Master branch overall build status: [![Build Status](https://dev.azure.com/debauchee/Barrier/_apis/build/status/debauchee.barrier?branchName=master)](https://dev.azure.com/debauchee/Barrier/_build/latest?definitionId=1&branchName=master)
+| 系統 | 檔案 |
+|---|---|
+| Windows 10（1903 以上）／11，x64 | `Cursorway-Setup-X.Y.Z-x64.exe`（建議），或免安裝的 `Cursorway-X.Y.Z-x64-portable.zip` |
+| Apple Silicon Mac，macOS 15 以上 | `Cursorway-X.Y.Z-macos-arm64.zip` |
 
-|Platform       |Build Status|
-|            --:|:--         |
-|Linux          |[![Build Status](https://dev.azure.com/debauchee/Barrier/_apis/build/status/debauchee.barrier?branchName=master&jobName=Linux%20Build)](https://dev.azure.com/debauchee/Barrier/_build/latest?definitionId=1&branchName=master)|
-|Mac            |[![Build Status](https://dev.azure.com/debauchee/Barrier/_apis/build/status/debauchee.barrier?branchName=master&jobName=Mac%20Build)](https://dev.azure.com/debauchee/Barrier/_build/latest?definitionId=1&branchName=master)|
-|Windows Debug  |[![Build Status](https://dev.azure.com/debauchee/Barrier/_apis/build/status/debauchee.barrier?branchName=master&jobName=Windows%20Build&configuration=Windows%20Build%20Debug)](https://dev.azure.com/debauchee/Barrier/_build/latest?definitionId=1&branchName=master)|
-|Windows Release|[![Build Status](https://dev.azure.com/debauchee/Barrier/_apis/build/status/debauchee.barrier?branchName=master&jobName=Windows%20Build&configuration=Windows%20Build%20Release%20with%20Release%20Installer)](https://dev.azure.com/debauchee/Barrier/_build/latest?definitionId=1&branchName=master)|
-|Snap           |[![Snap Status](https://build.snapcraft.io/badge/debauchee/barrier.svg)](https://build.snapcraft.io/user/debauchee/barrier)|
+## 功能
 
-Our CI Builds are provided by Microsoft Azure Pipelines, Flathub, and Canonical.
+- **共用鍵盤滑鼠**：用「排列螢幕」拖拉決定每台電腦的位置，滑鼠碰到邊緣就切換過去。
+- **雙向剪貼簿**：文字、多個檔案、整個資料夾都能複製貼上，大檔案也可以，傳送時會顯示進度。
+- **自動找到電腦**：同一個區網內開著程式的電腦會自動出現，不用輸入 IP。
+- **安全配對**：兩邊畫面會顯示相同的 6 位數配對碼，雙方都按同意才會配對；之後用保存的憑證自動重連，IP 改變也沒關係。
+- **快捷鍵切換**：Control+Option（Windows 是 Ctrl+Alt）加號碼，直接跳到指定的電腦；號碼可以自己設定。
+- **改設定不斷線**：調整排列或進階設定時，已連線的電腦不會斷線。
+- **淺色／深色模式**：可以跟隨系統。
+- 跨網段或 VPN 時，可以在進階設定填入對方的 IP 位址或電腦名稱。
 
-### What is it?
+## 跟原版 Barrier 有什麼不同
 
-Barrier is software that mimics the functionality of a KVM switch, which historically would allow you to use a single keyboard and mouse to control multiple computers by physically turning a dial on the box to switch the machine you're controlling at any given moment. Barrier does this in software, allowing you to tell it which machine to control by moving your mouse to the edge of the screen, or by using a keypress to switch focus to a different system.
+| | Barrier | **Cursorway** |
+|---|---|---|
+| 第一次連線 | 手動輸入主控端的 IP 或電腦名稱，再核對一長串憑證指紋 | **附近的電腦自動出現**，兩邊看到一樣的 6 位數配對碼，各按一次「同意」就連上 |
+| 複製貼上 | 只有文字和圖片 | **檔案、多個檔案、整個資料夾都能雙向複製**，大檔案也行，會顯示傳送進度 |
+| 改設定 | 套用時重新啟動，已連線的電腦會斷線 | **排列、進階設定改了就生效，不會斷線** |
+| 介面 | 跨平台的 Qt 介面，設定項目多 | **Windows／Mac 原生介面**，淺色／深色模式，一個視窗看完狀態 |
+| 快捷鍵切換 | 要自己寫設定 | **Ctrl+Alt（Mac 為 Control+Option）＋號碼**，號碼可以在介面上改 |
+| 維護 | 2021 年後沒有新版 | 持續更新，程式內會提示新版 |
 
-Barrier was forked from Symless's Synergy 1.9 codebase. Synergy was a commercialized reimplementation of the original CosmoSynergy written by Chris Schoeneman.
+## 開始使用
 
-At the moment, barrier is not compatible with synergy. Barrier needs to be installed on all machines that will share keyboard and mouse.
+1. **安裝**
+   - Windows：執行安裝程式（需要按一次「是否允許」），裝好後從開始功能表開啟 Cursorway。
+   - Mac：解壓縮後把 `Cursorway.app` 拖到「應用程式」再開啟。目前沒有經過 Apple 公證，若被阻擋，請到「系統設定 → 隱私權與安全性」允許開啟。第一次需要允許「區域網路」、「輔助使用」和「輸入監控」。
+2. **選角色**：有實體鍵盤滑鼠的那台選「主控端」，其他電腦選「接收端」。
+3. **配對**：主控端在「附近電腦」選接收端，按「邀請配對」。兩邊核對 6 位數配對碼相同後，各按「相同，同意」。
+4. 配對完成後就會自動連線。之後只要兩台都開著程式就好。
 
-### What's different?
+完整說明、各版更新內容和限制，請看 [GUI-README.txt](tools/native-file-drop/GUI-README.txt)；技術細節見 [tools/native-file-drop/README.md](tools/native-file-drop/README.md)。
 
-Whereas Synergy has moved beyond its goals from the 1.x era, Barrier aims to maintain that simplicity.
-Barrier will let you use your keyboard and mouse from one computer to control one or more other computers.
-Clipboard sharing is supported.
-That's it.
+## 注意事項
 
-### Project goals
+- 兩台電腦要在同一個區網（或在進階設定填入對方位址）。
+- Windows 的免安裝版沒有背景服務，所以在登入畫面、UAC 畫面和以系統管理員身分執行的視窗上，接收端的滑鼠鍵盤可能無法操作；請用安裝版。
+- 檔案要整批接收完才能貼上。傳到一半斷線時，重新連上後只會補傳缺的部分（兩台都要 0.3.28 以上）。
 
-Hassle-free reliability. We are users, too. Barrier was created so that we could solve the issues we had with synergy and then share these fixes with other users.
+## 來源與授權
 
-Compatibility. We use more than one operating system and you probably do, too. Windows, OSX, Linux, FreeBSD... Barrier should "just work". We will also have our eye on Wayland when the time comes.
+Cursorway（原名 Barrier Share）是以 [Barrier](https://github.com/debauchee/barrier) 為基礎修改而成，沿用 Barrier 的鍵盤滑鼠核心，另外加上 Mac／Windows 原生視窗程式、區網搜尋配對和檔案剪貼簿。
 
-Communication. Everything we do is in the open. Our issue tracker will let you see if others are having the same problem you're having and will allow you to add additional information. You will also be able to see when progress is made and how the issue gets resolved.
-
-### Usage
-
-Install and run barrier on each machine that will be sharing.
-On the machine with the keyboard and mouse, make it the server.
-
-Click the "Configure server" button and drag a new screen onto the grid for each client machine.
-Ensure the "screen name" matches exactly (case-sensitive) for each configured screen -- the clients' barrier windows will tell you their screen names (just above the server IP).
-
-On the client(s), put in the server machine's IP address (or use Bonjour/auto configuration when prompted) and "start" them.
-You should see `Barrier is running` on both server and clients.
-You should now be able to move the mouse between all the screens as if they were the same machine.
-
-Note that if the keyboard's Scroll Lock is active then this will prevent the mouse from switching screens.
-
-### Contact & support
-
-Please be aware that the *only* way to draw our attention to a bug is to create a new issue in [the issue tracker](https://github.com/debauchee/barrier/issues). Write a clear, concise, detailed report and you will get a clear, concise, detailed response. Priority is always given to issues that affect a wider range of users.
-
-For short and simple questions or to just say hello find us on the LiberaChat IRC network in the #barrier channel.
-
-### Contributions
-
-At this time we are looking for developers to help fix the issues found in the issue tracker.
-Submit pull requests once you've polished up your patch and we'll review and possibly merge it.
-
-Most pull requests will need to include a release note.
-See docs/newsfragments/README.md for documentation of how to do that.
-
-## Distro specific packages
-
-While not a comprehensive list, repology provides a decent list of distro
-specific packages.
-
-[![Packaging status](https://repology.org/badge/vertical-allrepos/barrier.svg)](https://repology.org/project/barrier/versions)
-
-## FAQ - Frequently Asked Questions
-
-**Q: Does drag and drop work on linux?**
-
-> A: No *(see [#855](https://github.com/debauchee/barrier/issues/855) if you'd like to change that)*
-
-
-**Q: What OSes are supported?**
-
-> A: The [most recent release](https://github.com/debauchee/barrier/releases/latest) of Barrier is known to work on:
->  - Windows 7, 8, 8.1, 10, and 11
->  - macOS *(previously known as OS X or Mac OS X)*  
->    - _The current GUI does **not** work on OS versions prior to macOS 10.12 Sierra (but see the related answer below)_
->  - Linux
->  - FreeBSD
->  - OpenBSD
-
-
-**Q: Are 32-bit versions of Windows supported?**
-
-> A: No
-
-
-__Q: Is it possible to use Barrier on Mac OS X / OS X versions prior to 10.12?__
-
-> A: Not officially.
->   - For OS X 10.10 Yosemite and later:
->     - [Barrier v2.1.0](https://github.com/debauchee/barrier/releases/tag/v2.1.0) or earlier _may_ work.
->   - For Mac OS X 10.9 Mavericks _(and perhaps earlier)_:
->     1. the command-line portions of the [current release](https://github.com/debauchee/barrier/releases/latest) _should_ run fine.
->     2. The GUI will _not_ run, as that OS version does not include Apple's *Metal* framework.
->         - _(For a GUI workaround for Mac OS X 10.9, see the [discussion at issue #544](https://github.com/debauchee/barrier/issues/544))_
-
-> Note: Only versions [v2.3.4](https://github.com/debauchee/barrier/releases/tag/v2.3.4) and [later](https://github.com/debauchee/barrier/releases/latest) of Barrier can be supported by this project.
->  - Anyone using an earlier version is advised to upgrade due to recently-addressed security vulnerabilities *(and other bug fixes)*. 
->    - This is especially important for computers accessible from the public Internet *(or from other shared/untrusted networks, such as when using shared WiFi)*.
-
-
-**Q: How do I load my configuration on startup?**
-
-> A: Start the binary with the argument `--config <path_to_saved_configuration>`
-
-
-**Q: After loading my configuration on the client the field 'Server IP' is still empty!**
-
-> A: Edit your configuration to include the server's ip address manually with
-> 
->```
->(...)
->
->section: options
->    serverhostname=<AAA.BBB.CCC.DDD>
->```
-
-**Q: Are there any other significant limitations with the current version of Barrier?**
-
-> A: Currently:
->    - Barrier currently has limited UTF-8 support; issues have been reported with processing various languages.
->      - *(see [#860](https://github.com/debauchee/barrier/issues/860))*
->    - There is interest in future support for the Wayland compositor/display server protocol *([official site](https://wayland.freedesktop.org/) | [Wikipedia article](https://en.wikipedia.org/wiki/Wayland_(display_server_protocol)))* on Linux.
->      - As of late 2021, there is no expected completion date for *Wayland* support.
->      - *(see [#109](https://github.com/debauchee/barrier/issues/109) and [#1251](https://github.com/debauchee/barrier/issues/1251) for status or to volunteer your talents)*
->
-> The complete list of open issues can be found in the ['Issues' tab on GitHub](https://github.com/debauchee/barrier/issues?q=is%3Aissue+is%3Aopen). Help is always appreciated.
+依原專案授權，以 [GPL-2.0](LICENSE) 發布。

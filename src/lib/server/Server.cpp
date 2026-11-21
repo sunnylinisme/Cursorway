@@ -378,7 +378,7 @@ Server::adoptClient(BaseClientProxy* client)
 	// the screen that had the cursor dropped out moments ago and nobody switched since:
 	// put the cursor back where it was
 	if (!m_rejoinName.empty() && m_rejoinName == getName(client) && m_active == m_primaryClient &&
-			m_activeSaver == NULL && ARCH->time() - m_rejoinTime < 15.0) {
+			m_activeSaver == NULL && !isLockedToScreen() && ARCH->time() - m_rejoinTime < 15.0) {
 		SInt32 dx, dy, dw, dh;
 		client->getShape(dx, dy, dw, dh);
 		SInt32 x = std::max(dx, std::min(m_rejoinX, dx + dw - 1)), y = std::max(dy, std::min(m_rejoinY, dy + dh - 1));

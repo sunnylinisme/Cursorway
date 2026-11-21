@@ -656,7 +656,10 @@ ServerProxy::grabClipboard()
     }
 
     if (m_filesEnabled && id != kClipboardClipboard) return;
-    if (id == kClipboardClipboard) m_files->cancel();
+    // The host owns the clipboard now: what we were sending it is stale. Files the host is sending us
+    // are not: a host often reports its copy twice, and the second report arrives after the files
+    // started (the receiving end of the host-side fix for the same thing).
+    if (id == kClipboardClipboard && !m_files->receiving()) m_files->cancel();
     // forward
     m_client->grabClipboard(id);
 }

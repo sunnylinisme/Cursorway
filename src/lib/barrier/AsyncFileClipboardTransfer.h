@@ -15,6 +15,8 @@ public:
     void setResume(bool resume) { resume_ = resume; }
     bool receive(const unsigned char*);
     void cancel();
+    // Files from the peer are on their way (between its offer and the end).
+    bool receiving() const { return incoming_ != 0; }
     // Called on the event thread when the peer begins sending files, before any data arrives.
     // Used to empty the local clipboard so a paste during the transfer cannot paste older content.
     void onIncoming(std::function<void(ClipboardID, uint32_t)> started) { started_ = std::move(started); }

@@ -45,6 +45,14 @@
 #include <sstream>
 #include <stdexcept>
 #include <fstream>
+#include <cstdlib>
+
+namespace {
+// End-to-end tests run the host and the receiver on one machine with one clipboard: the receiver
+// must neither claim nor report it, or the two would keep taking it from each other. Data the host
+// sends is still put on the clipboard.
+bool sharedClipboardTest() { static const bool on = std::getenv("CURSORWAY_TEST_SHARED_CLIPBOARD") != nullptr; return on; }
+}
 
 //
 // Client
@@ -285,7 +293,7 @@ Client::setClipboard(ClipboardID id, const IClipboard* clipboard)
 void
 Client::grabClipboard(ClipboardID id)
 {
-    m_screen->grabClipboard(id);
+    if (!sharedClipboardTest()) m_screen->grabClipboard(id);
     m_ownClipboard[id]  = false;
     m_sentClipboard[id] = false;
 }
@@ -671,7 +679,7 @@ Client::handleShapeChanged(const Event&, void*)
 void
 Client::handleClipboardGrabbed(const Event& event, void*)
 {
-    if (!m_enableClipboard) {
+    if (!m_enableClipboard || sharedClipboardTest()) {
         return;
     }
 

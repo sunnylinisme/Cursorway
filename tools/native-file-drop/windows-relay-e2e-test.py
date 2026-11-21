@@ -121,7 +121,7 @@ end
             import threading; threading.Thread(target=lambda: [None for _ in relay.stdout], daemon=True).start()
             return relay, int(first.rsplit(":", 1)[1])
         relay, relay_port = start_relay(0)
-        environment = dict(os.environ, CURSORWAY_TEST_NO_POINTER="1")
+        environment = dict(os.environ, CURSORWAY_TEST_NO_POINTER="1", CURSORWAY_TEST_SHARED_CLIPBOARD="1")
         user = subprocess.Popen([str(binary / "cursorway-client.exe"), "-f", "--no-tray", "--debug", "DEBUG1", "--profile-dir", str(profiles["user"]),
             "--log", str(logs["user"]), "--name", "windows", "--file-clipboard", "127.0.0.1:%d" % relay_port],
             stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, env=environment)

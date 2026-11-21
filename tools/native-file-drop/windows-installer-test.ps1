@@ -306,14 +306,14 @@ $reply = Invoke-Service "DESKTOP`tWinlogon"; Start-Sleep -Seconds 1
 $reply = Invoke-Service "DESKTOP`tauto"; Start-Sleep -Seconds 1
 $text = Get-Content -LiteralPath $notes -Raw
 if (-not ($text.Contains('route: system core (input desktop Winlogon') -and $text.LastIndexOf('route: user core') -gt $text.IndexOf('route: system core'))) { throw "The route did not follow the input desktop: $text" }
-if ((Get-Cores) -join ',' -ne $cores -join ',') { throw 'A core was restarted when the desktop changed; it must only change the route.' }
+if (((Get-Cores) -join ',') -ne ($cores -join ',')) { throw 'A core was restarted when the desktop changed; it must only change the route.' }
 # A real second desktop, switched to and back: the service sees it and routes to the system core.
 & python (Join-Path $PSScriptRoot 'windows-switch-desktop.py') 2
 if ($LASTEXITCODE -ne 0) { throw "Switching to a test desktop failed (exit $LASTEXITCODE)." }
 Start-Sleep -Seconds 1
 $text = Get-Content -LiteralPath $notes -Raw
 if (-not $text.Contains('route: system core (input desktop CursorwayTest')) { throw "The route did not follow a real desktop switch: $text" }
-if ((Get-Cores) -join ',' -ne $cores -join ',') { throw 'A core was restarted when switching to a real desktop.' }
+if (((Get-Cores) -join ',') -ne ($cores -join ',')) { throw 'A core was restarted when switching to a real desktop.' }
 Write-Output "::notice title=Relay mode::relay as LocalService, two cores, routes followed DESKTOP and a real SwitchDesktop without restarting a core"
 $reply = Invoke-Service 'STOP'
 

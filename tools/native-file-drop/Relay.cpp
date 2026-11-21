@@ -271,7 +271,7 @@ struct Relay {
             int n = SSL_write(c->ssl, c->out.data(), int(std::min<size_t>(c->out.size(), 1 << 20)));
             if (n > 0) { c->out.erase(0, n); continue; }
             int e = SSL_get_error(c->ssl, n); if (e == SSL_ERROR_WANT_WRITE || e == SSL_ERROR_WANT_READ) break;
-            close(c, "write failed");
+            close(c, "write failed (" + std::to_string(e) + " " + std::to_string(ERR_get_error()) + ")");
         }
     }
     void run() {
@@ -315,6 +315,9 @@ int main(int argc, char** argv) {
     if (profile.empty() || relay.hostAddress.empty() || relay.screenName.empty() || relay.userFp.empty()) { std::fprintf(stderr, "usage: see Relay.cpp\n"); return 2; }
     WSADATA wsa; WSAStartup(MAKEWORD(2, 2), &wsa);
     relay.context = SSL_CTX_new(TLS_method());
+    // The outgoing buffer grows while a write waits (a file on the way): a retried SSL_write may see
+    // it moved or longer. Without these modes OpenSSL fails the retry and the connection drops.
+    SSL_CTX_set_mode(relay.context, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_ENABLE_PARTIAL_WRITE);
     std::string pem = profile + "\\SSL\\Barrier.pem";
     if (SSL_CTX_use_certificate_chain_file(relay.context, pem.c_str()) != 1 || SSL_CTX_use_PrivateKey_file(relay.context, pem.c_str(), SSL_FILETYPE_PEM) != 1) { emit("cannot load " + pem); return 1; }
     // Peers prove themselves with a certificate; the fingerprint is checked after the handshake.

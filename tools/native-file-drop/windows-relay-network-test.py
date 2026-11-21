@@ -147,6 +147,14 @@ with tempfile.TemporaryDirectory(prefix="cursorway-relay-") as temporary:
         for mark, body in ((1, str(len(blob)).encode()), (2, blob), (3, b"")): host.send(b"DCLP" + struct.pack("!BIB", 0, 7, mark) + string(body))
         time.sleep(1); wait(lambda: windows_clipboard() == text, "text from the host did not reach the clipboard", 5)
         assert "clipboard was updated" not in log_text(system_log), "the system core got the clipboard"
+        # 2b. A large transfer while the pointer keeps moving: the relay's writes to the core back up and are
+        # retried with a grown buffer; the connections must stay (a file drag dropped the host link in 0.3.34).
+        big = ("Cursorway " * 300000).encode(); blob = struct.pack("!III", 1, 0, len(big)) + big
+        for mark, body in ((1, str(len(blob)).encode()), (2, blob), (3, b"")):
+            host.send(b"DCLP" + struct.pack("!BIB", 0, 8, mark) + string(body))
+            for i in range(50): host.send(b"DMMV" + struct.pack("!hh", 100 + i, 100))
+        host.send(b"DMMV" + struct.pack("!hh", 222, 233)); wait(lambda: abs(cursor()[0] - 222) <= 1 and abs(cursor()[1] - 233) <= 1, "the pointer stopped after a large transfer", 15)
+        assert "disconnected" not in log_text(relay_log), log_text(relay_log)
         # 3. Shift held on the host; the input moves to the system core: Shift must not stay down.
         host.send(b"DKDN" + struct.pack("!HHH", 0xEFE1, 0, 42)); time.sleep(.3)
         assert user32.GetAsyncKeyState(0x10) & 0x8000, "the user core did not press Shift"

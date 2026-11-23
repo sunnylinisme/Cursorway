@@ -182,7 +182,11 @@ SecureSocket::doRead()
             m_inputBuffer.write(buffer, bytesRead);
 
             if (m_inputBuffer.getSize() > MAX_INPUT_BUFFER_SIZE) {
-                break;
+                // Finish the decrypted TLS record before yielding. Otherwise its
+                // tail can remain inside OpenSSL with no socket-read event to wake us.
+                std::lock_guard<std::mutex> ssl_lock{ssl_mutex_};
+                if (m_ssl->m_ssl == nullptr || SSL_pending(m_ssl->m_ssl) == 0) break;
+                LOG((CLOG_DEBUG1 "draining buffered TLS record before input limit"));
             }
 
             status = secureRead(buffer, sizeof(buffer), bytesRead);
@@ -403,8 +407,9 @@ SecureSocket::initContext(bool server)
     SSL_METHOD* m = const_cast<SSL_METHOD*>(method);
     m_ssl->m_context = SSL_CTX_new(m);
 
-    // drop SSLv3 support
+    // TLS 1.2 or newer only
     SSL_CTX_set_options(m_ssl->m_context, SSL_OP_NO_SSLv3);
+    SSL_CTX_set_min_proto_version(m_ssl->m_context, TLS1_2_VERSION);
 
     if (m_ssl->m_context == NULL) {
         showError("");
@@ -720,6 +725,8 @@ bool SecureSocket::verify_cert_fingerprint(const barrier::fs::path& fingerprint_
     LOG((CLOG_NOTE "peer fingerprint (SHA1): %s (SHA256): %s",
          barrier::format_ssl_fingerprint(fingerprint_sha1.data).c_str(),
          barrier::format_ssl_fingerprint(fingerprint_sha256.data).c_str()));
+
+    m_peerFingerprint = barrier::format_ssl_fingerprint(fingerprint_sha256.data);
 
     // Provide debug hint as to what file is being used to verify fingerprint trust
     LOG((CLOG_NOTE "fingerprint_db_path: %s", fingerprint_db_path.u8string().c_str()));

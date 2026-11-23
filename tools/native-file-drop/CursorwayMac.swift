@@ -1,0 +1,2389 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+import AppKit
+import CryptoKit
+import Security
+import ApplicationServices
+import Foundation
+import ServiceManagement
+import UserNotifications
+
+struct ShareOptions: Codable {
+    var host = true
+    var address = ""
+    var position = "right"
+    var advanced = ShareAdvanced()
+    // Where each paired receiver sits relative to this host (up to 8 cells away each way): fingerprint -> [x, y], y grows downwards.
+    var layout: [String: [Int]] = [:]
+    // Operating system each paired computer reported over the link: fingerprint -> mac / windows / linux.
+    var platforms: [String: String] = [:]
+    // Part of the shared edge each receiver next to this host uses: fingerprint -> all / first / second.
+    var edgeRange: [String: String] = [:]
+    // Jump number (Control+Option+N) the user picked for a receiver: fingerprint -> 2...9. 1 is always this host.
+    var screenNumbers: [String: Int] = [:]
+    // 外觀: "system" follows macOS light/dark, or "light" / "dark".
+    var appearance = "system"
+    // Arrange editor: grid size and where this host sits in it (nil = 5x5 with the host in the middle),
+    // the chosen preset layout (nil = decided from layout), and the user's own "自訂" arrangement.
+    var grid: ShareGrid?
+    var preset: String?
+    var custom: ShareGrid?
+    init() {}
+    // Settings saved by older versions lack newer keys; keep their defaults.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        host = try c.decodeIfPresent(Bool.self, forKey: .host) ?? true
+        address = try c.decodeIfPresent(String.self, forKey: .address) ?? ""
+        position = try c.decodeIfPresent(String.self, forKey: .position) ?? "right"
+        advanced = (try? c.decodeIfPresent(ShareAdvanced.self, forKey: .advanced)) ?? ShareAdvanced()
+        platforms = (try? c.decodeIfPresent([String: String].self, forKey: .platforms)) ?? [:]
+        edgeRange = ((try? c.decodeIfPresent([String: String].self, forKey: .edgeRange)) ?? [:]).filter { ["first", "second"].contains($0.value) }
+        layout = ((try? c.decodeIfPresent([String: [Int]].self, forKey: .layout)) ?? [:]).filter { $0.value.count == 2 && abs($0.value[0]) <= ShareGrid.reach && abs($0.value[1]) <= ShareGrid.reach }
+        screenNumbers = ((try? c.decodeIfPresent([String: Int].self, forKey: .screenNumbers)) ?? [:]).filter { (2...9).contains($0.value) }
+        appearance = (try? c.decodeIfPresent(String.self, forKey: .appearance)).flatMap { $0 }.flatMap { ["system", "light", "dark"].contains($0) ? $0 : nil } ?? "system"
+        grid = (try? c.decodeIfPresent(ShareGrid.self, forKey: .grid)).flatMap { $0 }.flatMap { $0.valid ? $0 : nil }
+        preset = (try? c.decodeIfPresent(String.self, forKey: .preset)).flatMap { $0 }.flatMap { ShareLayoutView.presetIds.contains($0) ? $0 : nil }
+        custom = (try? c.decodeIfPresent(ShareGrid.self, forKey: .custom)).flatMap { $0 }.flatMap { $0.valid ? $0 : nil }
+    }
+}
+// Size of the arrange grid (1...9 each way), this host's cell in it, and (for 自訂) each receiver's place relative to the host.
+struct ShareGrid: Codable, Equatable {
+    static let maxSide = 9, reach = 8
+    var cols = 5, rows = 5, hostX = 2, hostY = 2
+    var layout: [String: [Int]] = [:]
+    var valid: Bool { (1...Self.maxSide).contains(cols) && (1...Self.maxSide).contains(rows) && (0..<cols).contains(hostX) && (0..<rows).contains(hostY) && layout.values.allSatisfy { $0.count == 2 } }
+}
+// Host-side Barrier options from the advanced settings dialog.
+struct ShareAdvanced: Codable, Equatable {
+    var switchDelay = 0, doubleTap = 0, cornerSize = 16
+    // swapModifiers defaults on: a Mac keyboard on Windows (and the reverse) then copies with ⌘C / Ctrl+C.
+    var corners = false, swapModifiers = true, relativeMouse = false, screenSaver = true, switchKeys = true, lockKey = false
+    var extra = "", targets = ""
+    // Added with the original Barrier features; defaults keep the earlier behaviour.
+    var directKeys = false, broadcastKey = false, capsLockFix = false, preserveFocus = false, clipboard = true, wheelInvert = false
+    var switchNeeds = "", wheelScale = 100   // switchNeeds: "" / shift / control / alt
+    init() {}
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self), d = ShareAdvanced()
+        switchDelay = try min(5000, max(0, c.decodeIfPresent(Int.self, forKey: .switchDelay) ?? d.switchDelay))
+        doubleTap = try min(2000, max(0, c.decodeIfPresent(Int.self, forKey: .doubleTap) ?? d.doubleTap))
+        cornerSize = try min(500, max(0, c.decodeIfPresent(Int.self, forKey: .cornerSize) ?? d.cornerSize))
+        corners = try c.decodeIfPresent(Bool.self, forKey: .corners) ?? d.corners
+        swapModifiers = try c.decodeIfPresent(Bool.self, forKey: .swapModifiers) ?? d.swapModifiers
+        relativeMouse = try c.decodeIfPresent(Bool.self, forKey: .relativeMouse) ?? d.relativeMouse
+        screenSaver = try c.decodeIfPresent(Bool.self, forKey: .screenSaver) ?? d.screenSaver
+        switchKeys = try c.decodeIfPresent(Bool.self, forKey: .switchKeys) ?? d.switchKeys
+        lockKey = try c.decodeIfPresent(Bool.self, forKey: .lockKey) ?? d.lockKey
+        extra = try c.decodeIfPresent(String.self, forKey: .extra) ?? ""
+        targets = try c.decodeIfPresent(String.self, forKey: .targets) ?? ""
+        directKeys = try c.decodeIfPresent(Bool.self, forKey: .directKeys) ?? d.directKeys
+        broadcastKey = try c.decodeIfPresent(Bool.self, forKey: .broadcastKey) ?? d.broadcastKey
+        capsLockFix = try c.decodeIfPresent(Bool.self, forKey: .capsLockFix) ?? d.capsLockFix
+        preserveFocus = try c.decodeIfPresent(Bool.self, forKey: .preserveFocus) ?? d.preserveFocus
+        clipboard = try c.decodeIfPresent(Bool.self, forKey: .clipboard) ?? d.clipboard
+        wheelInvert = try c.decodeIfPresent(Bool.self, forKey: .wheelInvert) ?? d.wheelInvert
+        let needs = try c.decodeIfPresent(String.self, forKey: .switchNeeds) ?? ""; switchNeeds = ["shift", "control", "alt"].contains(needs) ? needs : ""
+        wheelScale = try min(500, max(10, c.decodeIfPresent(Int.self, forKey: .wheelScale) ?? d.wheelScale))
+    }
+    // Extra lines go into the options section; section boundaries would break the generated file.
+    func extraLines() throws -> [String] {
+        try extra.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty && !$0.hasPrefix("#") }.map { (line: String) throws -> String in
+            if line.lowercased().hasPrefix("section") || line.lowercased() == "end" { throw ShareError.message("額外設定不可包含 section 或 end：\(line)") }
+            return line
+        }
+    }
+    // Comma separated IPv4 addresses or computer names outside the local network.
+    func targetList() throws -> String {
+        let items = targets.components(separatedBy: CharacterSet(charactersIn: ", ;\r\n")).filter { !$0.isEmpty }
+        for item in items where item.count > 253 || item.range(of: "^[A-Za-z0-9.-]+$", options: .regularExpression) == nil { throw ShareError.message("「\(item)」不是有效的 IP 位址或電腦名稱") }
+        if items.count > 16 { throw ShareError.message("最多輸入 16 個位址。") }
+        return items.joined(separator: ",")
+    }
+}
+enum ShareError: Error, LocalizedError {
+    case message(String)
+    var errorDescription: String? { if case .message(let text) = self { return text }; return nil }
+}
+final class ShareSettings {
+    static let directions = ["right", "left", "up", "down"]
+    // Settings, pairing certificates and trust live in ~/Library/Application Support/Cursorway
+    // (BarrierShare before 0.3.21; moved there by migrateRoot when the app starts).
+    static let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    static var root = folder(in: support)
+    static func folder(in base: URL) -> URL {
+        let new = base.appendingPathComponent("Cursorway", isDirectory: true), old = base.appendingPathComponent("BarrierShare", isDirectory: true)
+        return !FileManager.default.fileExists(atPath: new.path) && FileManager.default.fileExists(atPath: old.path) ? old : new
+    }
+    // Moves BarrierShare to Cursorway once (a rename, so certificates and pairings come along).
+    // Leaves things as they are when Cursorway already exists or the move fails; returns the folder to use.
+    @discardableResult static func migrateRoot(in base: URL = support) -> URL {
+        let new = base.appendingPathComponent("Cursorway", isDirectory: true), old = base.appendingPathComponent("BarrierShare", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: new.path) && FileManager.default.fileExists(atPath: old.path) { try? FileManager.default.moveItem(at: old, to: new) }
+        return folder(in: base)
+    }
+    static var bin: URL {
+        if Bundle.main.bundleURL.pathExtension == "app" { return Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers", isDirectory: true) }
+        return Bundle.main.executableURL!.deletingLastPathComponent()
+    }
+    static func profile(_ host: Bool) -> URL { root.appendingPathComponent(host ? "profile-server" : "profile", isDirectory: true) }
+    // Read by the core at start: drop the kept partial transfer so the next one starts from the beginning.
+    static func discardResume(_ host: Bool) {
+        let cache = profile(host).appendingPathComponent("FileClipboardCache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try? Data().write(to: cache.appendingPathComponent("discard-resume"))
+    }
+    static func run(_ name: String, _ arguments: [String], allowFailure: Bool = false) throws -> String {
+        let process = Process(), output = Pipe(), done = DispatchSemaphore(value: 0)
+        process.executableURL = bin.appendingPathComponent(name); process.arguments = arguments
+        process.standardOutput = output; process.standardError = output; process.standardInput = FileHandle.nullDevice
+        process.terminationHandler = { _ in done.signal() }
+        try process.run()
+        if done.wait(timeout: .now() + 15) == .timedOut { process.terminate(); throw ShareError.message("設定工具未回應。") }
+        let result = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        if process.terminationStatus != 0 && !allowFailure { throw ShareError.message(result) }
+        return result
+    }
+    static func initialize(_ host: Bool) throws -> String { try run("cursorway-pair", ["init", profile(host).path]) }
+    static func save(_ options: ShareOptions) throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try JSONEncoder().encode(options).write(to: root.appendingPathComponent("settings.json"), options: .atomic)
+    }
+    static func load() throws -> ShareOptions {
+        let path = root.appendingPathComponent("settings.json")
+        if !FileManager.default.fileExists(atPath: path.path) { return ShareOptions() }
+        var options = try JSONDecoder().decode(ShareOptions.self, from: Data(contentsOf: path))
+        if !directions.contains(options.position) { options.position = "right" }
+        return options
+    }
+    struct Cell: Hashable { var x: Int, y: Int }
+    static let hostName = "windows-host"
+    static var ownFingerprint: String?
+    // Core screen name of a receiver; unique per computer so several can connect at once.
+    static func screenName(_ fingerprint: String) -> String { "r-" + String(fingerprint.dropFirst(10).prefix(16)) }
+    static var receiverName: String { ownFingerprint.map(screenName) ?? "windows" }
+    static func step(_ direction: String) -> Cell { [Cell(x: 1, y: 0), Cell(x: -1, y: 0), Cell(x: 0, y: -1), Cell(x: 0, y: 1)][directions.firstIndex(of: direction) ?? 0] }
+    static func opposite(_ direction: String) -> String { ["left", "right", "down", "up"][directions.firstIndex(of: direction) ?? 0] }
+    // Screen name -> grid cell, host first. Without paired receivers this is the classic host + "windows" pair.
+    static func cells(_ direction: String, receivers: [String], layout: [String: [Int]]) -> [(String, Cell)] {
+        var result: [(String, Cell)] = [(hostName, Cell(x: 0, y: 0))]
+        if receivers.isEmpty { return result + [("windows", step(direction))] }
+        var order = [step(direction), step(opposite(direction)), Cell(x: 0, y: -1), Cell(x: 0, y: 1), Cell(x: 1, y: 0), Cell(x: -1, y: 0)]
+        for ring in 1...2 { for y in -ring...ring { for x in -ring...ring where max(abs(x), abs(y)) == ring { order.append(Cell(x: x, y: y)) } } }
+        for (index, fp) in receivers.enumerated() {
+            let used = Set(result.map { $0.1 })
+            var cell = layout[fp].map { Cell(x: $0[0], y: $0[1]) }
+            if cell == nil || used.contains(cell!) { cell = index == 0 && !used.contains(step(direction)) ? step(direction) : order.first { !used.contains($0) && $0 != Cell(x: 0, y: 0) } }
+            result.append((screenName(fp), cell!))
+        }
+        return result
+    }
+    // Jump numbers: 1 is this host; chosen numbers first, then the rest fill the free 2...9 in pairing order.
+    static func numbers(_ receivers: [String], custom: [String: Int]) -> [String: Int] {
+        var result: [String: Int] = [:], used: Set<Int> = [1]
+        for fp in receivers { if let n = custom[fp], (2...9).contains(n), !used.contains(n) { result[fp] = n; used.insert(n) } }
+        for fp in receivers where result[fp] == nil { if let n = (2...9).first(where: { !used.contains($0) }) { result[fp] = n; used.insert(n) } }
+        return result
+    }
+    static func config(_ direction: String, _ a: ShareAdvanced = ShareAdvanced(), receivers: [String] = [], layout: [String: [Int]] = [:], platforms: [String: String] = [:], edgeRange: [String: String] = [:], numbers custom: [String: Int] = [:]) throws -> String {
+        guard directions.contains(direction) else { throw ShareError.message("請選擇有效的螢幕位置。") }
+        let grid = cells(direction, receivers: receivers, layout: layout)
+        var text = "section: screens\n"
+        for (name, _) in grid {
+            text += " \(name):\n"
+            // Swap on non-Mac receivers only: a Mac keyboard's Command then acts as Ctrl there.
+            // Mac to Mac needs no swap; a receiver whose system is unknown is treated as Windows.
+            let platform = receivers.first(where: { screenName($0) == name }).flatMap { platforms[$0] }
+            if a.swapModifiers && name != hostName && platform != "mac" { text += "  ctrl = super\n  super = ctrl\n" }
+            if a.capsLockFix && name != hostName { text += "  halfDuplexCapsLock = true\n" }
+            if a.preserveFocus && name == hostName { text += "  preserveFocus = true\n" }
+        }
+        // The first receiver also answers to "windows", the name receivers used before 0.3.9.
+        if let first = receivers.first { text += "end\nsection: aliases\n \(screenName(first)):\n  windows\n" }
+        text += "end\nsection: links\n"
+        let order = [direction, opposite(direction)] + directions.filter { $0 != direction && $0 != opposite(direction) }
+        var used: [String] = []
+        for (name, cell) in grid {
+            text += " \(name):\n"
+            for d in order {
+                let next = Cell(x: cell.x + step(d).x, y: cell.y + step(d).y)
+                for (other, place) in grid where place == next {
+                    // Part of the edge shared by the host and a receiver right next to it.
+                    let hostLink = name == hostName ? other : other == hostName ? name : nil
+                    let range = hostLink.flatMap { link in receivers.first { screenName($0) == link } }.flatMap { edgeRange[$0] }
+                    let part = range == "first" ? "(0,50)" : range == "second" ? "(50,100)" : ""
+                    if name == hostName { text += "  \(d)\(part) = \(other)\n" } else { text += "  \(d) = \(other)\(part)\n" }
+                    if !used.contains(d) { used.append(d) }
+                }
+            }
+        }
+        text += "end\nsection: options\n clipboardSharing = \(a.clipboard ? "true" : "false")\n"
+        if !a.switchNeeds.isEmpty { text += " switchNeeds\(a.switchNeeds.prefix(1).uppercased() + a.switchNeeds.dropFirst()) = true\n" }
+        if a.switchDelay > 0 { text += " switchDelay = \(a.switchDelay)\n" }
+        if a.doubleTap > 0 { text += " switchDoubleTap = \(a.doubleTap)\n" }
+        if a.corners { text += " switchCorners = all\n switchCornerSize = \(a.cornerSize)\n" }
+        if a.relativeMouse { text += " relativeMouseMoves = true\n" }
+        text += " screenSaverSync = \(a.screenSaver ? "true" : "false")\n"
+        if a.switchKeys { for d in order where used.contains(d) { text += " keystroke(Control+Alt+\(d.prefix(1).uppercased() + d.dropFirst())) = switchInDirection(\(d))\n" } }
+        if a.lockKey { text += " keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n" }
+        if a.broadcastKey { text += " keystroke(Control+Alt+B) = keyboardBroadcast(toggle)\n" }
+        // Control+Alt+1 is this host, 2-9 the receivers by their jump number (chosen in 排列螢幕, else pairing order).
+        if a.directKeys {
+            if receivers.isEmpty { for (i, (name, _)) in grid.prefix(9).enumerated() { text += " keystroke(Control+Alt+\(i + 1)) = switchToScreen(\(name))\n keystroke(Control+Alt+KP_\(i + 1)) = switchToScreen(\(name))\n" } }
+            else {
+                // Each number also works on the numeric keypad (KP_N), pointing at the same computer.
+                text += " keystroke(Control+Alt+1) = switchToScreen(\(hostName))\n keystroke(Control+Alt+KP_1) = switchToScreen(\(hostName))\n"
+                for (fp, n) in numbers(receivers, custom: custom).sorted(by: { $0.value < $1.value }) { text += " keystroke(Control+Alt+\(n)) = switchToScreen(\(screenName(fp)))\n keystroke(Control+Alt+KP_\(n)) = switchToScreen(\(screenName(fp)))\n" }
+            }
+        }
+        // Extra options from the removed expert box: skipped if invalid, so they can never stop the core from starting.
+        for line in (try? a.extraLines()) ?? [] { text += " \(line)\n" }
+        return text + "end\n"
+    }
+    static var receivers: [String] = []
+    // Host screen config, written atomically (temp file + rename) so a running core never reads half of it.
+    // Returns true when the content changed; barriers re-reads the file within a second and logs "reloaded configuration".
+    static func writeConfig(_ options: ShareOptions) throws -> Bool {
+        let path = profile(true).appendingPathComponent("screens.conf")
+        let text = try config(options.position, options.advanced, receivers: receivers, layout: options.layout, platforms: options.platforms, edgeRange: options.edgeRange, numbers: options.screenNumbers)
+        if (try? String(contentsOf: path, encoding: .utf8)) == text { return false }
+        try text.write(to: path, atomically: true, encoding: .utf8); return true
+    }
+    static func command(_ options: ShareOptions) throws -> Process {
+        let p = profile(options.host), process = Process()
+        process.executableURL = bin.appendingPathComponent(options.host ? "cursorway-server" : "cursorway-client")
+        var args = ["-f", "--no-tray", "--file-clipboard", "--profile-dir", p.path, "--log", p.appendingPathComponent(options.host ? "server.log" : "mac.log").path, "--name", options.host ? hostName : receiverName]
+        if options.host {
+            _ = try writeConfig(options)
+            args += ["-c", p.appendingPathComponent("screens.conf").path]
+        } else {
+            var ip = in_addr()
+            guard options.address.withCString({ inet_pton(AF_INET, $0, &ip) }) == 1 else { throw ShareError.message("請輸入主控端的區網 IPv4 位址，例如 192.168.1.20。") }
+            // Receiver-side wheel settings (這台當接收端時).
+            if options.advanced.wheelScale != 100 { args += ["--wheel-scale", String(options.advanced.wheelScale)] }
+            if options.advanced.wheelInvert { args += ["--wheel-invert"] }
+            args += [options.address]
+        }
+        process.arguments = args; process.standardInput = FileHandle.nullDevice
+        return process
+    }
+    static func trustedPath(_ host: Bool) -> URL { profile(host).appendingPathComponent("SSL/Fingerprints/" + (host ? "TrustedClients.txt" : "TrustedServers.txt")) }
+    static func trusted(_ host: Bool, _ fingerprint: String) -> Bool {
+        let lines = (try? String(contentsOf: trustedPath(host), encoding: .utf8)) ?? ""
+        return lines.split(whereSeparator: \.isNewline).contains { $0.trimmingCharacters(in: .whitespaces) == fingerprint }
+    }
+    static func trust(_ host: Bool, _ fingerprint: String) throws { _ = try run("cursorway-pair", ["trust", profile(host).path, host ? "client" : "server", fingerprint]) }
+    @discardableResult static func importPairing(_ old: URL, _ host: Bool, replace: Bool) throws -> Bool {
+        let fm = FileManager.default
+        let candidates = [old.appendingPathComponent(host ? "profile-server/SSL" : "profile/SSL"), old.appendingPathComponent("profile/SSL"), old.appendingPathComponent("SSL")]
+        guard let source = candidates.first(where: { fm.fileExists(atPath: $0.appendingPathComponent("Barrier.pem").path) }) else { return false }
+        let target = profile(host).appendingPathComponent("SSL", isDirectory: true)
+        if source.standardizedFileURL == target.standardizedFileURL { return false }
+        if fm.fileExists(atPath: target.appendingPathComponent("Barrier.pem").path) && !replace { return false }
+        if let entries = fm.enumerator(at: source, includingPropertiesForKeys: [.isSymbolicLinkKey]) {
+            for case let item as URL in entries {
+                if try item.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true { throw ShareError.message("配對資料夾不可使用符號連結。") }
+            }
+        }
+        try fm.createDirectory(at: profile(host), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let staging = profile(host).appendingPathComponent("import-" + UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        defer { try? fm.removeItem(at: staging) }
+        try fm.copyItem(at: source, to: staging.appendingPathComponent("SSL"))
+        _ = try run("cursorway-pair", ["init", staging.path])
+        if fm.fileExists(atPath: target.path) { try fm.moveItem(at: target, to: profile(host).appendingPathComponent("SSL.backup-" + UUID().uuidString)) }
+        try fm.moveItem(at: staging.appendingPathComponent("SSL"), to: target)
+        try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.appendingPathComponent("Barrier.pem").path)
+        return true
+    }
+    static func localAddresses() -> String {
+        var first: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&first) == 0 else { return "請查看系統網路設定" }
+        defer { freeifaddrs(first) }
+        var addresses: [String] = [], item = first
+        while let current = item {
+            defer { item = current.pointee.ifa_next }
+            guard let address = current.pointee.ifa_addr, address.pointee.sa_family == UInt8(AF_INET) else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(address, socklen_t(address.pointee.sa_len), &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 {
+                let value = String(cString: host); if !value.hasPrefix("127.") { addresses.append(value) }
+            }
+        }
+        return addresses.joined(separator: "、")
+    }
+}
+
+// Looks up the newest published Mac release; only the public release list is requested, nothing is sent.
+enum ShareUpdate {
+    static let project = "https://github.com/sunnylinisme/Cursorway"
+    static let releases = URL(string: "https://api.github.com/repos/sunnylinisme/Cursorway/releases?per_page=30")!
+    // Shared vX.Y.Z releases carry both platforms; mac-vX.Y.Z is the pre-0.3.9 Mac-only form.
+    static let prefixes = ["v", "mac-v"]
+    // The repository was renamed from barrier to Cursorway; release pages may use either name, in any case.
+    static let origins = ["https://github.com/sunnylinisme/barrier/releases/", "https://github.com/sunnylinisme/cursorway/releases/"]
+    struct Asset: Decodable { let name: String; let size: Int64; let digest: String?; let browser_download_url: String }
+    struct Release: Decodable { let tag_name: String; let html_url: String; let draft: Bool?; let prerelease: Bool?; let assets: [Asset]? }
+    // The Mac ZIP of a release: Cursorway-X.Y.Z-macos-arm64.zip from this repository, with its size and (when GitHub lists it) SHA-256.
+    struct Zip { let url: URL; let size: Int64; let sha256: String? }
+    struct Found { let version: String; let url: URL; let zip: Zip? }
+    static let downloads = "https://github.com/sunnylinisme/cursorway/releases/download/"
+    static func zip(_ release: Release, _ version: String) -> Zip? {
+        guard let asset = release.assets?.first(where: { $0.name == "Cursorway-\(version)-macos-arm64.zip" }), asset.size > 0,
+              asset.browser_download_url.lowercased().hasPrefix(downloads), let url = URL(string: asset.browser_download_url) else { return nil }
+        var sha: String?
+        if let digest = asset.digest?.lowercased(), digest.hasPrefix("sha256:") { sha = String(digest.dropFirst(7)) }
+        return Zip(url: url, size: asset.size, sha256: sha)
+    }
+    static func parts(_ text: String) -> [Int]? {
+        let pieces = text.split(separator: ".", omittingEmptySubsequences: false).map { Int($0) }
+        guard (1...3).contains(pieces.count), !pieces.contains(where: { $0 == nil || $0! < 0 }) else { return nil }
+        return (pieces.map { $0! } + [0, 0]).prefix(3).map { $0 }
+    }
+    static var current: [Int] { parts(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") ?? [0, 0, 0] }
+    // Returns the highest non-draft, non-prerelease Mac release newer than current, or nil.
+    static func newer(_ data: Data, current: [Int]) -> Found? {
+        guard let list = try? JSONDecoder().decode([Release].self, from: data) else { return nil }
+        var best: ([Int], URL, Release)?
+        for release in list where release.draft != true && release.prerelease != true {
+            guard let prefix = prefixes.first(where: { release.tag_name.hasPrefix($0) }), let version = parts(String(release.tag_name.dropFirst(prefix.count))), let url = URL(string: release.html_url),
+                  origins.contains(where: { release.html_url.lowercased().hasPrefix($0) }) else { continue }
+            if version.lexicographicallyPrecedes(current) || version == current { continue }
+            if best == nil || best!.0.lexicographicallyPrecedes(version) { best = (version, url, release) }
+        }
+        guard let best = best else { return nil }
+        let version = best.0.map(String.init).joined(separator: ".")
+        return Found(version: version, url: best.1, zip: zip(best.2, version))
+    }
+}
+
+// Background update: download the release ZIP, check its size, SHA-256 and signature against this
+// app, then on 重新啟動 a small script waits for Cursorway to quit, swaps the app and opens it again.
+enum ShareUpdater {
+    static var folder: URL { FileManager.default.temporaryDirectory.appendingPathComponent("Cursorway-Update", isDirectory: true) }
+    // Only an app bundle in a folder this user may write to can replace itself; otherwise the download page opens.
+    static var canInstall: Bool { let app = Bundle.main.bundleURL; return app.pathExtension == "app" && FileManager.default.isWritableFile(atPath: app.deletingLastPathComponent().path) }
+    static func sha256(_ file: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty { hash.update(data: chunk) }
+        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+    // nil when the file is the published ZIP (same size, and same SHA-256 when GitHub lists one).
+    static func verify(_ file: URL, _ zip: ShareUpdate.Zip) -> String? {
+        let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.int64Value ?? -1
+        if size != zip.size { return "檔案大小不符" }
+        if let expected = zip.sha256, sha256(file) != expected { return "檔案校驗不符" }
+        return nil
+    }
+    // Identifier and leaf certificate of a signed bundle, after a strict check of it and everything inside.
+    static func signer(_ url: URL) -> (id: String, cert: Data)? {
+        var code: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code = code,
+              SecStaticCodeCheckValidity(code, SecCSFlags(rawValue: kSecCSCheckAllArchitectures | kSecCSStrictValidate | kSecCSCheckNestedCode), nil) == errSecSuccess else { return nil }
+        var info: CFDictionary?
+        guard SecCodeCopySigningInformation(code, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == errSecSuccess, let dict = info as? [String: Any],
+              let id = dict[kSecCodeInfoIdentifier as String] as? String, let certs = dict[kSecCodeInfoCertificates as String] as? [SecCertificate], let leaf = certs.first else { return nil }
+        return (id, SecCertificateCopyData(leaf) as Data)
+    }
+    // nil when the new app is the expected version and signed exactly like this one, so privacy grants carry over.
+    static func check(_ app: URL, version: String, current: URL = Bundle.main.bundleURL) -> String? {
+        guard Bundle(url: app)?.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == version else { return "版本不符" }
+        guard let new = signer(app) else { return "新版的簽章無效" }
+        guard let mine = signer(current), mine.id == new.id, mine.cert == new.cert else { return "新版的簽章和目前的版本不同" }
+        return nil
+    }
+    static func unpack(_ file: URL, into folder: URL) -> URL? {
+        try? FileManager.default.removeItem(at: folder)
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/usr/bin/ditto"); process.arguments = ["-x", "-k", file.path, folder.path]
+        guard (try? process.run()) != nil else { return nil }
+        process.waitUntilExit()
+        let app = folder.appendingPathComponent("Cursorway.app")
+        return process.terminationStatus == 0 && FileManager.default.fileExists(atPath: app.path) ? app : nil
+    }
+    // Written by the install script when the swap failed and the old app was put back; read at the next launch.
+    static var failed: URL { ShareSettings.root.appendingPathComponent("update-failed.txt") }
+    // Waits for this process to end, swaps the app (restoring the old one if the copy fails), removes the
+    // downloaded copy, and opens the app again.
+    static let script = """
+    pid="$1"; old="$2"; new="$3"; status="$4"; work="$5"; back="$old.previous"
+    while kill -0 "$pid" 2>/dev/null; do sleep 0.2; done
+    rm -rf "$back"
+    if mv "$old" "$back" && /usr/bin/ditto "$new" "$old"; then rm -rf "$back"; rm -f "$status"
+    else rm -rf "$old"; mv "$back" "$old"; echo "$(date '+%Y-%m-%d %H:%M') 無法替換 $old" > "$status"; fi
+    rm -rf "$work"
+    [ -n "$CURSORWAY_UPDATE_NO_OPEN" ] || /usr/bin/open "$old"
+    """
+    // Leftovers of an earlier download or install; nothing runs from there once the app has started.
+    static func cleanUp() { try? FileManager.default.removeItem(at: folder) }
+    static func install(_ app: URL) throws {
+        let process = Process(); process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script, "cursorway-update", String(ProcessInfo.processInfo.processIdentifier), Bundle.main.bundleURL.path, app.path, failed.path, folder.path]
+        try process.run()
+    }
+}
+
+// Reports a download's progress and hands over the finished file before URLSession deletes it.
+final class ShareDownload: NSObject, URLSessionDownloadDelegate {
+    let target: URL, progress: (Int64, Int64) -> Void, done: (String?) -> Void
+    var session: URLSession?, task: URLSessionDownloadTask?, finished = false
+    init(_ url: URL, to target: URL, progress: @escaping (Int64, Int64) -> Void, done: @escaping (String?) -> Void) {
+        self.target = target; self.progress = progress; self.done = done; super.init()
+        session = URLSession(configuration: .default, delegate: self, delegateQueue: .main)
+        task = session!.downloadTask(with: url); task!.resume()
+    }
+    func cancel() { task?.cancel() }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64, totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) { progress(totalBytesWritten, totalBytesExpectedToWrite) }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
+        if let http = downloadTask.response as? HTTPURLResponse, http.statusCode != 200 { finish("伺服器回應 \(http.statusCode)"); return }
+        do { try? FileManager.default.removeItem(at: target); try FileManager.default.moveItem(at: location, to: target); finish(nil) } catch { finish(error.localizedDescription) }
+    }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error = error { finish((error as NSError).code == NSURLErrorCancelled ? "" : error.localizedDescription) }
+    }
+    func finish(_ problem: String?) { guard !finished else { return }; finished = true; session?.finishTasksAndInvalidate(); done(problem) }
+}
+
+// Launch at login through the system login items (macOS 13+).
+enum ShareLogin {
+    static var enabled: Bool { SMAppService.mainApp.status == .enabled }
+    static func set(_ on: Bool) throws { if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() } }
+}
+
+// Remembers a ⌘V pressed while files are still arriving, and pastes them once they are ready
+// if the same app is still in front; otherwise the user is asked to paste again.
+struct ShareAutoPaste {
+    var target: pid_t?
+    mutating func pressed(front: pid_t?) { if target == nil { target = front } }
+    mutating func ready(front: pid_t?) -> pid_t? { defer { target = nil }; return target != nil && target == front ? target : nil }
+}
+
+// Small floating window at the bottom right that shows a file transfer while it runs, so the
+// progress is visible even when the main window is hidden. It does not take keyboard focus.
+// Short transfers finish before it appears; once shown it stays until the result has been read.
+final class ShareTransferPanel {
+    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 96), styleMask: [.titled, .nonactivatingPanel, .utilityWindow], backing: .buffered, defer: false)
+    let title = NSTextField(labelWithString: ""), detail = NSTextField(labelWithString: ""), bar = NSProgressIndicator(), cancel = NSButton(title: "取消傳送", target: nil, action: nil)
+    var active = false, pending: DispatchWorkItem?, closing: DispatchWorkItem?, note = ""
+    init(target: AnyObject, cancelAction: Selector) {
+        panel.title = "Cursorway"; panel.level = .floating; panel.hidesOnDeactivate = false; panel.isReleasedWhenClosed = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]; panel.becomesKeyOnlyIfNeeded = true
+        title.font = .systemFont(ofSize: 13, weight: .semibold); title.frame = NSRect(x: 16, y: 62, width: 308, height: 18)
+        detail.font = .systemFont(ofSize: 12); detail.textColor = .secondaryLabelColor; detail.frame = NSRect(x: 16, y: 40, width: 220, height: 16)
+        bar.style = .bar; bar.isIndeterminate = true; bar.frame = NSRect(x: 16, y: 14, width: 210, height: 16)
+        cancel.bezelStyle = .rounded; cancel.target = target; cancel.action = cancelAction; cancel.frame = NSRect(x: 236, y: 8, width: 92, height: 30)
+        for view in [title, detail, bar, cancel] as [NSView] { panel.contentView!.addSubview(view) }
+    }
+    func begin(_ text: String, showAfter delay: Double = 1) {
+        closing?.cancel(); pending?.cancel(); active = true; note = ""
+        title.stringValue = text; detail.stringValue = "完成前可繼續操作滑鼠與鍵盤"; cancel.isHidden = false; bar.isHidden = false; bar.startAnimation(nil)
+        let work = DispatchWorkItem { [weak self] in if let self = self, self.active { self.show() } }
+        pending = work; if delay <= 0 { work.perform() } else { DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work) }
+    }
+    func progress(_ text: String) {
+        guard active else { return }
+        let parts = text.components(separatedBy: "… ")
+        title.stringValue = parts[0] + "…" + note; detail.stringValue = parts.count > 1 ? parts[1] : ""
+    }
+    func finish(_ text: String, detail note: String) {
+        pending?.cancel(); active = false
+        guard panel.isVisible else { return }
+        title.stringValue = text; detail.stringValue = note; bar.stopAnimation(nil); bar.isHidden = true; cancel.isHidden = true
+        let work = DispatchWorkItem { [weak self] in self?.panel.orderOut(nil) }
+        closing = work; DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: work)
+    }
+    func show() {
+        guard let screen = NSScreen.main?.visibleFrame else { return }
+        panel.setFrameOrigin(NSPoint(x: screen.maxX - panel.frame.width - 16, y: screen.minY + 16)); panel.orderFrontRegardless()
+    }
+}
+
+// Turns "file clipboard: progress sent N bytes" log lines into a size and speed for the status card.
+struct ShareProgress {
+    var lastBytes: Int64 = 0, lastTime = Date(), speed = 0.0, resumed = false
+    mutating func reset() { lastBytes = 0; lastTime = Date(); speed = 0; resumed = false }
+    // "file clipboard: resuming at N items, B bytes": the part already there counts toward the total but not the speed.
+    mutating func resume(_ line: String, now: Date = Date()) -> Bool {
+        guard let range = line.range(of: #"file clipboard: resuming at [0-9]+ items, [0-9]+ bytes"#, options: .regularExpression) else { return false }
+        let words = line[range].split(separator: " ")
+        resumed = true; lastBytes = Int64(words[6]) ?? 0; lastTime = now; speed = 0
+        return true
+    }
+    mutating func describe(_ line: String, now: Date = Date()) -> String? {
+        guard let range = line.range(of: #"file clipboard: progress (sent|received) [0-9]+ bytes"#, options: .regularExpression) else { return nil }
+        let words = line[range].split(separator: " "), sent = words[3] == "sent"
+        guard let bytes = Int64(words[4]) else { return nil }
+        let seconds = now.timeIntervalSince(lastTime)
+        if seconds > 0.05 && bytes >= lastBytes { let current = Double(bytes - lastBytes) / seconds; speed = speed == 0 ? current : speed * 0.6 + current * 0.4 }
+        lastBytes = bytes; lastTime = now
+        return (resumed ? (sent ? "續傳中… 已傳 " : "續傳中… 已收 ") : (sent ? "正在傳送檔案… 已傳 " : "正在接收檔案… 已收 ")) + ShareProgress.size(bytes) + (speed > 0 ? " · " + ShareProgress.size(Int64(speed)) + "/s" : "")
+    }
+    static func size(_ bytes: Int64) -> String {
+        let units = ["B", "KB", "MB", "GB", "TB"]; var value = Double(bytes), unit = 0
+        while value >= 1024 && unit < units.count - 1 { value /= 1024; unit += 1 }
+        return (unit == 0 ? String(format: "%.0f", value) : String(format: value < 10 ? "%.1f" : "%.0f", value)) + " " + units[unit]
+    }
+}
+
+// Arrange editor: a grid of 1...9 columns and rows. Every computer, this host included, can be dragged to
+// any cell (onto another computer swaps them). Neighbouring cells are linked edges; every screen must touch
+// the group, or the cursor could never reach it. Cells are kept in grid coordinates; `placement` gives
+// each receiver's place relative to this host, which is what the screen config uses.
+final class ShareLayoutView: NSView {
+    typealias Cell = ShareSettings.Cell
+    static let area = CGSize(width: 520, height: 320), host = ""
+    static let presets: [(id: String, title: String)] = [("center", "主控在中間"), ("rowL", "一排・主控最左"), ("rowR", "一排・主控最右"), ("rowM", "一排・主控中間"), ("colT", "直排・主控最上"),
+        ("twoTL", "兩排・主控左上"), ("twoBM", "兩排・主控下中"), ("L", "L 形・主控轉角"), ("ring", "口字形・主控中央"), ("T", "T 形・主控上中"), ("custom", "自訂")]
+    static var presetIds: [String] { presets.map { $0.id } }
+    var names: [String: String], blue: NSColor, onChange: (() -> Void)?
+    var colors: [String: NSColor] = [:]
+    // Receivers in pairing order, and the classic arrangement for "center" (relative to the host).
+    var order: [String], center: [String: Cell]
+    var cols = 5, rows = 5, spots: [String: Cell] = [:]
+    var preset = "custom", custom: ShareGrid?
+    var dragging: String?, pointer = NSPoint.zero
+    override var isFlipped: Bool { true }
+    init(names: [String: String], placement: [String: Cell], blue: NSColor, order: [String]? = nil, grid: ShareGrid = ShareGrid()) {
+        self.names = names; self.blue = blue; self.order = order ?? placement.keys.sorted(); self.center = placement
+        super.init(frame: NSRect(origin: .zero, size: Self.area))
+        load(ShareGrid(cols: grid.cols, rows: grid.rows, hostX: grid.hostX, hostY: grid.hostY, layout: placement.mapValues { [$0.x, $0.y] }))
+    }
+    required init?(coder: NSCoder) { fatalError("unused") }
+    // Receivers relative to this host.
+    var placement: [String: Cell] {
+        let h = spots[Self.host] ?? Cell(x: 0, y: 0)
+        return spots.filter { $0.key != Self.host }.mapValues { Cell(x: $0.x - h.x, y: $0.y - h.y) }
+    }
+    var snapshot: ShareGrid { let h = spots[Self.host]!; return ShareGrid(cols: cols, rows: rows, hostX: h.x, hostY: h.y, layout: placement.mapValues { [$0.x, $0.y] }) }
+    // Puts a saved arrangement on the grid, growing the grid (up to 9x9) when a receiver falls outside it.
+    // Receivers it does not mention, or that cannot fit, go to the first free cell next to the group.
+    func load(_ g: ShareGrid) {
+        var host = Cell(x: g.hostX, y: g.hostY), rel: [String: Cell] = [:]
+        for fp in order { if let v = g.layout[fp], v.count == 2, Cell(x: v[0], y: v[1]) != Cell(x: 0, y: 0) { rel[fp] = Cell(x: v[0], y: v[1]) } }
+        let xs = rel.values.map { $0.x + host.x } + [0, g.cols - 1], ys = rel.values.map { $0.y + host.y } + [0, g.rows - 1]
+        var w = xs.max()! - xs.min()! + 1, h = ys.max()! - ys.min()! + 1
+        if w > ShareGrid.maxSide || h > ShareGrid.maxSide { rel = [:]; w = g.cols; h = g.rows } else { host = Cell(x: host.x - xs.min()!, y: host.y - ys.min()!) }
+        cols = w; rows = h; spots = [Self.host: host]
+        for fp in order { if let r = rel[fp], !spots.values.contains(Cell(x: host.x + r.x, y: host.y + r.y)) { spots[fp] = Cell(x: host.x + r.x, y: host.y + r.y) } }
+        for fp in order where spots[fp] == nil { if let c = freeNeighbour() { spots[fp] = c } }
+        needsDisplay = true
+    }
+    func freeNeighbour() -> Cell? {
+        let taken = Set(spots.values)
+        for c in Self.bfs(from: spots[Self.host]!, cols: cols, rows: rows) { if !taken.contains(c) { return c } }
+        return nil
+    }
+    // Cells of a shape ordered by distance from `from` (neighbours right, left, up, down), only through the shape.
+    static func bfs(from: Cell, cols: Int, rows: Int, shape: ((Cell) -> Bool)? = nil) -> [Cell] {
+        var seen: Set<Cell> = [from], queue = [from], out: [Cell] = []
+        while !queue.isEmpty {
+            let c = queue.removeFirst()
+            for n in [Cell(x: c.x + 1, y: c.y), Cell(x: c.x - 1, y: c.y), Cell(x: c.x, y: c.y - 1), Cell(x: c.x, y: c.y + 1)]
+            where (0..<cols).contains(n.x) && (0..<rows).contains(n.y) && !seen.contains(n) && (shape?(n) ?? true) { seen.insert(n); queue.append(n); out.append(n) }
+        }
+        return out
+    }
+    // The arrangement a preset gives for `count` receivers: grid size, host cell, receiver cells in pairing order.
+    static func layout(_ id: String, count n: Int, center: [Cell] = []) -> (cols: Int, rows: Int, host: Cell, cells: [Cell]) {
+        var cols = n + 1, rows = 1, host = Cell(x: 0, y: 0)
+        var shape: ((Cell) -> Bool)? = nil
+        switch id {
+        case "rowR": host = Cell(x: n, y: 0)
+        case "rowM": host = Cell(x: n / 2, y: 0)
+        case "colT": cols = 1; rows = n + 1
+        case "twoTL": cols = max(1, (n + 2) / 2); rows = 2
+        case "twoBM": cols = (n + 2) / 2; if cols % 2 == 0 { cols += 1 }; rows = 2; host = Cell(x: cols / 2, y: 1)
+        case "L": var side = 1; while 2 * side - 1 < n + 1 { side += 1 }; cols = side; rows = side; host = Cell(x: 0, y: side - 1); shape = { $0.x == 0 || $0.y == side - 1 }
+        case "ring": cols = 3; rows = 3; host = Cell(x: 1, y: 1)
+        case "T": let w = n >= 4 ? 5 : 3; cols = w; rows = 1 + max(0, n + 1 - w); host = Cell(x: w / 2, y: 0); shape = { $0.y == 0 || $0.x == w / 2 }
+        case "center": cols = 5; rows = 5; host = Cell(x: 2, y: 2)
+            if center.count == n { return (cols, rows, host, center.map { Cell(x: $0.x + 2, y: $0.y + 2) }) }
+        default: break
+        }
+        cols = min(cols, ShareGrid.maxSide); rows = min(rows, ShareGrid.maxSide)
+        return (cols, rows, host, Array(bfs(from: host, cols: cols, rows: rows, shape: shape).prefix(n)))
+    }
+    func choose(_ id: String) {
+        if id == "custom" { if let c = custom { load(c) } }
+        else {
+            let l = Self.layout(id, count: order.count, center: order.map { center[$0] ?? Cell(x: 0, y: 0) })
+            cols = l.cols; rows = l.rows; spots = [Self.host: l.host]
+            for (fp, c) in zip(order, l.cells) { spots[fp] = c }
+            for fp in order where spots[fp] == nil { if let c = freeNeighbour() { spots[fp] = c } }
+        }
+        preset = id; needsDisplay = true; onChange?()
+    }
+    // A change the user made by hand becomes their 自訂 arrangement.
+    func edited() { preset = "custom"; custom = snapshot; needsDisplay = true; onChange?() }
+    @discardableResult func resize(cols c: Int, rows r: Int) -> String? {
+        guard (1...ShareGrid.maxSide).contains(c), (1...ShareGrid.maxSide).contains(r) else { return "最多 9 欄 × 9 列。" }
+        guard spots.values.allSatisfy({ $0.x < c && $0.y < r }) else { return "最右或最下那排還有電腦，先把它移開再縮小。" }
+        cols = c; rows = r; edited(); return nil
+    }
+    var cellSize: CGSize {
+        let w = min(104, Self.area.width / CGFloat(cols)), h = min(64, Self.area.height / CGFloat(rows))
+        return CGSize(width: min(w, h * 1.625), height: min(h, w / 1.625))
+    }
+    var origin: CGPoint { let s = cellSize; return CGPoint(x: (bounds.width - s.width * CGFloat(cols)) / 2, y: (bounds.height - s.height * CGFloat(rows)) / 2) }
+    func rect(_ c: Cell) -> NSRect {
+        let s = cellSize, o = origin, inset = min(5, s.width * 0.06)
+        return NSRect(x: o.x + CGFloat(c.x) * s.width + inset, y: o.y + CGFloat(c.y) * s.height + inset, width: s.width - 2 * inset, height: s.height - 2 * inset)
+    }
+    func cell(at p: NSPoint) -> Cell? {
+        let s = cellSize, o = origin, x = Int(floor((p.x - o.x) / s.width)), y = Int(floor((p.y - o.y) / s.height))
+        return (0..<cols).contains(x) && (0..<rows).contains(y) ? Cell(x: x, y: y) : nil
+    }
+    func reachable() -> Bool {
+        let all = Set(spots.values); var seen: Set<Cell> = [spots[Self.host]!], queue = Array(seen)
+        while let c = queue.popLast() {
+            for n in [Cell(x: c.x + 1, y: c.y), Cell(x: c.x - 1, y: c.y), Cell(x: c.x, y: c.y + 1), Cell(x: c.x, y: c.y - 1)] where all.contains(n) && !seen.contains(n) { seen.insert(n); queue.append(n) }
+        }
+        return all.isSubset(of: seen)
+    }
+    // Moves a computer ("" = this host) to a grid cell; a computer already there takes its old place.
+    @discardableResult func place(_ key: String, _ c: Cell) -> Bool {
+        guard let old = spots[key], (0..<cols).contains(c.x), (0..<rows).contains(c.y), c != old else { return false }
+        if let other = spots.first(where: { $0.value == c })?.key { spots[other] = old }
+        spots[key] = c; edited(); return true
+    }
+    override func mouseDown(with event: NSEvent) { pointer = convert(event.locationInWindow, from: nil); dragging = spots.first { rect($0.value).contains(pointer) }?.key }
+    override func mouseDragged(with event: NSEvent) { pointer = convert(event.locationInWindow, from: nil); if dragging != nil { needsDisplay = true } }
+    override func mouseUp(with event: NSEvent) {
+        if let key = dragging, let c = cell(at: convert(event.locationInWindow, from: nil)) { place(key, c) }
+        dragging = nil; needsDisplay = true
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        ShareStyle.mapBack.setFill(); bounds.fill()
+        let font = max(9, min(12, cellSize.width / 8.5))
+        for y in 0..<rows { for x in 0..<cols { let path = NSBezierPath(rect: rect(Cell(x: x, y: y))); path.setLineDash([4, 3], count: 2, phase: 0); ShareStyle.border.setStroke(); path.stroke() } }
+        for (key, c) in spots.sorted(by: { ($0.key == dragging ? 1 : 0) < ($1.key == dragging ? 1 : 0) }) {
+            var r = rect(c); if key == dragging { r.origin = NSPoint(x: pointer.x - r.width / 2, y: pointer.y - r.height / 2) }
+            if key == Self.host { ShareScreenMap.drawTile(.init(cell: c, name: "這台", isSelf: true), r, fontSize: font) }
+            else { ShareScreenMap.drawTile(.init(cell: c, name: names[key] ?? "", color: colors[key] ?? blue), r, fontSize: font) }
+        }
+    }
+}
+// Preset layouts as small pictures (blue = this host, grey = receivers) drawn for the real number of receivers.
+final class SharePresetBar: NSView {
+    weak var layout: ShareLayoutView?
+    static let card = CGSize(width: 112, height: 58), gap: CGFloat = 8
+    override var isFlipped: Bool { true }
+    var perRow: Int { max(1, Int((bounds.width + Self.gap) / (Self.card.width + Self.gap))) }
+    static func height(width: CGFloat, count: Int) -> CGFloat {
+        let per = max(1, Int((width + gap) / (card.width + gap))), lines = (count + per - 1) / per
+        return CGFloat(lines) * card.height + CGFloat(lines - 1) * gap
+    }
+    func frame(_ i: Int) -> NSRect { NSRect(x: CGFloat(i % perRow) * (Self.card.width + Self.gap), y: CGFloat(i / perRow) * (Self.card.height + Self.gap), width: Self.card.width, height: Self.card.height) }
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        if let i = ShareLayoutView.presets.indices.first(where: { frame($0).contains(p) }) { layout?.choose(ShareLayoutView.presets[i].id); needsDisplay = true }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        guard let layout = layout else { return }
+        for (i, p) in ShareLayoutView.presets.enumerated() {
+            let r = frame(i), on = layout.preset == p.id
+            let back = NSBezierPath(roundedRect: r.insetBy(dx: on ? 1 : 0.5, dy: on ? 1 : 0.5), xRadius: 8, yRadius: 8)
+            ShareStyle.cell.setFill(); back.fill(); back.lineWidth = on ? 2 : 1; (on ? ShareStyle.blue : ShareStyle.border).setStroke(); back.stroke()
+            var g: (cols: Int, rows: Int, host: ShareSettings.Cell, cells: [ShareSettings.Cell])?
+            if p.id == "custom" { if let c = layout.custom { g = (c.cols, c.rows, .init(x: c.hostX, y: c.hostY), c.layout.values.map { .init(x: $0[0] + c.hostX, y: $0[1] + c.hostY) }) } }
+            else { g = ShareLayoutView.layout(p.id, count: layout.order.count, center: layout.order.map { layout.center[$0] ?? .init(x: 0, y: 0) }) }
+            let pic = NSRect(x: r.minX + 10, y: r.minY + 6, width: r.width - 20, height: 30)
+            if let g = g {
+                let u = min(pic.width / CGFloat(g.cols), pic.height / CGFloat(g.rows), 12)
+                let ox = pic.midX - u * CGFloat(g.cols) / 2, oy = pic.midY - u * CGFloat(g.rows) / 2
+                for y in 0..<g.rows { for x in 0..<g.cols {
+                    let empty = NSBezierPath(rect: NSRect(x: ox + CGFloat(x) * u + 1, y: oy + CGFloat(y) * u + 1, width: u - 2, height: u - 2)); empty.lineWidth = 0.5; ShareStyle.border.setStroke(); empty.stroke()
+                } }
+                for (k, c) in ([g.host] + g.cells).enumerated() {
+                    let box = NSBezierPath(roundedRect: NSRect(x: ox + CGFloat(c.x) * u + 1, y: oy + CGFloat(c.y) * u + 1, width: u - 2, height: u - 2), xRadius: 1.5, yRadius: 1.5)
+                    (k == 0 ? ShareStyle.tint : ShareStyle.field).setFill(); box.fill(); (k == 0 ? ShareStyle.blue : ShareStyle.muted).setStroke(); box.lineWidth = 1; box.stroke()
+                }
+            } else {
+                let box = NSBezierPath(roundedRect: NSRect(x: pic.midX - 15, y: pic.minY, width: 30, height: 30), xRadius: 4, yRadius: 4); box.setLineDash([3, 3], count: 2, phase: 0); ShareStyle.faint.setStroke(); box.stroke()
+            }
+            let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
+            NSAttributedString(string: p.title, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: on ? ShareStyle.blueInk : ShareStyle.muted, .paragraphStyle: style]).draw(in: NSRect(x: r.minX + 4, y: r.maxY - 19, width: r.width - 8, height: 16))
+        }
+    }
+}
+// Steps the grid's columns or rows; a refusal is shown under the grid.
+final class ShareGridStepper: NSObject {
+    weak var layout: ShareLayoutView?; var report: ((String?) -> Void)?
+    @objc func step(_ sender: NSButton) {
+        guard let l = layout else { return }
+        let d = sender.tag % 2 == 0 ? -1 : 1
+        report?(sender.tag < 2 ? l.resize(cols: l.cols + d, rows: l.rows) : l.resize(cols: l.cols, rows: l.rows + d))
+    }
+}
+
+// Calls a closure from a control; toggle() flips `open` and passes it on.
+final class ShareBlockTarget: NSObject {
+    let action: (Bool) -> Void; var open = false
+    init(_ action: @escaping (Bool) -> Void) { self.action = action }
+    @objc func toggle() { open.toggle(); action(open) }
+}
+// Remembers the edge range chosen for each receiver in the arrange editor.
+final class ShareRangeTarget: NSObject {
+    var ranges: [String: String]
+    init(_ ranges: [String: String]) { self.ranges = ranges }
+    @objc func changed(_ sender: NSPopUpButton) { if let fp = sender.identifier?.rawValue { ranges[fp] = ["all", "first", "second"][max(0, sender.indexOfSelectedItem)] } }
+}
+// Remembers the jump number chosen for each receiver in the arrange editor (absent = automatic).
+final class ShareNumberTarget: NSObject {
+    var numbers: [String: Int], onChange: (() -> Void)?
+    init(_ numbers: [String: Int]) { self.numbers = numbers }
+    @objc func changed(_ sender: NSPopUpButton) {
+        guard let fp = sender.identifier?.rawValue else { return }
+        numbers[fp] = sender.indexOfSelectedItem == 0 ? nil : sender.indexOfSelectedItem + 1; onChange?()
+    }
+}
+// Ends a modal panel with accept or cancel.
+final class ShareModalCloser: NSObject {
+    weak var panel: NSWindow?; var accepted = false
+    init(_ panel: NSWindow) { self.panel = panel }
+    @objc func accept() { accepted = true; NSApp.stopModal(); panel?.orderOut(nil) }
+    @objc func cancel() { accepted = false; NSApp.stopModal(); panel?.orderOut(nil) }
+}
+final class ShareActionButton: NSButton {
+    override func draw(_ dirtyRect: NSRect) {
+        let shape=NSBezierPath(roundedRect:bounds.insetBy(dx:1,dy:1),xRadius:10,yRadius:10)
+        (isEnabled ? (isHighlighted ? ShareStyle.bluePressed : ShareStyle.blue) : ShareStyle.disabledBack).setFill(); shape.fill()
+        let paragraph=NSMutableParagraphStyle(); paragraph.alignment = .center
+        let text=NSAttributedString(string:title,attributes:[.font:NSFont.systemFont(ofSize:15,weight:.semibold),.foregroundColor:isEnabled ? NSColor.white : ShareStyle.disabledInk,.paragraphStyle:paragraph])
+        text.draw(in:NSRect(x:12,y:(bounds.height-text.size().height)/2,width:bounds.width-24,height:text.size().height))
+        if window?.firstResponder === self { NSColor.white.setStroke(); let focus=NSBezierPath(roundedRect:bounds.insetBy(dx:4,dy:4),xRadius:7,yRadius:7); focus.lineWidth=1.5; focus.stroke() }
+    }
+}
+struct NearbyComputer { var fingerprint: String; var name: String; var address: String }
+// Shared palette of the redesigned window (same values as the Windows ShareStyle).
+enum ShareStyle {
+    static func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor { NSColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: 1) }
+    // Every colour has a light and a dark value (same palette as Windows); AppKit picks one when drawing.
+    static func dyn(_ light: NSColor, _ dark: NSColor) -> NSColor { NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light } }
+    static var isDark: Bool { NSAppearance.currentDrawing().bestMatch(from: [.aqua, .darkAqua]) == .darkAqua }
+    static let background = dyn(rgb(244, 246, 250), rgb(24, 26, 31)), mapBack = dyn(rgb(244, 246, 250), rgb(28, 31, 37))
+    static let card = dyn(.white, rgb(34, 37, 44)), cell = dyn(.white, rgb(46, 50, 59)), cardBorder = dyn(rgb(228, 233, 242), rgb(52, 57, 67))
+    static let border = dyn(rgb(228, 233, 242), rgb(56, 62, 73)), line = dyn(rgb(236, 240, 246), rgb(48, 53, 63))
+    static let blue = dyn(rgb(47, 101, 235), rgb(92, 140, 255)), blueHover = dyn(rgb(47, 101, 235), rgb(112, 156, 255))
+    static let bluePressed = dyn(rgb(47, 101, 235).blended(withFraction: 0.18, of: .black)!, rgb(70, 112, 220))
+    static let blueInk = dyn(rgb(31, 72, 180), rgb(170, 196, 255)), tint = dyn(rgb(232, 239, 253), rgb(37, 50, 80))
+    static let ink = dyn(rgb(24, 37, 57), rgb(232, 236, 242)), muted = dyn(rgb(109, 122, 141), rgb(160, 170, 186)), faint = dyn(rgb(150, 160, 175), rgb(118, 128, 144))
+    static let field = dyn(rgb(238, 241, 246), rgb(42, 46, 54)), hover = dyn(rgb(228, 233, 242), rgb(52, 58, 70)), selected = dyn(rgb(232, 239, 253), rgb(40, 48, 66))
+    static let disabledBack = dyn(rgb(238, 241, 246), rgb(38, 41, 48)), disabledInk = dyn(rgb(150, 160, 175), rgb(100, 108, 122))
+    static let green = dyn(rgb(24, 140, 82), rgb(84, 200, 140)), greenTint = dyn(rgb(226, 245, 234), rgb(30, 58, 45)), danger = dyn(rgb(200, 45, 45), rgb(240, 112, 96))
+    static let amber = dyn(rgb(176, 110, 10), rgb(232, 170, 70)), amberTint = dyn(rgb(252, 241, 220), rgb(62, 50, 30))
+    // One colour per receiver in the screen maps: green, purple, orange, pink, amber.
+    static let peers = [rgb(34, 160, 96), rgb(132, 86, 214), rgb(232, 120, 40), rgb(221, 72, 140), rgb(214, 160, 20)]
+    static func peer(_ index: Int) -> NSColor { peers[index % peers.count] }
+}
+// White rounded card with a hairline border.
+final class ShareCard: NSView {
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 14, yRadius: 14)
+        ShareStyle.card.setFill(); shape.fill(); ShareStyle.cardBorder.setStroke(); shape.lineWidth = 1; shape.stroke()
+    }
+}
+// Small pill showing the connection state.
+final class ShareBadge: NSView {
+    var text = "", fore = ShareStyle.muted, back = ShareStyle.field
+    func set(_ text: String, _ fore: NSColor, _ back: NSColor) { self.text = text; self.fore = fore; self.back = back; needsDisplay = true }
+    override func draw(_ dirtyRect: NSRect) {
+        let label = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: fore])
+        let width = min(bounds.width, label.size().width + 28)
+        let pill = NSRect(x: 0, y: 0, width: width, height: bounds.height)
+        back.setFill(); NSBezierPath(roundedRect: pill, xRadius: bounds.height / 2, yRadius: bounds.height / 2).fill()
+        fore.setFill(); NSBezierPath(ovalIn: NSRect(x: 10, y: bounds.height / 2 - 3, width: 6, height: 6)).fill()
+        label.draw(at: NSPoint(x: 21, y: (bounds.height - label.size().height) / 2))
+    }
+    override var isFlipped: Bool { true }
+}
+// Computer icon on a tinted rounded square.
+final class ShareComputerMark: NSView {
+    var symbol = ""  // kept for callers; every computer uses the same monitor outline as on Windows
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        let k = bounds.width / 52
+        ShareStyle.tint.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 12 * k, yRadius: 12 * k).fill()
+        ShareStyle.blue.setStroke()
+        let screen = NSBezierPath(rect: NSRect(x: 12 * k, y: 12 * k, width: 28 * k, height: 20 * k)); screen.lineWidth = 2 * k; screen.stroke()
+        for (a, b) in [(NSPoint(x: 8, y: 37), NSPoint(x: 44, y: 37)), (NSPoint(x: 22, y: 32), NSPoint(x: 22, y: 36)), (NSPoint(x: 30, y: 32), NSPoint(x: 30, y: 36))] {
+            let line = NSBezierPath(); line.move(to: NSPoint(x: a.x * k, y: a.y * k)); line.line(to: NSPoint(x: b.x * k, y: b.y * k)); line.lineWidth = 2 * k; line.stroke()
+        }
+    }
+}
+// Miniature of the screen arrangement in the connection card.
+final class ShareScreenMap: NSView, NSViewToolTipOwner {
+    // number: jump number drawn inside the screen (host card); active: the mouse is there; tip: hover text.
+    struct Tile { var cell: ShareSettings.Cell; var name: String; var isSelf = false; var placeholder = false; var color: NSColor? = nil; var number: String? = nil; var active = false; var tip = ""; var label: String? = nil }
+    var tiles: [Tile] = [] { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+    var tips: [NSView.ToolTipTag: String] = [:]
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String { tips[tag] ?? "" }
+    // Numbered map: screens scale down to fit any count; this one has a dark outline, the mouse's screen is filled blue,
+    // computers still connecting are dashed. The full name and shortcut show on hover.
+    func drawNumbered() {
+        removeAllToolTips(); tips.removeAll()
+        let xs = tiles.map { $0.cell.x }, ys = tiles.map { $0.cell.y }
+        let cols = CGFloat(xs.max()! - xs.min()! + 1), rows = CGFloat(ys.max()! - ys.min()! + 1), gap: CGFloat = 6
+        var cw = min(64, (bounds.width - 20 - gap * (cols - 1)) / cols), ch = min(40, (bounds.height - 20 - gap * (rows - 1)) / rows)
+        cw = min(cw, ch * 1.6); ch = min(ch, cw / 1.6)
+        let x0 = (bounds.width - (cols * cw + (cols - 1) * gap)) / 2, y0 = (bounds.height - (rows * ch + (rows - 1) * gap)) / 2
+        for t in tiles {
+            let r = NSRect(x: x0 + CGFloat(t.cell.x - xs.min()!) * (cw + gap), y: y0 + CGFloat(t.cell.y - ys.min()!) * (ch + gap), width: cw, height: ch)
+            let path = NSBezierPath(roundedRect: r.insetBy(dx: 0.75, dy: 0.75), xRadius: 5, yRadius: 5); path.lineWidth = t.isSelf ? 2 : 1
+            if t.active { ShareStyle.blue.setFill(); path.fill() } else if !t.placeholder { ShareStyle.cell.setFill(); path.fill() }
+            if t.placeholder && !t.active { path.setLineDash([4, 3], count: 2, phase: 0) }
+            (t.isSelf ? ShareStyle.ink : t.active ? ShareStyle.blue : t.placeholder ? ShareStyle.faint : ShareStyle.muted).setStroke(); path.stroke()
+            let style = NSMutableParagraphStyle(); style.alignment = .center
+            let color: NSColor = t.active ? .white : t.placeholder ? ShareStyle.faint : ShareStyle.ink
+            if t.isSelf { ShareScreenMap.drawSelf(r, number: t.number, color: color) } else {
+                let text = NSAttributedString(string: t.number ?? "", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: min(15, ch * 0.42), weight: .semibold), .foregroundColor: color, .paragraphStyle: style])
+                text.draw(in: NSRect(x: r.minX, y: r.midY - text.size().height / 2, width: r.width, height: text.size().height))
+            }
+            let tag = addToolTip(r, owner: self, userData: nil); tips[tag] = t.tip
+        }
+    }
+    // Location pin (teardrop with a round hole) in the given color; top is the pin's top edge, h its height.
+    static func pinPath(centerX: CGFloat, top: CGFloat, height h: CGFloat) -> NSBezierPath {
+        let w = h * 0.74, c = NSPoint(x: centerX, y: top + w / 2), path = NSBezierPath()
+        path.appendArc(withCenter: c, radius: w / 2, startAngle: 145, endAngle: 395, clockwise: false)
+        path.line(to: NSPoint(x: centerX, y: top + h)); path.close()
+        let hole = w * 0.40; path.appendOval(in: NSRect(x: c.x - hole / 2, y: c.y - hole / 2, width: hole, height: hole))
+        path.windingRule = .evenOdd; return path
+    }
+    // "This computer": a pin with the switch number under it, or a larger pin alone while the number is unknown.
+    static func drawSelf(_ r: NSRect, number: String?, color: NSColor) {
+        color.setFill()
+        guard let number = number, !number.isEmpty, number != "·" else { pinPath(centerX: r.midX, top: r.midY - 8.5, height: 17).fill(); return }
+        let style = NSMutableParagraphStyle(); style.alignment = .center
+        let text = NSAttributedString(string: number, attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold), .foregroundColor: color, .paragraphStyle: style])
+        let pin: CGFloat = 11, th = text.size().height, top = r.height >= 5 + pin + th ? r.minY + 5 : r.midY - (pin + th) / 2
+        pinPath(centerX: r.midX, top: top, height: pin).fill()
+        text.draw(in: NSRect(x: r.minX, y: top + pin, width: r.width, height: th))
+    }
+    // Grey rounded frame; 16:10 screens up to 76×48 with the name underneath; this one has a mouse outline.
+    override func draw(_ dirtyRect: NSRect) {
+        ShareStyle.mapBack.setFill(); NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10).fill()
+        guard !tiles.isEmpty else { return }
+        if tiles.contains(where: { $0.number != nil }) { drawNumbered(); return }
+        removeAllToolTips(); tips.removeAll()
+        let xs = tiles.map { $0.cell.x }, ys = tiles.map { $0.cell.y }
+        let cols = CGFloat(xs.max()! - xs.min()! + 1), rows = CGFloat(ys.max()! - ys.min()! + 1), gap: CGFloat = 8, label: CGFloat = 16
+        var cw = min(76, (bounds.width - 16 - gap * (cols - 1)) / cols), ch = min(48, (bounds.height - 12 - (gap + label) * rows) / rows)
+        cw = min(cw, ch * 1.6); ch = min(ch, cw / 1.6)
+        let totalW = cols * cw + (cols - 1) * gap, totalH = rows * (ch + label) + (rows - 1) * gap
+        let x0 = (bounds.width - totalW) / 2, y0 = (bounds.height - totalH) / 2
+        for t in tiles {
+            let r = NSRect(x: x0 + CGFloat(t.cell.x - xs.min()!) * (cw + gap), y: y0 + CGFloat(t.cell.y - ys.min()!) * (ch + label + gap), width: cw, height: ch)
+            let path = NSBezierPath(roundedRect: r, xRadius: 5, yRadius: 5); path.lineWidth = t.isSelf ? 1.5 : 1
+            if t.placeholder { path.setLineDash([4, 3], count: 2, phase: 0) } else { (t.isSelf ? ShareStyle.tint : ShareStyle.cell).setFill(); path.fill() }
+            (t.isSelf ? ShareStyle.blue : t.placeholder ? ShareStyle.faint : ShareStyle.border).setStroke(); path.stroke()
+            if !t.tip.isEmpty { let tag = addToolTip(r, owner: self, userData: nil); tips[tag] = t.tip }
+            if t.isSelf { ShareScreenMap.drawSelf(r, number: t.label, color: ShareStyle.ink) }
+            let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
+            NSAttributedString(string: t.name, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: t.placeholder ? ShareStyle.faint : ShareStyle.muted, .paragraphStyle: style])
+                .draw(in: NSRect(x: r.minX - gap / 2, y: r.maxY + 1, width: r.width + gap, height: label))
+        }
+    }
+    // Shared with the arrange editor so both maps look the same.
+    static func drawTiles(_ tiles: [Tile], in bounds: NSRect, size: NSSize, gap: CGFloat = 6, fontSize: CGFloat = 10) {
+        guard !tiles.isEmpty else { return }
+        let xs = tiles.map { $0.cell.x }, ys = tiles.map { $0.cell.y }
+        let cols = CGFloat(xs.max()! - xs.min()! + 1), rows = CGFloat(ys.max()! - ys.min()! + 1)
+        let scale = min(1, (bounds.width - 8) / (cols * size.width + (cols - 1) * gap), (bounds.height - 8) / (rows * size.height + (rows - 1) * gap))
+        let w = size.width * scale, h = size.height * scale, g = gap * scale
+        let ox = bounds.midX - (cols * w + (cols - 1) * g) / 2, oy = bounds.midY - (rows * h + (rows - 1) * g) / 2
+        for t in tiles {
+            let r = NSRect(x: ox + CGFloat(t.cell.x - xs.min()!) * (w + g), y: oy + CGFloat(t.cell.y - ys.min()!) * (h + g), width: w, height: h)
+            drawTile(t, r, fontSize: fontSize * max(scale, 0.8))
+        }
+    }
+    static func drawTile(_ t: Tile, _ r: NSRect, fontSize: CGFloat) {
+        let shape = NSBezierPath(roundedRect: r.insetBy(dx: 0.75, dy: 0.75), xRadius: 6, yRadius: 6); shape.lineWidth = 1.5
+        let accent = t.color ?? ShareStyle.faint
+        if t.isSelf { ShareStyle.tint.setFill(); shape.fill(); ShareStyle.blue.setStroke(); shape.stroke() }
+        else if t.placeholder { shape.setLineDash([4, 3], count: 2, phase: 0); ShareStyle.faint.setStroke(); shape.stroke() }
+        else if ShareStyle.isDark {
+            // Dark: card colour with 28% of the computer's colour, outline lightened 45% toward white.
+            ShareStyle.card.usingColorSpace(.sRGB)!.blended(withFraction: 0.28, of: accent)!.setFill(); shape.fill()
+            accent.blended(withFraction: 0.45, of: .white)!.setStroke(); shape.stroke()
+        } else { NSColor.white.setFill(); shape.fill(); accent.setStroke(); shape.stroke() }
+        let style = NSMutableParagraphStyle(); style.alignment = .center; style.lineBreakMode = .byTruncatingTail
+        let color: NSColor = t.isSelf ? ShareStyle.blueInk : t.placeholder ? ShareStyle.faint : ShareStyle.ink
+        let text = NSAttributedString(string: t.name, attributes: [.font: NSFont.systemFont(ofSize: fontSize, weight: .medium), .foregroundColor: color, .paragraphStyle: style])
+        let height = text.size().height
+        if t.isSelf, let cursor = NSImage(systemSymbolName: "cursorarrow", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: fontSize, weight: .semibold).applying(.init(paletteColors: [ShareStyle.blue]))) {
+            cursor.draw(in: NSRect(x: r.midX - cursor.size.width / 2, y: r.midY - (height + cursor.size.height) / 2, width: cursor.size.width, height: cursor.size.height))
+            text.draw(in: NSRect(x: r.minX + 3, y: r.midY - (height + cursor.size.height) / 2 + cursor.size.height, width: r.width - 6, height: height))
+        } else { text.draw(in: NSRect(x: r.minX + 3, y: r.midY - height / 2, width: r.width - 6, height: height)) }
+    }
+}
+// Six-digit pairing code in two groups of three large boxes.
+final class ShareCodeView: NSView {
+    var code = ""
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        let digits = Array(code.prefix(6)), box = NSSize(width: 46, height: 58), gap: CGFloat = 8, split: CGFloat = 22
+        let total = 6 * box.width + 4 * gap + split; var x = (bounds.width - total) / 2
+        for (i, d) in digits.enumerated() {
+            let r = NSRect(x: x, y: (bounds.height - box.height) / 2, width: box.width, height: box.height)
+            ShareStyle.field.setFill(); NSBezierPath(roundedRect: r, xRadius: 9, yRadius: 9).fill()
+            let text = NSAttributedString(string: String(d), attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 30, weight: .bold), .foregroundColor: ShareStyle.ink])
+            text.draw(at: NSPoint(x: r.midX - text.size().width / 2, y: r.midY - text.size().height / 2))
+            x += box.width + (i == 2 ? split : gap)
+        }
+    }
+}
+// One row in the nearby list: a section header, or a computer with its system, address and action.
+final class ShareDeviceRow: NSView {
+    override var isFlipped: Bool { true }
+    static func header(_ text: String, width: CGFloat) -> NSView {
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: 28))
+        let label = NSTextField(labelWithString: text); label.font = .systemFont(ofSize: 11, weight: .semibold); label.textColor = ShareStyle.muted
+        label.frame = NSRect(x: 16, y: 8, width: width - 32, height: 16); view.addSubview(label); return view
+    }
+    init(width: CGFloat, name: String, detail: String, offline: Bool, paired: Bool, mac: Bool, invite: NSButton?) {
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 58))
+        let mark = ShareComputerMark(frame: NSRect(x: 16, y: 11, width: 36, height: 36)); mark.symbol = mac ? "laptopcomputer" : "desktopcomputer"
+        mark.alphaValue = offline ? 0.45 : 1; addSubview(mark)
+        let title = NSTextField(labelWithString: name); title.font = .systemFont(ofSize: 14, weight: .semibold); title.textColor = offline ? ShareStyle.faint : ShareStyle.ink
+        title.lineBreakMode = .byTruncatingTail; title.frame = NSRect(x: 64, y: 10, width: width - 220, height: 19); addSubview(title)
+        let sub = NSTextField(labelWithString: detail); sub.font = .systemFont(ofSize: 12); sub.textColor = offline ? ShareStyle.faint : ShareStyle.muted
+        sub.lineBreakMode = .byTruncatingTail; sub.frame = NSRect(x: 64, y: 30, width: width - 220, height: 17); addSubview(sub)
+        if let invite = invite { invite.frame = NSRect(x: width - 128, y: 13, width: 112, height: 32); addSubview(invite) }
+        else if paired {
+            // Pairing state on the right, as on Windows: green ✓ when online, grey when offline.
+            let state = NSTextField(labelWithString: offline ? "已配對 · 離線" : "✓ 已配對"); state.font = .systemFont(ofSize: 12, weight: offline ? .regular : .medium)
+            state.textColor = offline ? ShareStyle.faint : ShareStyle.green; state.alignment = .right; state.frame = NSRect(x: width - 160, y: 20, width: 144, height: 17); addSubview(state)
+        }
+        let line = NSBox(frame: NSRect(x: 16, y: 57, width: width - 32, height: 1)); line.boxType = .custom; line.borderWidth = 0; line.fillColor = ShareStyle.line; addSubview(line)
+    }
+    required init?(coder: NSCoder) { fatalError("unused") }
+}
+// Borderless text button; a light background appears only while the pointer is over it.
+final class ShareQuietButton: NSButton {
+    var hovering = false { didSet { needsDisplay = true } }
+    convenience init(_ title: String, _ target: AnyObject, _ action: Selector) { self.init(title: title, target: target, action: action) }
+    override init(frame: NSRect) { super.init(frame: frame); isBordered = false; font = .systemFont(ofSize: 13) }
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+    override func updateTrackingAreas() { super.updateTrackingAreas(); trackingAreas.forEach(removeTrackingArea); addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeInActiveApp], owner: self)) }
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func draw(_ dirtyRect: NSRect) {
+        if hovering || isHighlighted { (isHighlighted ? ShareStyle.dyn(ShareStyle.border, ShareStyle.rgb(62, 70, 86)) : ShareStyle.hover).setFill(); NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 7, yRadius: 7).fill() }
+        let style = NSMutableParagraphStyle(); style.alignment = .center
+        let text = NSAttributedString(string: title, attributes: [.font: font ?? .systemFont(ofSize: 13), .foregroundColor: isEnabled ? ShareStyle.ink : ShareStyle.faint, .paragraphStyle: style])
+        text.draw(in: NSRect(x: 4, y: (bounds.height - text.size().height) / 2, width: bounds.width - 8, height: text.size().height))
+    }
+}
+// Filled blue push button used for the main action of a row or dialog.
+final class SharePrimaryButton: NSButton {
+    override func draw(_ dirtyRect: NSRect) {
+        let shape = NSBezierPath(roundedRect: bounds.insetBy(dx: 1, dy: 1), xRadius: 8, yRadius: 8)
+        (isEnabled ? (isHighlighted ? ShareStyle.bluePressed : ShareStyle.blue) : ShareStyle.disabledBack).setFill(); shape.fill()
+        let style = NSMutableParagraphStyle(); style.alignment = .center
+        let text = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: isEnabled ? NSColor.white : ShareStyle.disabledInk, .paragraphStyle: style])
+        text.draw(in: NSRect(x: 6, y: (bounds.height - text.size().height) / 2, width: bounds.width - 12, height: text.size().height))
+    }
+}
+final class FlippedView: NSView {
+    override var isFlipped: Bool { true }
+    // Background that follows light/dark: AppKit calls updateLayer again whenever the appearance changes.
+    var fill: NSColor? { didSet { wantsLayer = true; needsDisplay = true } }
+    override var wantsUpdateLayer: Bool { fill != nil }
+    override func updateLayer() { layer?.backgroundColor = fill?.cgColor }
+}
+// A row of the 全部電腦 list; blue when the mouse is on that computer, clickable when switching is possible.
+final class ShareListRow: NSView {
+    var active = false, onClick: (() -> Void)?
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) { if active { ShareStyle.selected.setFill(); NSBezierPath(roundedRect: bounds, xRadius: 6, yRadius: 6).fill() } }
+    override func mouseUp(with event: NSEvent) { onClick?() }
+    override func resetCursorRects() { if onClick != nil { addCursorRect(bounds, cursor: .pointingHand) } }
+}
+// Small square with a jump number, as on the card's screen map.
+final class ShareNumberBox: NSView {
+    var text = "", active = false, dashed = false
+    override var isFlipped: Bool { true }
+    override func draw(_ dirtyRect: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 4, yRadius: 4)
+        if active { ShareStyle.blue.setFill(); path.fill() } else { if dashed { path.setLineDash([3, 2], count: 2, phase: 0) }; (dashed ? ShareStyle.faint : ShareStyle.muted).setStroke(); path.stroke() }
+        let style = NSMutableParagraphStyle(); style.alignment = .center
+        let label = NSAttributedString(string: text, attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold), .foregroundColor: active ? NSColor.white : dashed ? ShareStyle.faint : ShareStyle.ink, .paragraphStyle: style])
+        label.draw(in: NSRect(x: 0, y: (bounds.height - label.size().height) / 2, width: bounds.width, height: label.size().height))
+    }
+}
+final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate, UNUserNotificationCenterDelegate {
+    // "0.3.9" for releases; "0.3.9.N 測試版" for test builds, whose Info.plist carries "N commit".
+    static let testBuild = (Bundle.main.object(forInfoDictionaryKey: "BarrierShareTestBuild") as? String ?? "").split(separator: " ").map(String.init)
+    static let testCommit = testBuild.count == 2 ? testBuild[1] : ""
+    static var versionLabel: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        return testBuild.count == 2 ? "\(version).\(testBuild[0]) 測試版" : version
+    }
+    var options = ShareOptions()
+    var window: NSWindow!
+    var diagnostics: NSWindow?
+    let emptyNearby = NSTextField(wrappingLabelWithString: "正在尋找附近的電腦…\n在另一台開啟程式，並選擇另一個角色。")
+    let blue = ShareStyle.blue, ink = ShareStyle.ink, muted = ShareStyle.muted
+    // role is the model of the 主控端／接收端 segment (kept as a hidden pop-up for older code paths and tests).
+    let role = NSPopUpButton(), segment = NSSegmentedControl(labels: ["主控端", "接收端"], trackingMode: .selectOne, target: nil, action: nil)
+    let peerLabel = NSTextField(labelWithString: ""), status = NSTextField(labelWithString: ""), roleLabel = NSTextField(labelWithString: "")
+    let start = NSButton(title: "繼續共用", target: nil, action: nil), stop = NSButton(title: "暫停共用", target: nil, action: nil), search = ShareQuietButton(title: "重新搜尋", target: nil, action: nil), cancelSend = NSButton(title: "取消傳送", target: nil, action: nil), forget = NSButton(title: "解除配對", target: nil, action: nil), clear = NSButton(title: "清除檔案暫存", target: nil, action: nil)
+    let badge = ShareBadge(), map = ShareScreenMap(), filter = NSSearchField(), nearbyCount = NSTextField(labelWithString: ""), nearbyScroll = NSScrollView(), nearbyList = FlippedView()
+    let body = FlippedView(), banner = FlippedView(), bannerText = NSTextField(labelWithString: "")
+    // connections: core sessions currently up; dismissedUpdate: version whose banner was closed; announcedUpdate: version already notified.
+    var connections = 0, dismissedUpdate = "", announcedUpdate = "", nearbySignature = ""
+    // Host only: receivers whose core session is up (screen names) and the screen the mouse is on.
+    var liveScreens: Set<String> = [], activeScreen = ShareSettings.hostName
+    let allButton = NSButton(title: "全部電腦", target: nil, action: nil), listPopover = NSPopover()
+    let details = NSTextView()
+    var tray: NSStatusItem!, core: Process?, corePipe: Pipe?, link: Process?, linkOutput: Pipe?, linkInput: Pipe?, pendingCore = Data(), pendingLink = Data(), retry: Timer?
+    // Paired computers in pairing order: every receiver for a host, the one host for a receiver.
+    var peers: [(fingerprint: String, name: String)] = []
+    let arrange = NSButton(title: "排列螢幕", target: nil, action: nil)
+    var computers: [NearbyComputer] = [], connectedAddress = "", consent: NSWindow?, consentId: String?, enabled = true, loading = true, promptedPermissions = false
+    var updateURL: URL?, updateTimer: Timer?
+    // Background update state: the release found, the running download, and the checked app ready to install.
+    var updateFound: ShareUpdate.Found?, updateDownload: ShareDownload?, updateReady: URL?
+    let bannerButton = SharePrimaryButton(title: "下載更新", target: nil, action: nil), bannerSource = NSTextField(labelWithString: ""), bannerRepo = NSButton(title: "", target: nil, action: nil), bannerDot = NSTextField(labelWithString: "·"), bannerNotes = NSButton(title: "", target: nil, action: nil)
+    static let bannerHeight: CGFloat = 56
+    let autostart = NSSwitch(), autostartLabel = NSTextField(labelWithString: "登入時自動啟動")
+    var transferring = false, progress = ShareProgress()
+    lazy var transferPanel = ShareTransferPanel(target: self, cancelAction: #selector(resume))
+    var receiving = false, autoPaste = ShareAutoPaste(), pasteMonitor: Any?, lastProgress = ""
+    let test: Bool
+    init(test: Bool = false) { self.test = test; super.init() }
+    // Cursorway.app replaces "Barrier Share.app" (same bundle id, settings and permissions). An old copy left
+    // in Applications would still start at login, so it goes to the Trash (recoverable) once the new app runs.
+    static func retireOldApp(_ folder: URL = URL(fileURLWithPath: "/Applications"), running: URL = Bundle.main.bundleURL) -> URL? {
+        let old = folder.appendingPathComponent("Barrier Share.app")
+        guard old.standardizedFileURL != running.standardizedFileURL, Bundle(url: old)?.bundleIdentifier == Bundle.main.bundleIdentifier ?? "org.barriershare.desktop",
+              FileManager.default.fileExists(atPath: old.path) else { return nil }
+        var trashed: NSURL?; try? FileManager.default.trashItem(at: old, resultingItemURL: &trashed); return trashed as URL?
+    }
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Before anything reads settings or starts barrier-link: BarrierShare → Cursorway.
+        if !test { ShareSettings.root = ShareSettings.migrateRoot() }
+        if !test, ShareApp.retireOldApp() != nil { log("已把舊版 App 移到垃圾桶。") }
+        if !test { ShareUpdater.cleanUp(); reportFailedUpdate() }
+        buildWindow()
+        // ⌘V while files are still arriving: paste them as soon as they are complete.
+        pasteMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, self.receiving, event.keyCode == 9, event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command else { return }
+            // The window only appears once the user asks for the files; until then they arrive quietly.
+            if self.autoPaste.target == nil {
+                self.autoPaste.pressed(front: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+                self.transferPanel.begin("正在接收檔案…", showAfter: 0); self.transferPanel.note = "（傳完自動貼上）"
+                self.transferPanel.progress(self.lastProgress.isEmpty ? "正在接收檔案… 準備中" : self.lastProgress)
+            }
+        }
+    }
+    // Sent to the app directly, not through the event tap, so it can never be forwarded to the other computer.
+    func paste(into pid: pid_t) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] { if let key = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: down) { key.flags = .maskCommand; key.postToPid(pid) } }
+    }
+    func buildWindow() {
+        let menu = NSMenu(), appMenu = NSMenu(), appItem = NSMenuItem()
+        appMenu.addItem(withTitle: "關於 Cursorway", action: #selector(ShareApp.showAbout), keyEquivalent: ""); appMenu.addItem(.separator()); appMenu.addItem(withTitle: "結束 Cursorway", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"); appItem.submenu = appMenu; menu.addItem(appItem)
+        // Edit menu so ⌘A / ⌘C work in the diagnostics log (and other text) as in any Mac app.
+        let editItem = NSMenuItem(), editMenu = NSMenu(title: "編輯")
+        editMenu.addItem(withTitle: "拷貝", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "全選", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = editMenu; menu.addItem(editItem); NSApp.mainMenu = menu
+        let W: CGFloat = 720, H: CGFloat = 624
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: W, height: H), styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
+        window.title = "Cursorway " + ShareApp.versionLabel; window.delegate = self; window.isReleasedWhenClosed = false
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H)); root.fill = ShareStyle.background
+        window.contentView = root
+        // Update banner above everything; the window grows by its height while it shows.
+        // Two lines: what is happening, then where the update comes from and a link to its release notes.
+        banner.frame = NSRect(x: 0, y: 0, width: W, height: ShareApp.bannerHeight); banner.fill = ShareStyle.tint; banner.isHidden = true
+        bannerText.textColor = ShareStyle.blueInk; bannerText.font = .systemFont(ofSize: 13); bannerText.lineBreakMode = .byTruncatingTail; bannerText.frame = NSRect(x: 24, y: 9, width: 520, height: 18); banner.addSubview(bannerText)
+        bannerSource.stringValue = "來源："; bannerSource.textColor = ShareStyle.blueInk; bannerSource.font = .systemFont(ofSize: 11); bannerSource.sizeToFit()
+        bannerSource.frame = NSRect(x: 24, y: 31, width: bannerSource.frame.width, height: 16); banner.addSubview(bannerSource)
+        bannerRepo.isBordered = false; bannerRepo.target = self; bannerRepo.action = #selector(openProject); bannerRepo.toolTip = "在瀏覽器打開 Cursorway 的 GitHub 專案頁"
+        bannerRepo.attributedTitle = NSAttributedString(string: "github.com/sunnylinisme/Cursorway", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: ShareStyle.blueInk, .underlineStyle: NSUnderlineStyle.single.rawValue])
+        bannerRepo.sizeToFit(); bannerRepo.frame = NSRect(x: bannerSource.frame.maxX, y: 30, width: bannerRepo.frame.width, height: 18); banner.addSubview(bannerRepo)
+        bannerDot.textColor = ShareStyle.blueInk; bannerDot.font = .systemFont(ofSize: 11); bannerDot.sizeToFit(); bannerDot.frame = NSRect(x: bannerRepo.frame.maxX + 2, y: 31, width: bannerDot.frame.width, height: 16); banner.addSubview(bannerDot)
+        bannerNotes.isBordered = false; bannerNotes.target = self; bannerNotes.action = #selector(openUpdate); bannerNotes.toolTip = "在瀏覽器打開這一版的 GitHub 發佈頁"
+        bannerNotes.attributedTitle = NSAttributedString(string: "查看更新內容", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: ShareStyle.blueInk, .underlineStyle: NSUnderlineStyle.single.rawValue])
+        bannerNotes.sizeToFit(); bannerNotes.frame = NSRect(x: bannerDot.frame.maxX + 2, y: 30, width: bannerNotes.frame.width, height: 18); banner.addSubview(bannerNotes)
+        bannerButton.target = self; bannerButton.action = #selector(updateClicked); bannerButton.frame = NSRect(x: 560, y: 13, width: 104, height: 30); banner.addSubview(bannerButton)
+        let dismiss = NSButton(title: "✕", target: self, action: #selector(dismissUpdate)); dismiss.isBordered = false; dismiss.frame = NSRect(x: 670, y: 13, width: 30, height: 30); dismiss.toolTip = "稍後再說"; banner.addSubview(dismiss)
+        body.frame = NSRect(x: 0, y: 0, width: W, height: H); root.addSubview(body); root.addSubview(banner)
+        func at(_ view: NSView, _ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) { view.frame = NSRect(x: x, y: y, width: width, height: height); body.addSubview(view) }
+        func text(_ field: NSTextField, _ size: CGFloat, _ weight: NSFont.Weight = .regular, _ color: NSColor = ShareStyle.ink) { field.font = .systemFont(ofSize: size, weight: weight); field.textColor = color; field.lineBreakMode = .byTruncatingTail }
+        func plain(_ button: NSButton, _ action: Selector) { button.bezelStyle = .rounded; button.target = self; button.action = action; button.font = .systemFont(ofSize: 13) }
+        // Header: this computer and its role.
+        at(ShareComputerMark(), 24, 20, 44, 44)
+        let name = NSTextField(labelWithString: Host.current().localizedName ?? "Mac"); text(name, 20, .bold); at(name, 80, 17, 420, 26)
+        text(roleLabel, 13, .regular, ShareStyle.muted); at(roleLabel, 80, 45, 420, 18)
+        segment.target = self; segment.action = #selector(segmentChanged); segment.segmentStyle = .rounded; segment.setAccessibilityLabel("這台電腦的角色")
+        segment.setWidth(84, forSegment: 0); segment.setWidth(84, forSegment: 1); at(segment, 520, 28, 176, 30)
+        role.addItems(withTitles: ["主控端 · 使用這台的鍵盤滑鼠", "接收端 · 等待主控端邀請"]); role.isHidden = true; role.target = self; role.action = #selector(roleChanged); at(role, 0, 0, 1, 1)
+        // Connection card: state, what to do next, and a small map of the screens.
+        at(ShareCard(), 24, 84, 672, 168)
+        at(badge, 44, 102, 140, 24)
+        text(status, 17, .bold); status.maximumNumberOfLines = 2; status.cell?.wraps = true; status.cell?.truncatesLastVisibleLine = true; at(status, 44, 132, 412, 46)
+        text(peerLabel, 13, .regular, ShareStyle.muted); at(peerLabel, 44, 180, 412, 18)
+        plain(stop, #selector(pause)); plain(start, #selector(resume)); plain(arrange, #selector(showLayout)); plain(cancelSend, #selector(cancelTransfer))
+        at(stop, 40, 208, 120, 32); at(start, 40, 208, 120, 32); at(arrange, 164, 208, 120, 32); at(cancelSend, 288, 208, 120, 32)
+        plain(allButton, #selector(showAllComputers(_:))); allButton.toolTip = "每台電腦的號碼、名稱與狀態"; at(allButton, 288, 208, 140, 32)
+        at(map, 472, 100, 204, 132)
+        // Nearby computers: paired ones first, a search box once the list gets long.
+        let nearbyTitle = NSTextField(labelWithString: "附近電腦"); text(nearbyTitle, 15, .semibold); at(nearbyTitle, 24, 274, 90, 20)
+        text(nearbyCount, 13, .regular, ShareStyle.muted); at(nearbyCount, 100, 276, 120, 18)
+        filter.placeholderString = "搜尋名稱或 IP"; filter.target = self; filter.action = #selector(filterChanged); filter.sendsSearchStringImmediately = true; filter.isHidden = true; at(filter, 352, 270, 234, 28)
+        search.target = self; search.action = #selector(searchNow); at(search, 596, 268, 100, 30)
+        let listCard = ShareCard(); at(listCard, 24, 306, 672, 236)
+        nearbyScroll.frame = NSRect(x: 1, y: 6, width: 670, height: 224); nearbyScroll.drawsBackground = false; nearbyScroll.hasVerticalScroller = true; nearbyScroll.autohidesScrollers = true
+        nearbyScroll.documentView = nearbyList; listCard.addSubview(nearbyScroll)
+        emptyNearby.alignment = .center; text(emptyNearby, 13, .regular, ShareStyle.muted); emptyNearby.maximumNumberOfLines = 3; emptyNearby.frame = NSRect(x: 40, y: 88, width: 592, height: 60); listCard.addSubview(emptyNearby)
+        // Footer: everyday switches; the rarely used actions sit under 更多.
+        let rule = NSBox(); rule.boxType = .custom; rule.borderWidth = 0; rule.fillColor = ShareStyle.border; at(rule, 0, 556, W, 1)
+        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; autostart.controlSize = .small; autostart.setAccessibilityLabel("登入時自動啟動"); at(autostart, 24, 579, 40, 22)
+        autostartLabel.font = .systemFont(ofSize: 13); autostartLabel.textColor = ShareStyle.ink; at(autostartLabel, 74, 581, 160, 18)
+        at(ShareQuietButton("進階設定", self, #selector(showAdvanced)), 404, 574, 100, 30)
+        at(ShareQuietButton("診斷紀錄", self, #selector(showDiagnostics)), 508, 574, 100, 30)
+        at(ShareQuietButton("更多  ▾", self, #selector(showMore(_:))), 612, 574, 84, 30)
+        details.isEditable=false; details.font = .monospacedSystemFont(ofSize:12,weight:.regular); details.isVerticallyResizable=true; details.autoresizingMask = [.width]
+        tray = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // The app icon itself (same as the Dock and the Windows tray). It is a full-colour tile with
+        // its own light background, so it stays legible on light and dark menu bars; not a template image.
+        if let url = Bundle.main.url(forResource: "Cursorway", withExtension: "icns"), let icon = NSImage(contentsOf: url) {
+            icon.size = NSSize(width: 18, height: 18); icon.isTemplate = false
+            tray.button?.image = icon; tray.button?.imageScaling = .scaleProportionallyDown; tray.button?.title = ""
+        } else { tray.button?.title = "⇄" }
+        tray.button?.toolTip = "Cursorway"; let trayMenu = NSMenu()
+        trayMenu.delegate = self; trayMenu.autoenablesItems = false; tray.menu = trayMenu
+        if !test { UNUserNotificationCenter.current().delegate = self }
+        do {
+            if !test { let old = Bundle.main.bundleURL.deletingLastPathComponent(); try ShareSettings.importPairing(old, true, replace: false); try ShareSettings.importPairing(old, false, replace: false) }
+            options = try ShareSettings.load(); applyAppearance(); role.selectItem(at: options.host ? 0 : 1); segment.selectedSegment = options.host ? 0 : 1; roleChangedLabel()
+            loading = false; try refreshRole()
+            if !test { startLink(); retry = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in if let self = self, self.enabled && self.link == nil { self.startLink() } } }
+            if !test { checkUpdate(); updateTimer = Timer.scheduledTimer(withTimeInterval: 6 * 60 * 60, repeats: true) { [weak self] _ in self?.checkUpdate() } }
+        } catch { loading = false; showError(error) }
+        window.center()
+        // A login-item launch stays in the menu bar; opening the app again shows the window.
+        let loginLaunch = NSAppleEventManager.shared().currentAppleEvent?.paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem)) != nil
+        if !loginLaunch || test { window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) } else { NSApp.setActivationPolicy(.accessory) }
+    }
+    func roleChangedLabel() { roleLabel.stringValue = options.host ? "主控端 · 使用這台的鍵盤滑鼠" : "接收端 · 由主控端操作" }
+    @objc func segmentChanged() {
+        guard role.indexOfSelectedItem != segment.selectedSegment else { return }
+        // Switching roles drops every live connection; ask first while something is connected.
+        let live = options.host ? cardEntries().dropFirst().filter { $0.live }.count : connections
+        if enabled && live > 0 && !test {
+            let alert = NSAlert(); let toReceiver = segment.selectedSegment == 1
+            alert.messageText = toReceiver ? "要把這台改成接收端嗎？" : "要把這台改成主控端嗎？"
+            alert.informativeText = toReceiver ? "目前有 \(live) 台正在使用這台的鍵盤滑鼠。改成接收端後，它們會立刻斷線，要由另一台主控端重新連線。配對紀錄會保留。"
+                                               : "這台正在接收主控端的鍵盤滑鼠。改成主控端後會立刻斷線，需要重新邀請接收端。配對紀錄會保留。"
+            alert.addButton(withTitle: toReceiver ? "改成接收端" : "改成主控端"); alert.addButton(withTitle: "取消")
+            guard alert.runModal() == .alertFirstButtonReturn else { segment.selectedSegment = role.indexOfSelectedItem; return }
+        }
+        role.selectItem(at: segment.selectedSegment); roleChanged()
+    }
+    @objc func filterChanged() { rebuildNearby() }
+    @objc func cancelTransfer() { if transferring { resume() } }
+    @objc func dismissUpdate() { dismissedUpdate = bannerVersion; setBanner(false) }
+    var bannerVersion = ""
+    func setBanner(_ show: Bool) {
+        guard banner.isHidden == show else { return }
+        banner.isHidden = !show; body.frame.origin.y = show ? ShareApp.bannerHeight : 0
+        var frame = window.frame; let delta: CGFloat = show ? ShareApp.bannerHeight : -ShareApp.bannerHeight
+        frame.size.height += delta; frame.origin.y -= delta; window.setFrame(frame, display: true)
+        (window.contentView as? FlippedView)?.frame.size.height = body.frame.maxY
+    }
+    func appearanceMenu() -> NSMenu {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        for (title, value) in [("跟隨系統", "system"), ("淺色", "light"), ("深色", "dark")] {
+            let item = menu.addItem(withTitle: title, action: #selector(chooseAppearance(_:)), keyEquivalent: ""); item.target = self
+            item.representedObject = value; item.state = options.appearance == value ? .on : .off
+        }
+        return menu
+    }
+    @objc func chooseAppearance(_ sender: NSMenuItem) {
+        guard let value = sender.representedObject as? String else { return }
+        options.appearance = value; applyAppearance(); do { try ShareSettings.save(options) } catch { showError(error) }
+    }
+    // nil follows macOS, so switching the system between light and dark updates the window at once.
+    func applyAppearance() {
+        // Self-test screenshots stay light unless the test picks dark itself.
+        if test && options.appearance == "system" { NSApp.appearance = NSAppearance(named: .aqua); return }
+        NSApp.appearance = options.appearance == "light" ? NSAppearance(named: .aqua) : options.appearance == "dark" ? NSAppearance(named: .darkAqua) : nil
+    }
+    // 關於: version (no commit) and a link to the GitHub project.
+    static func aboutOptions() -> [NSApplication.AboutPanelOptionKey: Any] {
+        let link = NSMutableAttributedString(string: ShareUpdate.project, attributes: [.link: URL(string: ShareUpdate.project)!, .font: NSFont.systemFont(ofSize: 11)])
+        let style = NSMutableParagraphStyle(); style.alignment = .center; link.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: link.length))
+        return [.applicationName: "Cursorway", .applicationVersion: ShareApp.versionLabel, .version: "", .credits: link]
+    }
+    @objc func showAbout() { NSApp.activate(ignoringOtherApps: true); NSApp.orderFrontStandardAboutPanel(options: ShareApp.aboutOptions()) }
+    @objc func showMore(_ sender: NSButton) {
+        let menu = NSMenu(); menu.autoenablesItems = false
+        let clearItem = menu.addItem(withTitle: "清除暫存檔案", action: #selector(clearCache), keyEquivalent: ""); clearItem.target = self; clearItem.isEnabled = !enabled && core == nil
+        let look = menu.addItem(withTitle: "外觀", action: nil, keyEquivalent: ""); look.submenu = appearanceMenu()
+        menu.addItem(withTitle: "關於 Cursorway", action: #selector(showAbout), keyEquivalent: "").target = self
+        menu.addItem(.separator())
+        let unpair = menu.addItem(withTitle: "解除配對…", action: peers.count > 1 ? nil : #selector(forgetPeer), keyEquivalent: ""); unpair.target = self
+        unpair.attributedTitle = NSAttributedString(string: "解除配對…", attributes: [.foregroundColor: ShareStyle.danger, .font: NSFont.menuFont(ofSize: 0)])
+        unpair.isEnabled = link != nil && !peers.isEmpty
+        if peers.count > 1 {
+            let choices = NSMenu()
+            for p in peers { let item = choices.addItem(withTitle: "解除「\(p.name)」", action: #selector(forgetChosen(_:)), keyEquivalent: ""); item.target = self; item.representedObject = p.fingerprint }
+            choices.addItem(.separator())
+            let all = choices.addItem(withTitle: "全部解除", action: #selector(forgetChosen(_:)), keyEquivalent: ""); all.target = self
+            all.attributedTitle = NSAttributedString(string: "全部解除", attributes: [.foregroundColor: ShareStyle.danger, .font: NSFont.menuFont(ofSize: 0)])
+            unpair.submenu = choices
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+    // Paired computers first (offline ones greyed), then the others by name, filtered by the search box.
+    func rebuildNearby() {
+        let query = filter.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        let match = { (c: NearbyComputer) in query.isEmpty || c.name.lowercased().contains(query) || c.address.contains(query) }
+        // Paired computers live in the connection card (全部電腦); this list is only for finding new ones.
+        let paired: [(NearbyComputer, Bool)] = []
+        let others = computers.filter { c in !peers.contains { $0.fingerprint == c.fingerprint } }.filter(match).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        let width = nearbyScroll.contentSize.width
+        // Discovery repeats every few seconds and every status change lands here; rebuild the rows only
+        // when what they show changes, or the list visibly flickers.
+        let canInvite = options.host && link != nil && consent == nil
+        let signature = ([String(describing: width), String(canInvite), String(options.host)] + paired.map { "P\($0.0.fingerprint)|\($0.0.name)|\($0.0.address)|\($0.1)|\(options.platforms[$0.0.fingerprint] ?? "")" }
+            + others.map { "O\($0.fingerprint)|\($0.name)|\($0.address)|\(options.platforms[$0.fingerprint] ?? "")" }).joined(separator: "\n")
+        defer {
+            emptyNearby.isHidden = !(paired.isEmpty && others.isEmpty)
+            emptyNearby.stringValue = !query.isEmpty && !computers.isEmpty ? "找不到符合的電腦" : !enabled ? "搜尋已暫停\n繼續共用後，會重新尋找附近電腦。" : !peers.isEmpty && options.host ? "沒有其他尚未配對的電腦\n已配對的電腦在上方「全部電腦」。" : !peers.isEmpty ? "已配對主控端\n要換一台主控端，先從「更多」解除配對。" : !enabled ? "搜尋已暫停\n繼續共用後，會重新尋找附近電腦。" : options.host ? "正在尋找接收端…\n請在另一台選擇「接收端」，保持程式開啟。" : "尚未找到主控端…\n請在另一台選擇「主控端」，保持程式開啟。"
+            nearbyCount.stringValue = others.isEmpty ? "" : "\(others.count) 台尚未配對"
+            filter.isHidden = computers.count <= 6 && filter.stringValue.isEmpty
+        }
+        guard signature != nearbySignature else { return }
+        nearbySignature = signature
+        nearbyList.subviews.forEach { $0.removeFromSuperview() }
+        var y: CGFloat = 0
+        func add(_ view: NSView) { view.frame.origin = NSPoint(x: 0, y: y); nearbyList.addSubview(view); y += view.frame.height }
+        func system(_ fp: String) -> String { switch options.platforms[fp] { case "mac": return "Mac"; case "windows": return "Windows"; case "linux": return "Linux"; default: return "電腦" } }
+        if !paired.isEmpty { add(ShareDeviceRow.header("已配對", width: width)); for (c, offline) in paired { add(ShareDeviceRow(width: width, name: c.name, detail: offline ? system(c.fingerprint) : "\(system(c.fingerprint)) · \(c.address)", offline: offline, paired: true, mac: options.platforms[c.fingerprint] == "mac", invite: nil)) } }
+        if !others.isEmpty {
+            for c in others {
+                var button: NSButton? = nil
+                if options.host {
+                    let invite = SharePrimaryButton(title: "邀請配對", target: self, action: #selector(inviteRow(_:))); invite.identifier = NSUserInterfaceItemIdentifier(c.fingerprint)
+                    invite.isEnabled = canInvite; button = invite
+                }
+                add(ShareDeviceRow(width: width, name: c.name, detail: "\(system(c.fingerprint)) · \(c.address)", offline: false, paired: false, mac: options.platforms[c.fingerprint] == "mac", invite: button))
+            }
+        }
+        nearbyList.frame = NSRect(x: 0, y: 0, width: width, height: max(y, nearbyScroll.contentSize.height))
+    }
+    @objc func inviteRow(_ sender: NSButton) {
+        guard let fp = sender.identifier?.rawValue, options.host, link != nil, consent == nil, !peers.contains(where: { $0.fingerprint == fp }) else { return }
+        // Receivers already connected stay connected; the new one is added to the running core when pairing succeeds.
+        send("PAIR\t" + fp); status.stringValue = "正在發出邀請…"
+    }
+    // The connection card's badge and screen map follow the role, pairing and connection.
+    // One computer of the host's list: jump number, name, where it sits, whether it is connected and has the mouse.
+    struct CardEntry { var number: Int?; var name: String; var screen: String; var cell: ShareSettings.Cell?; var place: String; var live: Bool; var active: Bool }
+    // Receiver: the number its host gave it (NUMBER from barrier-link); nil until an up-to-date host says so.
+    var hostNumber: Int? { didSet { if hostNumber != oldValue { updateCard() } } }
+    // Host: the last NUMBERS line sent to this barrier-link process, so unchanged lists are not resent.
+    var sentNumbers: String?
+    // Receiver: where its host put it (dx,dy); the host is drawn on the opposite side. nil = old host, drawn on the left.
+    var hostCell: ShareSettings.Cell? { didSet { if hostCell != oldValue { updateCard() } } }
+    func numbersLine() -> String {
+        let numbers = ShareSettings.numbers(peers.map { $0.fingerprint }, custom: options.screenNumbers)
+        let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
+        return "NUMBERS\t" + peers.compactMap { p in numbers[p.fingerprint].map { n in
+            // n/dx/dy: the receiver's place in this host's arrangement, so it can draw the host on the right side.
+            let cell = grid.first { $0.0 == ShareSettings.screenName(p.fingerprint) }?.1
+            return "\(p.fingerprint)=\(n)" + (cell.map { abs($0.x) <= ShareGrid.reach && abs($0.y) <= ShareGrid.reach ? "/\($0.x)/\($0.y)" : "" } ?? "")
+        } }.joined(separator: ",")
+    }
+    func sendNumbers() {
+        guard options.host, link != nil, sentNumbers != nil else { return }
+        let line = numbersLine(); if line != sentNumbers { sentNumbers = line; send(line) }
+    }
+    func cardEntries() -> [CardEntry] {
+        let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
+        let numbers = ShareSettings.numbers(peers.map { $0.fingerprint }, custom: options.screenNumbers)
+        let words = [ShareSettings.Cell(x: 1, y: 0): "右", ShareSettings.Cell(x: -1, y: 0): "左", ShareSettings.Cell(x: 0, y: -1): "上", ShareSettings.Cell(x: 0, y: 1): "下",
+                     ShareSettings.Cell(x: 1, y: -1): "右上", ShareSettings.Cell(x: -1, y: -1): "左上", ShareSettings.Cell(x: 1, y: 1): "右下", ShareSettings.Cell(x: -1, y: 1): "左下"]
+        // Older receivers that connected as "windows" count for the first paired receiver.
+        let live = liveScreens.union(liveScreens.contains("windows") ? peers.prefix(1).map { ShareSettings.screenName($0.fingerprint) } : [])
+        var result = [CardEntry(number: 1, name: "這台 Mac", screen: ShareSettings.hostName, cell: .init(x: 0, y: 0), place: "這台", live: true, active: activeScreen == ShareSettings.hostName)]
+        for p in peers {
+            let screen = ShareSettings.screenName(p.fingerprint), cell = grid.first { $0.0 == screen }?.1
+            result.append(CardEntry(number: numbers[p.fingerprint], name: p.name, screen: screen, cell: cell, place: cell.flatMap { words[$0] } ?? "較遠", live: enabled && live.contains(screen), active: enabled && activeScreen == screen))
+        }
+        return result.sorted { ($0.number ?? 99) < ($1.number ?? 99) }
+    }
+    func updateCard() {
+        let entries = options.host ? cardEntries() : [], live = entries.dropFirst().filter { $0.live }.count, waiting = entries.count - 1 - live
+        if !enabled { badge.set("已暫停", ShareStyle.muted, ShareStyle.field) }
+        else if options.host && !peers.isEmpty { live > 0 ? badge.set("已連線", ShareStyle.green, ShareStyle.greenTint) : badge.set("等待中", ShareStyle.amber, ShareStyle.amberTint) }
+        else if connections > 0 { badge.set("已連線", ShareStyle.green, ShareStyle.greenTint) }
+        else if !peers.isEmpty { badge.set("等待中", ShareStyle.amber, ShareStyle.amberTint) }
+        else { badge.set(options.host ? "尚未配對" : "等待邀請", ShareStyle.muted, ShareStyle.field) }
+        sendNumbers()
+        var tiles = [ShareScreenMap.Tile(cell: .init(x: 0, y: 0), name: "這台", isSelf: true)]
+        if !options.host && !peers.isEmpty {
+            tiles[0].label = hostNumber.map(String.init)
+            tiles[0].tip = hostNumber.map { "這台的號碼是 \($0)：在主控端按 Control+Option+\($0) 切換過來" } ?? "號碼由主控端決定"
+        }
+        if options.host && !peers.isEmpty {
+            // The card's title and line say where the mouse is and how many computers are up; one source, no contradictions.
+            tiles = entries.compactMap { e in e.cell.map { .init(cell: $0, name: e.name, isSelf: e.screen == ShareSettings.hostName, placeholder: !e.live, number: e.number.map(String.init) ?? "·", active: e.active,
+                                                               tip: e.name + (e.number.map { " · Control+Option+\($0)" } ?? "") + (e.live ? "" : " · 等待中")) } }
+            allButton.title = "全部電腦（\(entries.count)）"
+            if enabled && live > 0 {
+                let active = entries.first { $0.active }
+                status.stringValue = active == nil || active!.screen == ShareSettings.hostName ? "滑鼠在這台 Mac" : "正在控制 \(active!.name)"
+                peerLabel.stringValue = (waiting > 0 ? "已連線 \(live) 台，\(waiting) 台等待中" : "已連線 \(live) 台") + (options.advanced.directKeys ? " · Control+Option+號碼直接切換" : " · 滑鼠移到螢幕邊緣就會過去")
+                if !options.advanced.clipboard { peerLabel.stringValue += " · 剪貼簿未共用" }
+            } else if enabled && (status.stringValue.hasPrefix("滑鼠在") || status.stringValue.hasPrefix("正在控制") || status.stringValue.hasPrefix("正在搜尋接收端")) {
+                status.stringValue = peers.count == 1 ? "正在等待 \(peers[0].name) 連線…" : "正在等待接收端連線…"
+                peerLabel.stringValue = "對方需要開著 Cursorway，並在同一個網路"
+            }
+        } else if options.host {
+            tiles.append(.init(cell: ShareSettings.step(options.position), name: "接收端", placeholder: true))
+        } else { tiles.append(.init(cell: hostCell ?? .init(x: -1, y: 0), name: peers.first?.name ?? "主控端", placeholder: peers.isEmpty, color: peers.isEmpty ? nil : ShareStyle.peer(0))) }
+        map.tiles = tiles
+    }
+    @objc func toggleLogin() {
+        do { try ShareLogin.set(autostart.state == .on) } catch { showError(error) }
+        autostart.state = ShareLogin.enabled ? .on : .off
+        if autostart.state == .off && SMAppService.mainApp.status == .requiresApproval { status.stringValue = "請到「系統設定 › 一般 › 登入項目」允許 Cursorway。" }
+    }
+    func updateControls() {
+        transferring = transferring && core != nil
+        let linkDown = enabled && link == nil
+        stop.isHidden = !(enabled && !linkDown); start.isHidden = !stop.isHidden; start.title = enabled ? "恢復連線" : "繼續共用"
+        start.isEnabled = !enabled || link == nil; stop.isEnabled = enabled
+        arrange.isHidden = !options.host; arrange.isEnabled = !peers.isEmpty
+        cancelSend.isHidden = !transferring; cancelSend.frame.origin.x = options.host ? 288 : 164
+        allButton.isHidden = !options.host || peers.isEmpty || transferring
+        status.textColor = enabled ? ShareStyle.ink : ShareStyle.muted
+        search.isEnabled = link != nil; forget.isEnabled = link != nil && !peers.isEmpty; clear.isEnabled = !enabled && core == nil
+        rebuildNearby(); updateCard()
+    }
+    func refreshRole() throws {
+        peers.removeAll(); peersChanged(); computers.removeAll()
+        _ = try ShareSettings.initialize(options.host); try ShareSettings.save(options)
+        status.stringValue = enabled ? "正在啟用區網搜尋…" : "已暫停"; updateControls()
+    }
+    func showError(_ error: Error) { status.stringValue = "操作未完成：" + error.localizedDescription }
+    // Offline or rate-limited checks stay silent; the local network connection never depends on them.
+    func checkUpdate() {
+        var request = URLRequest(url: ShareUpdate.releases, timeoutInterval: 15)
+        request.setValue("Cursorway-UpdateCheck", forHTTPHeaderField: "User-Agent"); request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let data = data { self.showUpdate(ShareUpdate.newer(data, current: ShareUpdate.current)) } else if let error = error { self.log("檢查更新失敗：" + error.localizedDescription) }
+            }
+        }.resume()
+    }
+    // Menu-bar menu, rebuilt each time it opens so the status and toggles are current (same items as the Windows tray).
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        let state = menu.addItem(withTitle: status.stringValue.components(separatedBy: "\n").first ?? "", action: nil, keyEquivalent: ""); state.isEnabled = false
+        menu.addItem(.separator())
+        func item(_ title: String, _ action: Selector, enabled: Bool = true, on: Bool = false) { let i = menu.addItem(withTitle: title, action: action, keyEquivalent: ""); i.target = self; i.isEnabled = enabled; i.state = on ? .on : .off }
+        item("開啟視窗", #selector(showWindow))
+        item(enabled ? "暫停共用" : "繼續共用", enabled ? #selector(pause) : #selector(resume))
+        if options.host { item("排列螢幕…", #selector(showLayoutFromMenu), enabled: !peers.isEmpty) }
+        item("進階設定…", #selector(showAdvancedFromMenu))
+        item("登入時自動啟動", #selector(toggleLoginFromMenu), on: ShareLogin.enabled)
+        item("診斷紀錄", #selector(showDiagnostics))
+        item("檢查更新", #selector(checkUpdateFromMenu))
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "結束", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+    }
+    @objc func copyDiagnostics() {
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(details.string, forType: .string)
+        status.stringValue = "已複製診斷紀錄"
+    }
+    @objc func showLayoutFromMenu() { showWindow(); showLayout() }
+    @objc func showAdvancedFromMenu() { showWindow(); showAdvanced() }
+    @objc func toggleLoginFromMenu() { autostart.state = ShareLogin.enabled ? .off : .on; toggleLogin() }
+    // A manual check always answers, also when this is the newest version or the check failed.
+    @objc func checkUpdateFromMenu() {
+        var request = URLRequest(url: ShareUpdate.releases, timeoutInterval: 15)
+        request.setValue("Cursorway-UpdateCheck", forHTTPHeaderField: "User-Agent"); request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: request) { [weak self] data, _, error in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                let alert = NSAlert(); alert.messageText = "檢查更新"
+                if let data = data, let found = ShareUpdate.newer(data, current: ShareUpdate.current) {
+                    self.showUpdate(found)
+                    let auto = self.autoUpdate
+                    alert.informativeText = "有新版 \(found.version)。" + (auto ? "按「更新」會在背景下載，下載完按「重新啟動」就會安裝。" : "")
+                    alert.addButton(withTitle: auto ? "更新" : "前往下載"); alert.addButton(withTitle: "稍後")
+                    NSApp.activate(ignoringOtherApps: true)
+                    if alert.runModal() == .alertFirstButtonReturn { if auto { self.window.makeKeyAndOrderFront(nil); if self.updateDownload == nil && self.updateReady == nil { self.updateClicked() } } else { NSWorkspace.shared.open(found.url) } }
+                    return
+                }
+                alert.informativeText = data != nil ? "目前已是最新版（\(ShareApp.versionLabel)）。" : "無法檢查更新：" + (error?.localizedDescription ?? "沒有回應")
+                NSApp.activate(ignoringOtherApps: true); alert.runModal()
+            }
+        }.resume()
+    }
+    var autoUpdate: Bool { updateFound?.zip != nil && ShareUpdater.canInstall }
+    func showUpdate(_ found: ShareUpdate.Found?) {
+        guard let found = found else { setBanner(false); return }
+        // A download in progress or ready to install for this version keeps its own text.
+        if updateFound?.version == found.version && (updateDownload != nil || updateReady != nil) { return }
+        updateFound = found; updateURL = found.url; bannerVersion = found.version; updateReady = nil
+        bannerButton.title = autoUpdate ? "更新" : "下載更新"
+        bannerText.stringValue = "有新版 \(found.version) · " + (autoUpdate ? "可在背景下載，下載完按重新啟動" : "下載後把 Cursorway 拖到「應用程式」取代舊版")
+        setBanner(dismissedUpdate != found.version)
+        // While the window is closed a system notification announces it once per version.
+        if announcedUpdate != found.version && !test && !window.isVisible {
+            announcedUpdate = found.version
+            let center = UNUserNotificationCenter.current()
+            center.requestAuthorization(options: [.alert]) { granted, _ in
+                guard granted else { return }
+                let content = UNMutableNotificationContent(); content.title = "Cursorway 有新版 \(found.version)"; content.body = self.autoUpdate ? "點這裡在背景下載新版，下載完按重新啟動就會安裝。" : "點這裡打開下載頁。"
+                content.userInfo = ["url": found.url.absoluteString, "auto": self.autoUpdate]
+                center.add(UNNotificationRequest(identifier: "update-" + found.version, content: content, trigger: nil))
+            }
+        }
+    }
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
+        let info = response.notification.request.content.userInfo
+        if info["auto"] as? Bool == true && autoUpdate { NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil); if updateDownload == nil && updateReady == nil { updateClicked() } }
+        else if let text = info["url"] as? String, let url = URL(string: text) { NSWorkspace.shared.open(url) }
+        completionHandler()
+    }
+    func sendTargets() { do { let list = try options.advanced.targetList(); if !list.isEmpty || link != nil { send("TARGETS\t" + list) } } catch { showError(error) } }
+    // Host-side Barrier options plus direct addresses for computers on another subnet or VPN.
+    // Advanced settings in three groups; each row has a name, a short explanation and a switch or menu.
+    // complain(text) shows a red line under 手動位址 and scrolls it into view; nil hides it.
+    func buildAdvanced(_ a: ShareAdvanced) -> (NSWindow, () -> ShareAdvanced, ShareModalCloser, (String?) -> Void) {
+        let W: CGFloat = 520, width: CGFloat = W + 48
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: 640), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "進階設定"
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: 640)); view.fill = ShareStyle.card; panel.contentView = view
+        var y: CGFloat = 18
+        func label(_ text: String, _ size: CGFloat, _ weight: NSFont.Weight, _ color: NSColor, _ x: CGFloat, _ yy: CGFloat, _ w: CGFloat) -> NSTextField {
+            let l = NSTextField(labelWithString: text); l.font = .systemFont(ofSize: size, weight: weight); l.textColor = color; l.lineBreakMode = .byTruncatingTail; l.frame = NSRect(x: x, y: yy, width: w, height: size + 6); view.addSubview(l); return l
+        }
+        _ = label("進階設定", 18, .bold, ShareStyle.ink, 24, y, W); y += 30
+        _ = label(options.host ? "由這台（主控端）套用到所有螢幕；儲存後立即生效，不會斷線。" : "切換設定只在主控端生效；這台目前是接收端。", 12, .regular, ShareStyle.muted, 24, y, W); y += 30
+        var group: ShareCard?, rowY: CGFloat = 0
+        func section(_ text: String) { _ = label(text, 11, .semibold, ShareStyle.muted, 24, y, W); y += 20; let card = ShareCard(frame: NSRect(x: 24, y: y, width: W, height: 10)); view.addSubview(card); group = card; rowY = 0 }
+        func row(_ title: String, _ detail: String?, _ control: NSView) {
+            guard let card = group else { return }
+            let h: CGFloat = detail == nil ? 44 : 56
+            if rowY > 0 { let rule = NSBox(frame: NSRect(x: 14, y: rowY, width: W - 28, height: 1)); rule.boxType = .custom; rule.borderWidth = 0; rule.fillColor = ShareStyle.line; card.addSubview(rule) }
+            let t = NSTextField(labelWithString: title); t.font = .systemFont(ofSize: 13); t.textColor = ShareStyle.ink; t.frame = NSRect(x: 14, y: rowY + (detail == nil ? 13 : 9), width: W - 48 - control.frame.width, height: 18); card.addSubview(t)
+            if let detail = detail { let d = NSTextField(labelWithString: detail); d.font = .systemFont(ofSize: 11); d.textColor = ShareStyle.faint; d.frame = NSRect(x: 14, y: rowY + 30, width: W - 48 - control.frame.width, height: 16); card.addSubview(d) }
+            control.frame.origin = NSPoint(x: W - 14 - control.frame.width, y: rowY + (h - control.frame.height) / 2); control.setAccessibilityLabel(title); card.addSubview(control)
+            rowY += h; card.frame.size.height = rowY + 1; y = card.frame.maxY
+        }
+        func toggle(_ value: Bool) -> NSSwitch { let s = NSSwitch(); s.state = value ? .on : .off; s.frame.size = s.fittingSize; return s }
+        func choice(_ values: [Int], _ name: (Int) -> String, _ current: Int) -> NSPopUpButton {
+            var list = values; if !list.contains(current) { list.append(current); list.sort() }
+            let box = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 140, height: 26)); box.addItems(withTitles: list.map(name)); box.selectItem(at: list.firstIndex(of: current) ?? 0)
+            for (i, v) in list.enumerated() { box.item(at: i)?.tag = v }; return box
+        }
+        func seconds(_ v: Int) -> String { v % 1000 == 0 ? "\(v / 1000) 秒" : String(format: "%g 秒", Double(v) / 1000) }
+        section("切換螢幕")
+        let delay = choice([0, 250, 500, 1000], { $0 == 0 ? "立即" : seconds($0) }, a.switchDelay); row("停留多久才切換", "避免滑鼠擦過邊緣就跑到另一台", delay)
+        let tap = choice([0, 250, 400], { $0 == 0 ? "關閉" : seconds($0) + "內" }, a.doubleTap); row("連碰兩下邊緣才切換", nil, tap)
+        let corners = toggle(a.corners); row("螢幕角落不切換", "方便點角落的選單或關閉鈕", corners)
+        let keys = toggle(a.switchKeys); row("啟用切換快捷鍵", "開啟後，按 Control+Option+方向鍵切到另一台", keys)
+        let direct = toggle(a.directKeys); row("啟用跳到指定電腦快捷鍵", "按 Control+Option+1 回到這台，2 以後依排列螢幕的順序；右側數字鍵也可以", direct)
+        let needs = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 140, height: 26)); needs.addItems(withTitles: ["不需要", "Shift", "Control", "Option"])
+        needs.selectItem(at: ["", "shift", "control", "alt"].firstIndex(of: a.switchNeeds) ?? 0)
+        row("按住按鍵才切換", "要按住這個鍵，滑鼠碰到邊緣才會切換", needs)
+        y += 16; section("鍵盤與滑鼠")
+        let swap = toggle(a.swapModifiers); row("在 Windows 上對調 Control 與 Command", "Mac 鍵盤在 Windows 上可按 ⌘C／⌘V；兩台都是 Mac 時不對調", swap)
+        let lock = toggle(a.lockKey); row("啟用鎖定游標快捷鍵", "開啟後，按 Control+Option+L 鎖定或解除；鎖定時游標不會跑到另一台", lock)
+        let relative = toggle(a.relativeMouse); row("相對滑鼠移動", "全螢幕遊戲用", relative)
+        let saver = toggle(a.screenSaver); row("同步螢幕保護程式", nil, saver)
+        let broadcast = toggle(a.broadcastKey); row("啟用鍵盤廣播快捷鍵", "開啟後，按 Control+Option+B 開始或停止：打的字會同時送到所有電腦", broadcast)
+        let caps = toggle(a.capsLockFix); row("接收端的 Caps Lock 修正", "接收端的大小寫或 Caps Lock 燈號跟按鍵對不上時再開啟", caps)
+        // The core keeps the foreground window only on Windows (and Linux) hosts; a Mac host has no equivalent,
+        // so the switch is shown greyed out and its saved value is kept unchanged.
+        let focus = toggle(a.preserveFocus); focus.isEnabled = false; row("切走時保留這台的視窗焦點", "Mac 主控端不支援；只對 Windows 主控端有效", focus)
+        y += 16; section("剪貼簿")
+        let clip = toggle(a.clipboard); row("共用剪貼簿", "關閉後，兩台不再同步複製的文字和檔案", clip)
+        y += 16; section("這台當接收端時（只影響這台）")
+        let wheelValues = [50, 75, 100, 150, 200]
+        let wheel = choice(wheelValues, { "\($0)%" }, a.wheelScale); row("滾輪速度", "另一台的滑鼠在這台捲動時的速度", wheel)
+        let invert = toggle(a.wheelInvert); row("反轉滾輪方向", "Mac 自然捲動和 Windows 方向相反時開啟", invert)
+        y += 16; section("連線")
+        // 手動位址: title and explanation, then a full-width box (about 3 lines before it scrolls) and a red error line.
+        let targetCard = group!
+        let targetTitle = NSTextField(labelWithString: "手動位址"); targetTitle.font = .systemFont(ofSize: 13); targetTitle.textColor = ShareStyle.ink; targetTitle.frame = NSRect(x: 14, y: rowY + 9, width: W - 28, height: 18); targetCard.addSubview(targetTitle)
+        let targetHelp = NSTextField(wrappingLabelWithString: "跨網段或 VPN 時填入對方的 IP 位址或電腦名稱，一行一個，例如 10.8.0.5 或 office-pc.local"); targetHelp.font = .systemFont(ofSize: 11); targetHelp.textColor = ShareStyle.faint
+        targetHelp.frame = NSRect(x: 14, y: rowY + 30, width: W - 28, height: 16); targetCard.addSubview(targetHelp)
+        let targetScroll = NSScrollView(frame: NSRect(x: 14, y: rowY + 54, width: W - 28, height: 72)); targetScroll.hasVerticalScroller = true; targetScroll.autohidesScrollers = true; targetScroll.borderType = .bezelBorder
+        targetScroll.drawsBackground = true; targetScroll.backgroundColor = ShareStyle.field
+        let targets = NSTextView(frame: NSRect(x: 0, y: 0, width: targetScroll.contentSize.width, height: 72)); targets.isRichText = false; targets.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        targets.autoresizingMask = [.width]; targets.textContainerInset = NSSize(width: 4, height: 4); targets.backgroundColor = ShareStyle.field; targets.textColor = ShareStyle.ink; targets.insertionPointColor = ShareStyle.ink
+        targets.isAutomaticQuoteSubstitutionEnabled = false; targets.isAutomaticDashSubstitutionEnabled = false; targets.isAutomaticTextReplacementEnabled = false; targets.setAccessibilityLabel("手動位址")
+        targets.string = a.targets.components(separatedBy: CharacterSet(charactersIn: ", ;\r\n")).filter { !$0.isEmpty }.joined(separator: "\n"); targetScroll.documentView = targets; targetCard.addSubview(targetScroll)
+        let targetError = NSTextField(labelWithString: ""); targetError.font = .systemFont(ofSize: 12); targetError.textColor = ShareStyle.danger; targetError.lineBreakMode = .byTruncatingTail
+        targetError.frame = NSRect(x: 14, y: rowY + 130, width: W - 28, height: 18); targetError.isHidden = true; targetCard.addSubview(targetError)
+        rowY += 154; targetCard.frame.size.height = rowY + 1; y = targetCard.frame.maxY
+        y += 8
+        let buttonsY = y + 8
+        let reset = NSButton(title: "恢復預設", target: nil, action: nil); reset.bezelStyle = .rounded; reset.frame = NSRect(x: 24, y: buttonsY, width: 100, height: 32); view.addSubview(reset)
+        let cancel = NSButton(title: "取消", target: nil, action: nil); cancel.bezelStyle = .rounded; cancel.keyEquivalent = "\u{1b}"; cancel.frame = NSRect(x: W + 24 - 232, y: buttonsY, width: 108, height: 32); view.addSubview(cancel)
+        let save = SharePrimaryButton(title: "儲存", target: nil, action: nil); save.frame = NSRect(x: W + 24 - 112, y: buttonsY, width: 112, height: 32); view.addSubview(save)
+        let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
+        // Rows scroll; the buttons stay fixed underneath.
+        let rowsHeight = buttonsY, visible = min(rowsHeight, 600)
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: visible + 76)); root.fill = ShareStyle.card
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: width, height: visible)); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true; scroll.drawsBackground = false
+        view.frame.size = NSSize(width: width, height: rowsHeight); scroll.documentView = view; root.addSubview(scroll)
+        let footerRule = NSBox(frame: NSRect(x: 0, y: visible, width: width, height: 1)); footerRule.boxType = .custom; footerRule.borderWidth = 0; footerRule.fillColor = ShareStyle.border; root.addSubview(footerRule)
+        for b in [reset, cancel, save] { b.removeFromSuperview(); b.frame.origin.y = visible + 22; root.addSubview(b) }
+        panel.setContentSize(root.frame.size); panel.contentView = root; root.frame = NSRect(origin: .zero, size: panel.contentRect(forFrameRect: panel.frame).size)
+        let resetter = ShareBlockTarget { _ in
+            let d = ShareAdvanced()
+            delay.selectItem(withTag: d.switchDelay); tap.selectItem(withTag: d.doubleTap)
+            for (box, on) in [(corners, d.corners), (keys, d.switchKeys), (swap, d.swapModifiers), (lock, d.lockKey), (relative, d.relativeMouse), (saver, d.screenSaver),
+                              (direct, d.directKeys), (broadcast, d.broadcastKey), (caps, d.capsLockFix), (focus, d.preserveFocus), (clip, d.clipboard), (invert, d.wheelInvert)] { box.state = on ? .on : .off }
+            needs.selectItem(at: 0); wheel.selectItem(withTag: d.wheelScale)
+        }
+        reset.target = resetter; reset.action = #selector(ShareBlockTarget.toggle)
+        // Typing hides the error again.
+        let typing = NotificationCenter.default.addObserver(forName: NSText.didChangeNotification, object: targets, queue: .main) { _ in targetError.isHidden = true }
+        objc_setAssociatedObject(panel, "targets", [closer, resetter, typing], .OBJC_ASSOCIATION_RETAIN)
+        let complain = { (text: String?) in
+            targetError.stringValue = text ?? ""; targetError.isHidden = text == nil
+            if text != nil { targetCard.scrollToVisible(targetError.frame.insetBy(dx: 0, dy: -12)); panel.makeFirstResponder(targets) }
+        }
+        let read = { () -> ShareAdvanced in
+            var v = ShareAdvanced(); v.cornerSize = a.cornerSize
+            v.switchDelay = delay.selectedTag(); v.doubleTap = tap.selectedTag()
+            v.corners = corners.state == .on; v.swapModifiers = swap.state == .on; v.relativeMouse = relative.state == .on; v.screenSaver = saver.state == .on
+            v.switchKeys = keys.state == .on; v.lockKey = lock.state == .on
+            v.directKeys = direct.state == .on; v.broadcastKey = broadcast.state == .on; v.capsLockFix = caps.state == .on; v.preserveFocus = focus.state == .on
+            v.clipboard = clip.state == .on; v.wheelInvert = invert.state == .on; v.wheelScale = wheel.selectedTag()
+            v.switchNeeds = ["", "shift", "control", "alt"][max(0, needs.indexOfSelectedItem)]
+            v.targets = targets.string.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: ", ")
+            // The expert Barrier options box was removed; a value saved by an older version is kept.
+            v.extra = a.extra
+            return v
+        }
+        return (panel, read, closer, complain)
+    }
+    @objc func showAdvanced() {
+        let (panel, read, closer, complain) = buildAdvanced(options.advanced)
+        while true {
+            panel.center(); NSApp.runModal(for: panel); panel.orderOut(nil)
+            guard closer.accepted else { return }
+            let value = read()
+            do {
+                // Only the visible fields are checked; a hidden value from the removed expert box must not block saving.
+                _ = try value.targetList()
+                options.advanced = value; try ShareSettings.save(options); sendTargets()
+                // The host core re-reads its config file, so connected receivers stay connected.
+                status.stringValue = "已儲存進階設定。"; peersChanged(); applyHostConfig(); return
+            } catch { complain(error.localizedDescription) }
+        }
+    }
+    @objc func openUpdate() { if let url = updateURL { NSWorkspace.shared.open(url) } }
+    @objc func openProject() { if let url = URL(string: ShareUpdate.project) { NSWorkspace.shared.open(url) } }
+    // Banner button: 更新 starts a background download, 取消 stops it, 重新啟動 swaps in the new app and opens it.
+    @objc func updateClicked() {
+        guard let found = updateFound else { return }
+        if let app = updateReady {
+            guard FileManager.default.fileExists(atPath: app.path) else { updateReady = nil; bannerButton.title = "更新"; updateClicked(); return }
+            do { try ShareUpdater.install(app); log("正在安裝新版 \(found.version)，Cursorway 會重新開啟。"); NSApp.terminate(nil) } catch { bannerText.stringValue = "無法安裝：" + error.localizedDescription }
+            return
+        }
+        if let download = updateDownload { download.cancel(); return }
+        guard autoUpdate, let zip = found.zip else { openUpdate(); return }
+        let folder = ShareUpdater.folder; try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let file = folder.appendingPathComponent("Cursorway-\(found.version)-macos-arm64.zip")
+        bannerButton.title = "取消"; showProgress(0, zip.size)
+        updateDownload = ShareDownload(zip.url, to: file, progress: { [weak self] got, total in self?.showProgress(got, total > 0 ? total : zip.size) }) { [weak self] problem in
+            guard let self = self else { return }
+            self.updateDownload = nil
+            if let problem = problem { self.updateFailed(problem); return }
+            self.bannerText.stringValue = "正在核對新版…"
+            DispatchQueue.global().async {
+                var problem = ShareUpdater.verify(file, zip), app: URL?
+                if problem == nil { app = ShareUpdater.unpack(file, into: folder.appendingPathComponent(found.version)); if app == nil { problem = "無法解壓縮" } }
+                if problem == nil, let app = app { problem = ShareUpdater.check(app, version: found.version) }
+                try? FileManager.default.removeItem(at: file)
+                DispatchQueue.main.async {
+                    if let problem = problem { self.updateFailed(problem); return }
+                    self.updateReady = app; self.bannerButton.title = "重新啟動"
+                    self.bannerText.stringValue = "新版 \(found.version) 已下載並核對無誤 · 按「重新啟動」安裝，連線會中斷幾秒"
+                    self.log("新版 \(found.version) 已下載並核對無誤。")
+                    if !self.test && !self.window.isVisible {
+                        let content = UNMutableNotificationContent(); content.title = "Cursorway \(found.version) 已下載"; content.body = "打開 Cursorway，按「重新啟動」安裝新版。"
+                        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "ready-" + found.version, content: content, trigger: nil))
+                    }
+                }
+            }
+        }
+    }
+    // The install script could not swap the app and put the old one back: say so once, then forget it.
+    func reportFailedUpdate(_ file: URL = ShareUpdater.failed) {
+        guard let text = try? String(contentsOf: file, encoding: .utf8) else { return }
+        try? FileManager.default.removeItem(at: file)
+        log("自動更新失敗，已還原成原本的版本：" + text.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !test else { return }
+        DispatchQueue.main.async {
+            let alert = NSAlert(); alert.messageText = "自動更新沒有完成"
+            alert.informativeText = "無法替換 Cursorway，已還原成原本的版本（\(ShareApp.versionLabel)）。可以再按一次「更新」，或到下載頁手動安裝。"
+            alert.addButton(withTitle: "好"); alert.addButton(withTitle: "打開下載頁")
+            NSApp.activate(ignoringOtherApps: true)
+            if alert.runModal() == .alertSecondButtonReturn { NSWorkspace.shared.open(URL(string: ShareUpdate.project + "/releases/latest")!) }
+        }
+    }
+    func showProgress(_ got: Int64, _ total: Int64) {
+        bannerText.stringValue = String(format: "下載新版中 %d%%（%.1f / %.1f MB）· 可以繼續使用", total > 0 ? Int(min(100, got * 100 / total)) : 0, Double(got) / 1048576, Double(total) / 1048576)
+    }
+    func updateFailed(_ problem: String) {
+        bannerButton.title = "更新"
+        bannerText.stringValue = problem.isEmpty ? "有新版 \(bannerVersion) · 已取消下載" : "下載失敗：" + problem
+        if !problem.isEmpty { log("下載更新失敗：" + problem) }
+    }
+    @objc func roleChanged() { guard !loading else { return }; stopLink(); stopBackend(); options.host = role.indexOfSelectedItem == 0; segment.selectedSegment = role.indexOfSelectedItem; roleChangedLabel(); do { try refreshRole(); if enabled { startLink() } } catch { showError(error) } }
+    // 全部電腦: a small list beside the button with every computer's jump number, name and state.
+    func allComputersView() -> NSView {
+        let entries = cardEntries(), rowH: CGFloat = 30, width: CGFloat = 300, clickable = options.advanced.directKeys && enabled
+        let note = clickable ? "點一下就切到那台，或按 Control+Option+號碼" : "在「進階設定」啟用「跳到指定電腦快捷鍵」後，可按 Control+Option+號碼或點一下切換"
+        let listH = CGFloat(entries.count) * rowH, visible = min(listH, rowH * 9)
+        let root = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: visible + 52))
+        let doc = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: listH))
+        for (i, e) in entries.enumerated() {
+            let row = ShareListRow(frame: NSRect(x: 6, y: CGFloat(i) * rowH, width: width - 12, height: rowH - 2)); row.active = e.active
+            row.onClick = clickable && e.live && e.number != nil ? { [weak self] in self?.listPopover.close(); self?.jump(to: e.number!) } : nil
+            let box = ShareNumberBox(frame: NSRect(x: 8, y: 5, width: 20, height: 18)); box.text = e.number.map(String.init) ?? "–"; box.active = e.active; box.dashed = !e.live; row.addSubview(box)
+            let name = NSTextField(labelWithString: e.name); name.font = .systemFont(ofSize: 13, weight: e.active ? .semibold : .regular); name.lineBreakMode = .byTruncatingTail
+            name.textColor = e.active ? ShareStyle.blueInk : e.live ? ShareStyle.ink : ShareStyle.faint; name.frame = NSRect(x: 36, y: 6, width: 160, height: 18); row.addSubview(name)
+            let state = NSTextField(labelWithString: e.active ? "滑鼠在這" : !e.live ? "等待中" : e.place); state.font = .systemFont(ofSize: 12); state.alignment = .right
+            state.textColor = e.active ? ShareStyle.blue : !e.live ? ShareStyle.amber : ShareStyle.muted; state.frame = NSRect(x: 196, y: 6, width: 86, height: 18); row.addSubview(state)
+            doc.addSubview(row)
+        }
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 8, width: width, height: visible)); scroll.drawsBackground = false; scroll.hasVerticalScroller = listH > visible; scroll.documentView = doc; root.addSubview(scroll)
+        let hint = NSTextField(wrappingLabelWithString: note); hint.font = .systemFont(ofSize: 11); hint.textColor = ShareStyle.muted; hint.frame = NSRect(x: 14, y: visible + 14, width: width - 28, height: 32); root.addSubview(hint)
+        return root
+    }
+    @objc func showAllComputers(_ sender: NSButton) {
+        if listPopover.isShown { listPopover.close(); return }
+        let controller = NSViewController(); controller.view = allComputersView()
+        listPopover.contentViewController = controller; listPopover.contentSize = controller.view.frame.size; listPopover.behavior = .transient
+        listPopover.show(relativeTo: sender.bounds, of: sender, preferredEdge: .maxY)
+    }
+    // Presses Control+Option+N, the jump hotkey the core registered for that computer.
+    func jump(to number: Int) {
+        let keys = [1: 18, 2: 19, 3: 20, 4: 21, 5: 23, 6: 22, 7: 26, 8: 28, 9: 25]
+        guard let key = keys[number] else { return }
+        let source = CGEventSource(stateID: .hidSystemState)
+        for down in [true, false] { if let e = CGEvent(keyboardEventSource: source, virtualKey: CGKeyCode(key), keyDown: down) { e.flags = [.maskControl, .maskAlternate]; e.post(tap: .cghidEventTap) } }
+    }
+    @objc func searchNow() { send("SEARCH"); status.stringValue = "正在搜尋同一區網的電腦…" }
+    @objc func resume() {
+        // While a file is moving the same button cancels it: restarting the connection drops the partial copy on both sides.
+        // A cancel also tells the core to throw away the partial copy instead of keeping it for a resume.
+        if transferring { transferring = false; ShareSettings.discardResume(options.host); stopBackend(); startBackend(); status.stringValue = "已取消檔案傳送，正在重新連線…"; return }
+        enabled = true; startLink(); updateControls()
+    }
+    @objc func pause() { enabled = false; stopLink(); stopBackend(); status.stringValue = "已暫停；不接受邀請，也不會自動重連。"; updateControls() }
+    @objc func openPermissions() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!) }
+    func startLink() {
+        guard link == nil && enabled && !test else { return }
+        do {
+            _ = try ShareSettings.initialize(options.host)
+            let process = Process(), output = Pipe(), input = Pipe(); process.executableURL = ShareSettings.bin.appendingPathComponent("cursorway-link")
+            process.arguments = [ShareSettings.profile(options.host).path, options.host ? "host" : "receiver", Host.current().localizedName ?? "Mac"]
+            process.standardOutput = output; process.standardError = output; process.standardInput = input
+            link = process; linkOutput = output; linkInput = input; pendingLink.removeAll()
+            output.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
+                let data = handle.availableData; if data.isEmpty { handle.readabilityHandler = nil; return }
+                DispatchQueue.main.async { guard let self = self, let process = process, self.link === process else { return }; self.consume(data, discovery: true) }
+            }
+            process.terminationHandler = { [weak self] process in DispatchQueue.main.async { guard let self = self, self.link === process else { return }; self.stopLink(); self.status.stringValue = "搜尋服務已停止，正在重試…" } }
+            try process.run(); updateControls()
+        } catch { stopLink(); showError(error) }
+    }
+    func send(_ line: String) { guard let process = link, process.isRunning, let input = linkInput else { return }; do { try input.fileHandleForWriting.write(contentsOf: Data((line + "\n").utf8)) } catch { showError(error) } }
+    func endProcess(_ process: Process?) {
+        if let process = process, process.isRunning { process.terminate(); DispatchQueue.global().asyncAfter(deadline: .now() + 2) { if process.isRunning { kill(process.processIdentifier, SIGKILL) } }; process.waitUntilExit() }
+    }
+    func stopLink() {
+        closeConsent(); send("QUIT"); let process = link; link = nil; sentNumbers = nil; hostNumber = nil; hostCell = nil; linkOutput?.fileHandleForReading.readabilityHandler = nil; linkOutput = nil; linkInput = nil
+        endProcess(process); computers.removeAll(); updateControls()
+    }
+    func consume(_ data: Data, discovery: Bool) {
+        if discovery {
+            pendingLink.append(data); while let newline = pendingLink.firstIndex(of: 10) { let line = String(decoding: pendingLink[..<newline], as: UTF8.self); pendingLink.removeSubrange(...newline); linkLine(line) }
+        } else {
+            pendingCore.append(data); while let newline = pendingCore.firstIndex(of: 10) { let line = String(decoding: pendingCore[..<newline], as: UTF8.self); pendingCore.removeSubrange(...newline); log(line) }
+        }
+    }
+    func decoded(_ text: String) -> String { Data(base64Encoded: text).map { String(decoding: $0, as: UTF8.self) } ?? "未知電腦" }
+    func linkLine(_ line: String) {
+        let f = line.components(separatedBy: "\t")
+        if f[0] == "READY" { log("區網搜尋已啟動 · UDP/TCP 24801"); if f.count == 2 { ShareSettings.ownFingerprint = f[1] }; sendTargets(); sentNumbers = ""; sendNumbers(); status.stringValue = options.host ? "正在搜尋接收端…" : "可被搜尋，等待主控端邀請…" }
+        else if f[0] == "DEVICE" && f.count == 6 {
+            computers.removeAll { $0.fingerprint == f[1] }; computers.append(NearbyComputer(fingerprint: f[1], name: decoded(f[2]), address: f[3]))
+        } else if f[0] == "PLATFORM" && f.count == 3 {
+            guard options.platforms[f[1]] != f[2] else { return }
+            options.platforms[f[1]] = f[2]
+            do { try ShareSettings.save(options) } catch { showError(error) }
+            // The swap is written into the host's screen config, so restart the core to apply it.
+            applyHostConfig()
+        } else if f[0] == "GONE" && f.count == 2 { computers.removeAll { $0.fingerprint == f[1] } }
+        else if (f[0] == "SAVED" || f[0] == "PAIRED") && f.count == 3 {
+            // A receiver has one host; a host's new receiver needs the core restarted with the new screen list.
+            // A receiver has one host, so it reconnects; a host adds the new receiver to its running core's config.
+            if f[0] == "PAIRED" && !options.host { stopBackend(); peers.removeAll(); hostNumber = nil; hostCell = nil }
+            if let index = peers.firstIndex(where: { $0.fingerprint == f[1] }) { peers[index].name = decoded(f[2]) } else { peers.append((f[1], decoded(f[2]))) }
+            peersChanged(); applyHostConfig()
+        } else if (f[0] == "REQUEST" || f[0] == "VERIFY") && f.count == 5 { showConsent(f) }
+        else if f[0] == "NUMBER" && (f.count == 3 || f.count == 4) && !options.host && peers.contains(where: { $0.fingerprint == f[1] }), let n = Int(f[2]), (1...9).contains(n) {
+            let d = f.count == 4 ? f[3].split(separator: ",").compactMap { Int($0) } : []
+            hostCell = d.count == 2 && d != [0, 0] && d.allSatisfy({ abs($0) <= ShareGrid.reach }) ? .init(x: -d[0], y: -d[1]) : nil
+            hostNumber = n
+        }
+        else if f[0] == "CLOSED" && f.count == 2 && consentId == f[1] { closeConsent() }
+        else if f[0] == "CONNECT" && f.count == 4 && peers.contains(where: { $0.fingerprint == f[1] }) {
+            if core == nil || (!options.host && connectedAddress != f[3]) { stopBackend(); options.address = f[3]; do { try ShareSettings.save(options); startBackend() } catch { showError(error) } }
+        } else if f[0] == "REMOVED" {
+            if f.count == 2, let p = peers.first(where: { $0.fingerprint == f[1] }) { removedNames[f[1]] = p.name }
+            // A host that keeps other receivers reloads its config so they stay connected; otherwise the core stops.
+            let keepCore = options.host && f.count == 2 && peers.contains { $0.fingerprint != f[1] } && core != nil
+            if !keepCore { stopBackend() }
+            if !options.host { hostNumber = nil; hostCell = nil }
+            if f.count == 2 { peers.removeAll { $0.fingerprint == f[1] }; options.layout[f[1]] = nil } else { peers.removeAll() }
+            peersChanged(); try? ShareSettings.save(options); if peers.isEmpty { peerLabel.stringValue = "已解除配對。" }
+            if keepCore { applyHostConfig() }
+            status.stringValue = !peers.isEmpty ? (keepCore ? "已解除一台；其他電腦維持連線。" : "已解除一台；其餘的會自動重新連線。") : options.host ? "可以選擇接收端重新邀請。" : "等待新的配對邀請。"
+        }
+        else if f[0] == "UNPAIRED" && f.count == 2 {
+            // The receiver removed this host or paired with another one; barrier-link already removed it here (REMOVED came first).
+            // Receiver: its host unpaired it (or no longer knows it), so the pairing here was dropped too.
+            let name = removedNames.removeValue(forKey: f[1]) ?? (options.host ? "接收端" : "主控端")
+            status.stringValue = options.host ? "「\(name)」已解除和這台的配對（或改和其他主控端配對），這裡也已自動解除。" : "主控端「\(name)」已解除配對，這裡也已自動解除。"; log(status.stringValue)
+        }
+        else if f[0] == "UNAVAILABLE" && f.count == 3 && core == nil { status.stringValue = "正在重新尋找並驗證已配對的電腦…"; log(decoded(f[2])) }
+        else if (f[0] == "ERROR" || f[0] == "FATAL") && f.count == 2 { if f[0] == "FATAL" { stopLink() }; status.stringValue = decoded(f[1]); log(status.stringValue) }
+        updateControls()
+    }
+    // Pairing dialog: both computers, the 6-digit code in 3+3 boxes, reject (Enter) or accept.
+    func showConsent(_ message: [String]) {
+        closeConsent(); showWindow(); let id = message[1]; consentId = id
+        let request = message[0] == "REQUEST"
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 440, height: 372), styleMask: [.titled], backing: .buffered, defer: false)
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: 440, height: 372)); view.fill = ShareStyle.card; panel.contentView = view
+        func put(_ v: NSView, _ r: NSRect) { v.frame = r; view.addSubview(v) }
+        func label(_ text: String, _ size: CGFloat, _ weight: NSFont.Weight, _ color: NSColor, _ r: NSRect) {
+            let l = NSTextField(wrappingLabelWithString: text); l.font = .systemFont(ofSize: size, weight: weight); l.textColor = color; l.alignment = .center; put(l, r)
+        }
+        put(ShareComputerMark(), NSRect(x: 150, y: 22, width: 44, height: 44))
+        label("⟷", 18, .regular, ShareStyle.faint, NSRect(x: 198, y: 30, width: 44, height: 26))
+        let other = ShareComputerMark(); other.symbol = "desktopcomputer"; put(other, NSRect(x: 246, y: 22, width: 44, height: 44))
+        label(request ? "收到配對邀請" : "核對配對碼", 19, .bold, ShareStyle.ink, NSRect(x: 24, y: 80, width: 392, height: 26))
+        label("\(decoded(message[2]))\n請確認另一台顯示相同的 6 位數配對碼。", 13, .regular, ShareStyle.muted, NSRect(x: 24, y: 112, width: 392, height: 40))
+        let code = ShareCodeView(); code.code = message[4]; put(code, NSRect(x: 20, y: 162, width: 400, height: 70))
+        label("同意後允許共用鍵盤滑鼠及雙向同步剪貼簿。\n配對會被記住，之後自動連線。", 11, .regular, ShareStyle.faint, NSRect(x: 24, y: 242, width: 392, height: 34))
+        // Enter rejects: agreeing always takes a deliberate click.
+        let reject = NSButton(title: "拒絕", target: self, action: #selector(consentReject)); reject.bezelStyle = .rounded; reject.keyEquivalent = "\r"; put(reject, NSRect(x: 24, y: 304, width: 128, height: 40))
+        let accept = SharePrimaryButton(title: "相同，同意配對", target: self, action: #selector(consentAccept)); put(accept, NSRect(x: 164, y: 304, width: 252, height: 40))
+        consent = panel; updateControls()
+        window.beginSheet(panel) { [weak self] response in
+            guard let self = self, self.consentId == id else { return }; self.consent = nil; self.consentId = nil
+            self.send((response == .OK ? "ACCEPT\t" : "REJECT\t") + id)
+            self.status.stringValue = response == .OK ? "已同意，等待對方確認…" : "已拒絕配對。"; self.updateControls()
+        }
+    }
+    @objc func consentReject() { if let panel = consent { window.endSheet(panel, returnCode: .cancel) } }
+    @objc func consentAccept() { if let panel = consent { window.endSheet(panel, returnCode: .OK) } }
+    func closeConsent() { let panel = consent; consent = nil; consentId = nil; if let panel = panel { window.endSheet(panel, returnCode: .abort); panel.orderOut(nil) } }
+    @objc func forgetPeer() {
+        if peers.count > 1 {
+            // Several receivers: choose one, or all of them.
+            let menu = NSMenu()
+            for p in peers { let item = menu.addItem(withTitle: "解除「\(p.name)」", action: #selector(forgetChosen(_:)), keyEquivalent: ""); item.target = self; item.representedObject = p.fingerprint }
+            menu.addItem(.separator()); let all = menu.addItem(withTitle: "全部解除", action: #selector(forgetChosen(_:)), keyEquivalent: ""); all.target = self
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: forget.bounds.height + 4), in: forget); return
+        }
+        confirmForget("FORGET", "解除後不會自動連線，需要重新邀請並經對方同意。")
+    }
+    @objc func forgetChosen(_ item: NSMenuItem) {
+        if let fp = item.representedObject as? String { confirmForget("FORGET\t" + fp, "解除與「\(peers.first { $0.fingerprint == fp }?.name ?? "")」的配對？") } else { confirmForget("FORGET", "解除所有配對？") }
+    }
+    // Removing one receiver while others stay paired keeps the core running; REMOVED then reloads its config
+    // so the others stay connected. Removing the last one, or all, stops the core first.
+    func forgetNow(_ command: String) {
+        let parts = command.components(separatedBy: "\t")
+        let keepCore = options.host && parts.count == 2 && peers.contains { $0.fingerprint != parts[1] }
+        if !keepCore { stopBackend() }
+        send(command)
+    }
+    func confirmForget(_ command: String, _ question: String) {
+        let alert = NSAlert(); alert.messageText = "解除配對？"; alert.informativeText = question; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "解除")
+        if alert.runModal() == .alertSecondButtonReturn { forgetNow(command) }
+    }
+    // Keeps the screen list, the paired label and the position controls in step with the paired computers.
+    func peersChanged() {
+        ShareSettings.receivers = options.host ? peers.map { $0.fingerprint } : []
+        let names = peers.map { $0.name }
+        if names.count == 1 && options.host {
+            let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
+            let cell = grid.first { $0.0 == ShareSettings.screenName(peers[0].fingerprint) }?.1
+            let words = [ShareSettings.Cell(x: 1, y: 0): "右", ShareSettings.Cell(x: -1, y: 0): "左", ShareSettings.Cell(x: 0, y: -1): "上", ShareSettings.Cell(x: 0, y: 1): "下"]
+            peerLabel.stringValue = cell.flatMap { words[$0] }.map { "滑鼠往\($0)移到 \(names[0])" } ?? "已配對 · \(names[0])"
+        } else if names.count == 1 { peerLabel.stringValue = "已配對主控端 · \(names[0])" }
+        else if names.count > 1 { peerLabel.stringValue = "已配對 \(names.count) 台 · " + names.joined(separator: "、") }
+        else { peerLabel.stringValue = options.host ? "在下方選擇接收端，按「邀請配對」。" : "等待主控端邀請；首次需要你同意。" }
+        if options.host && !options.advanced.clipboard { peerLabel.stringValue += " · 剪貼簿未共用" }
+        updateControls()
+    }
+    // Arrange screens: coloured tiles on a grid, a list of where each one sits, restore/cancel/save.
+    func buildLayout() -> (NSWindow, ShareLayoutView, () -> Bool, ShareRangeTarget, ShareNumberTarget) {
+        let grid = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: options.layout)
+        var placement: [String: ShareSettings.Cell] = [:]
+        for p in peers { if let cell = grid.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { placement[p.fingerprint] = cell } }
+        let colors = Dictionary(uniqueKeysWithValues: peers.enumerated().map { ($0.element.fingerprint, ShareStyle.peer($0.offset)) })
+        let layoutView = ShareLayoutView(names: Dictionary(uniqueKeysWithValues: peers.map { ($0.fingerprint, $0.name) }), placement: placement, blue: blue, order: peers.map { $0.fingerprint }, grid: options.grid ?? ShareGrid()); layoutView.colors = colors
+        let fresh = ShareSettings.cells(options.position, receivers: peers.map { $0.fingerprint }, layout: [:])
+        for p in peers { if let c = fresh.first(where: { $0.0 == ShareSettings.screenName(p.fingerprint) })?.1 { layoutView.center[p.fingerprint] = c } }
+        layoutView.preset = options.preset ?? (options.layout.isEmpty ? "center" : "custom")
+        layoutView.custom = options.custom ?? (layoutView.preset == "custom" ? layoutView.snapshot : nil)
+        let width = layoutView.frame.width + 248, barHeight = SharePresetBar.height(width: width - 48, count: ShareLayoutView.presets.count)
+        let gridY = 76 + barHeight + 48, height = gridY + layoutView.frame.height + 104
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: width, height: height), styleMask: [.titled], backing: .buffered, defer: false); panel.title = "排列螢幕"
+        let view = FlippedView(frame: NSRect(x: 0, y: 0, width: width, height: height)); view.fill = ShareStyle.card; panel.contentView = view
+        let title = NSTextField(labelWithString: "排列螢幕"); title.font = .systemFont(ofSize: 18, weight: .bold); title.frame = NSRect(x: 24, y: 18, width: 300, height: 24); view.addSubview(title)
+        let hint = NSTextField(labelWithString: "先點一個接近的佈局，再拖曳微調；「這台」也可以拖。相鄰的邊就是游標可以移過去的地方。"); hint.textColor = ShareStyle.muted; hint.font = .systemFont(ofSize: 12); hint.frame = NSRect(x: 24, y: 46, width: width - 48, height: 18); view.addSubview(hint)
+        let bar = SharePresetBar(frame: NSRect(x: 24, y: 76, width: width - 48, height: barHeight)); bar.layout = layoutView; view.addSubview(bar)
+        // Columns and rows: − value + for each, limited to 9 × 9.
+        let stepper = ShareGridStepper(); stepper.layout = layoutView
+        let sizeLabels = [NSTextField(labelWithString: ""), NSTextField(labelWithString: "")]
+        var sx: CGFloat = 24
+        for (k, word) in ["欄", "列"].enumerated() {
+            let label = NSTextField(labelWithString: word); label.font = .systemFont(ofSize: 13); label.textColor = ShareStyle.muted; label.frame = NSRect(x: sx, y: 76 + barHeight + 17, width: 20, height: 18); view.addSubview(label)
+            let minus = NSButton(title: "−", target: stepper, action: #selector(ShareGridStepper.step(_:))); minus.tag = k * 2; minus.bezelStyle = .rounded; minus.frame = NSRect(x: sx + 20, y: 76 + barHeight + 12, width: 32, height: 28); view.addSubview(minus)
+            sizeLabels[k].font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold); sizeLabels[k].alignment = .center; sizeLabels[k].frame = NSRect(x: sx + 54, y: 76 + barHeight + 17, width: 20, height: 18); view.addSubview(sizeLabels[k])
+            let plus = NSButton(title: "+", target: stepper, action: #selector(ShareGridStepper.step(_:))); plus.tag = k * 2 + 1; plus.bezelStyle = .rounded; plus.frame = NSRect(x: sx + 76, y: 76 + barHeight + 12, width: 32, height: 28); view.addSubview(plus)
+            minus.toolTip = "減少" + word; plus.toolTip = "增加" + word; sx += 128
+        }
+        let limit = NSTextField(labelWithString: "上限 9 × 9"); limit.font = .systemFont(ofSize: 12); limit.textColor = ShareStyle.faint; limit.frame = NSRect(x: sx, y: 76 + barHeight + 18, width: 120, height: 16); view.addSubview(limit)
+        layoutView.frame.origin = NSPoint(x: 24, y: gridY); view.addSubview(layoutView)
+        // The per-computer list scrolls once several receivers each have their range and number pickers.
+        let listScroll = NSScrollView(frame: NSRect(x: layoutView.frame.maxX + 20, y: gridY, width: 214, height: layoutView.frame.height)); listScroll.drawsBackground = false; listScroll.hasVerticalScroller = true; listScroll.autohidesScrollers = true
+        let list = FlippedView(frame: NSRect(x: 0, y: 0, width: 204, height: layoutView.frame.height)); listScroll.documentView = list; view.addSubview(listScroll)
+        let ranges = ShareRangeTarget(options.edgeRange), numbers = ShareNumberTarget(options.screenNumbers)
+        let warning = NSTextField(wrappingLabelWithString: ""); warning.textColor = ShareStyle.danger; warning.font = .systemFont(ofSize: 12); warning.frame = NSRect(x: 24, y: layoutView.frame.maxY + 10, width: width - 48, height: 32); view.addSubview(warning)
+        let buttonsY = height - 56
+        let cancel = NSButton(title: "取消", target: nil, action: nil); cancel.bezelStyle = .rounded; cancel.keyEquivalent = "\u{1b}"; cancel.frame = NSRect(x: width - 248, y: buttonsY, width: 108, height: 32); view.addSubview(cancel)
+        let save = SharePrimaryButton(title: "儲存", target: nil, action: nil); save.frame = NSRect(x: width - 132, y: buttonsY, width: 108, height: 32); view.addSubview(save)
+        let words = [ShareSettings.Cell(x: 1, y: 0): "右", ShareSettings.Cell(x: -1, y: 0): "左", ShareSettings.Cell(x: 0, y: -1): "上", ShareSettings.Cell(x: 0, y: 1): "下"]
+        var refusal: String?
+        let refresh = { [weak layoutView, weak list, weak warning, weak save, weak bar] in
+            guard let layoutView = layoutView, let list = list else { return }
+            sizeLabels[0].stringValue = String(layoutView.cols); sizeLabels[1].stringValue = String(layoutView.rows); bar?.needsDisplay = true
+            list.subviews.forEach { $0.removeFromSuperview() }
+            var y: CGFloat = 0
+            for (i, p) in self.peers.enumerated() {
+                let dot = NSView(frame: NSRect(x: 0, y: y + 8, width: 12, height: 12)); dot.wantsLayer = true; dot.layer?.cornerRadius = 6; dot.layer?.backgroundColor = ShareStyle.peer(i).cgColor; list.addSubview(dot)
+                let name = NSTextField(labelWithString: p.name); name.font = .systemFont(ofSize: 13, weight: .semibold); name.lineBreakMode = .byTruncatingTail; name.frame = NSRect(x: 20, y: y + 4, width: 184, height: 18); list.addSubview(name)
+                let cell = layoutView.placement[p.fingerprint]
+                let where_ = cell.flatMap { words[$0] }.map { "在這台的\($0)邊" } ?? "經由其他螢幕"
+                let place = NSTextField(labelWithString: where_); place.font = .systemFont(ofSize: 11); place.textColor = ShareStyle.muted; place.lineBreakMode = .byTruncatingTail; place.frame = NSRect(x: 20, y: y + 22, width: 184, height: 16); list.addSubview(place)
+                y += 42
+                // Jump number shown on the card's map and used by Control+Option+N; 1 is this Mac.
+                let assigned = ShareSettings.numbers(self.peers.map { $0.fingerprint }, custom: numbers.numbers)
+                let taken = Set(numbers.numbers.filter { $0.key != p.fingerprint }.values)
+                let number = NSPopUpButton(frame: NSRect(x: 20, y: y - 2, width: 184, height: 24)); number.controlSize = .small; number.font = .systemFont(ofSize: 11); number.autoenablesItems = false
+                number.addItem(withTitle: numbers.numbers[p.fingerprint] == nil ? "號碼：\(assigned[p.fingerprint].map(String.init) ?? "無")（自動）" : "號碼：自動")
+                for n in 2...9 { number.addItem(withTitle: "號碼：\(n)"); number.lastItem?.isEnabled = !taken.contains(n) }
+                number.selectItem(at: numbers.numbers[p.fingerprint].map { $0 - 1 } ?? 0)
+                number.identifier = NSUserInterfaceItemIdentifier(p.fingerprint); number.target = numbers; number.action = #selector(ShareNumberTarget.changed(_:))
+                number.toolTip = "卡片地圖上顯示的號碼；啟用「跳到指定電腦快捷鍵」後按 Control+Option+號碼切到這台"; list.addSubview(number); y += 30
+                // Only a receiver right next to this host shares an edge whose range can be limited.
+                if let c = cell, words[c] != nil {
+                    let horizontal = c.y == 0
+                    let range = NSPopUpButton(frame: NSRect(x: 20, y: y - 2, width: 184, height: 24)); range.controlSize = .small; range.font = .systemFont(ofSize: 11)
+                    range.addItems(withTitles: ["相接：整個邊", horizontal ? "相接：上半段" : "相接：左半段", horizontal ? "相接：下半段" : "相接：右半段"])
+                    range.selectItem(at: ["all", "first", "second"].firstIndex(of: ranges.ranges[p.fingerprint] ?? "all") ?? 0)
+                    range.identifier = NSUserInterfaceItemIdentifier(p.fingerprint); range.target = ranges; range.action = #selector(ShareRangeTarget.changed(_:))
+                    range.toolTip = "兩台螢幕大小不同時，只讓邊的一段可以過去"; list.addSubview(range); y += 30
+                }
+                y += 8
+            }
+            list.frame.size.height = max(y, layoutView.frame.height)
+            let ok = layoutView.reachable()
+            warning?.stringValue = refusal ?? (ok ? "" : "有螢幕和這台連不上。請讓每台都緊鄰這台或其他螢幕。"); save?.isEnabled = ok; refusal = nil
+        }
+        layoutView.onChange = refresh; numbers.onChange = refresh; stepper.report = { refusal = $0; refresh() }
+        var saved = false
+        cancel.target = panel; cancel.action = #selector(NSWindow.close)
+        let closer = ShareModalCloser(panel); save.target = closer; save.action = #selector(ShareModalCloser.accept); cancel.target = closer; cancel.action = #selector(ShareModalCloser.cancel)
+        objc_setAssociatedObject(panel, "closer", [closer, ranges, numbers, stepper], .OBJC_ASSOCIATION_RETAIN)
+        refresh()
+        return (panel, layoutView, { saved = closer.accepted; return saved }, ranges, numbers)
+    }
+    @objc func showLayout() {
+        let (panel, view, accepted, ranges, numbers) = buildLayout()
+        panel.center(); NSApp.runModal(for: panel); panel.orderOut(nil)
+        guard accepted(), view.reachable() else { return }
+        for (fp, cell) in view.placement { options.layout[fp] = [cell.x, cell.y] }
+        let g = view.snapshot; options.grid = ShareGrid(cols: g.cols, rows: g.rows, hostX: g.hostX, hostY: g.hostY); options.preset = view.preset; options.custom = view.custom
+        options.edgeRange = ranges.ranges.filter { $0.value != "all" }; options.screenNumbers = numbers.numbers
+        do { try ShareSettings.save(options); status.stringValue = "已儲存螢幕排列。"; peersChanged(); applyHostConfig() } catch { showError(error) }
+    }
+    // Host: apply new settings without dropping connected receivers. Older cores that never log
+    // "reloaded configuration" within 4 seconds are restarted as before.
+    var reloadTimer: Timer?
+    // Names of receivers just removed, for the UNPAIRED message that follows REMOVED.
+    var removedNames: [String: String] = [:]
+    func applyHostConfig() {
+        guard options.host, core != nil else { return }
+        do {
+            guard try ShareSettings.writeConfig(options) else { return }
+            reloadTimer?.invalidate()
+            reloadTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak self] _ in
+                guard let self = self, self.reloadTimer != nil else { return }
+                self.reloadTimer = nil; self.log("核心沒有自動套用新設定，改為重新啟動。"); self.stopBackend(); self.startBackend()
+            }
+        } catch { stopBackend() }
+    }
+    func startBackend() {
+        guard core == nil && enabled && !test else { return }
+        if !AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: !promptedPermissions] as CFDictionary) {
+            promptedPermissions = true; status.stringValue = "配對已完成；請允許 Cursorway 的「輔助使用」及「輸入監控」，之後會自動連線。"; return
+        }
+        do {
+            let process = try ShareSettings.command(options), output = Pipe(); process.standardOutput = output; process.standardError = output; core = process; corePipe = output; pendingCore.removeAll()
+            output.fileHandleForReading.readabilityHandler = { [weak self, weak process] handle in
+                let data = handle.availableData; if data.isEmpty { handle.readabilityHandler = nil; return }
+                DispatchQueue.main.async { guard let self = self, let process = process, self.core === process else { return }; self.consume(data, discovery: false) }
+            }
+            process.terminationHandler = { [weak self] process in DispatchQueue.main.async { guard let self = self, self.core === process else { return }; self.stopBackend(); self.status.stringValue = "連線暫停，會自動重試；詳情見下方紀錄。" } }
+            try process.run(); connectedAddress = options.address; status.stringValue = "配對已驗證，正在連線…"; updateControls()
+        } catch { stopBackend(); showError(error) }
+    }
+    func stopBackend() { reloadTimer?.invalidate(); reloadTimer = nil; let process = core; core = nil; connections = 0; liveScreens.removeAll(); activeScreen = ShareSettings.hostName; corePipe?.fileHandleForReading.readabilityHandler = nil; corePipe = nil; endProcess(process); updateControls() }
+    func log(_ line: String) {
+        details.string = String((details.string + line + "\n").suffix(20000)); details.scrollToEndOfDocument(nil)
+        if line.contains("reloaded configuration") { reloadTimer?.invalidate(); reloadTimer = nil }
+        if line.contains("connected to server") || line.contains("has connected") { status.stringValue = "已連線 · 雙向複製貼上已啟用"; connections += 1; updateCard() }
+        if line.contains("disconnected from server") || line.contains("has disconnected") { connections = max(0, connections - 1); updateCard() }
+        // Which receivers are up and where the mouse is, from the host core's log: client "X" has (dis)connected, switch from "A" to "B".
+        let quoted = line.components(separatedBy: "\"").enumerated().filter { $0.offset % 2 == 1 }.map { $0.element }
+        if line.contains("has connected"), let n = quoted.first { liveScreens.insert(n); updateCard() }
+        if line.contains("has disconnected"), let n = quoted.first { liveScreens.remove(n); if activeScreen == n { activeScreen = ShareSettings.hostName }; updateCard() }
+        if line.contains("switch from"), quoted.count >= 2 { activeScreen = quoted[1]; updateCard() }
+        let was = transferring
+        if line.contains("file clipboard: sending") { status.stringValue = "正在傳送檔案… 可繼續操作滑鼠與鍵盤"; transferring = true; receiving = false; progress.reset() }
+        if line.contains("file clipboard: receiving") { status.stringValue = "正在接收檔案… 完成後即可貼上"; transferring = true; receiving = true; autoPaste.target = nil; lastProgress = ""; progress.reset() }
+        if transferring, progress.resume(line) {
+            status.stringValue = "續傳中… 從上次中斷的地方繼續"; transferPanel.title.stringValue = receiving ? "續傳接收檔案…" : "續傳送出檔案…"; log("檔案從上次中斷的地方繼續傳送。")
+        }
+        if let moved = progress.describe(line), transferring { status.stringValue = moved; lastProgress = moved; transferPanel.progress(moved) }
+        if line.contains("file clipboard: sent ") { status.stringValue = "檔案已送出 · 可在另一台貼上"; transferring = false }
+        if line.contains("received and verified") {
+            receiving = false; transferring = false
+            if let pid = autoPaste.ready(front: NSWorkspace.shared.frontmostApplication?.processIdentifier) {
+                // The core has already published the files; give the pasteboard a moment before pasting.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.paste(into: pid) }
+                status.stringValue = "已收到檔案並自動貼上"; transferPanel.finish("已收到檔案", detail: "已自動貼上")
+            } else { status.stringValue = "已收到檔案，可在 Finder 資料夾使用 ⌘V 貼上"; transferPanel.finish("已收到檔案", detail: "請在 Finder 資料夾再按一次 ⌘V") }
+        }
+        if line.contains("WARNING") && line.contains("file clipboard:") { status.stringValue = "檔案複製未完成；請查看下方原因。"; transferring = false; receiving = false; autoPaste.target = nil; transferPanel.finish("檔案複製未完成", detail: "詳情見「診斷紀錄」") }
+        if line.contains("server is dead") || line.contains("disconnected") { status.stringValue = "連線中斷，正在自動重連…"; transferring = false; receiving = false; autoPaste.target = nil; transferPanel.finish("連線中斷", detail: "檔案沒有傳完，請重新複製") }
+        if was != transferring { updateControls() }
+    }
+    @objc func showDiagnostics() {
+        if !test {
+            let accessibility = AXIsProcessTrusted(), inputMonitoring = CGPreflightListenEventAccess()
+            let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "未知"
+            let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "未知"
+            log("權限診斷 · 輔助使用：\(accessibility ? "已授權" : "未授權")；輸入監控：\(inputMonitoring ? "已授權" : "未授權")")
+            log("版本 \(ShareApp.versionLabel)\(ShareApp.testCommit.isEmpty ? "" : "，commit " + ShareApp.testCommit)")
+            log("執行版本：\(version)；組建：\(build)；PID：\(ProcessInfo.processInfo.processIdentifier)")
+            log("App 路徑：\(Bundle.main.bundleURL.path)")
+        }
+        if diagnostics == nil {
+            let panel = NSWindow(contentRect:NSRect(x:0,y:0,width:760,height:400),styleMask:[.titled,.closable,.resizable],backing:.buffered,defer:false); panel.title="Cursorway · 診斷紀錄"; panel.delegate=self; panel.isReleasedWhenClosed=false
+            let copyAll = NSButton(title: "全部複製", target: self, action: #selector(copyDiagnostics)); copyAll.bezelStyle = .rounded
+            copyAll.frame = NSRect(x: panel.contentView!.bounds.width - 142, y: 18, width: 120, height: 32); copyAll.autoresizingMask = [.minXMargin, .maxYMargin]; panel.contentView!.addSubview(copyAll)
+            var area = panel.contentView!.bounds.insetBy(dx:18,dy:18); area.origin.y += 42; area.size.height -= 42
+            let scroll=NSScrollView(frame:area); scroll.autoresizingMask=[.width,.height]; scroll.hasVerticalScroller=true; scroll.documentView=details; details.frame=scroll.bounds; panel.contentView!.addSubview(scroll); diagnostics=panel; panel.center()
+        }
+        diagnostics?.makeKeyAndOrderFront(nil)
+    }
+    @objc func clearCache() {
+        guard !enabled && core == nil else { return }
+        let alert = NSAlert(); alert.messageText = "清除尚未貼上的接收檔案暫存？"; alert.informativeText = "已貼到其他資料夾的檔案不受影響。"; alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "清除")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        do {
+            let board = NSPasteboard.general
+            if let urls = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], urls.contains(where: { $0.path.hasPrefix(ShareSettings.root.path + "/") }) { board.clearContents() }
+            for host in [true, false] { for name in ["ClipboardCache", "FileClipboardCache"] { let path = ShareSettings.profile(host).appendingPathComponent(name); if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) } } }
+            status.stringValue = "已清除接收檔案暫存。"
+        } catch { showError(error) }
+    }
+    // While the main window is hidden the app lives only in the menu bar: no Dock icon.
+    @objc func showWindow() { NSApp.setActivationPolicy(.regular); window.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { sender.orderOut(nil); if sender === window { NSApp.setActivationPolicy(.accessory) }; return false }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool { showWindow(); return true }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply { enabled = false; retry?.invalidate(); updateTimer?.invalidate(); stopLink(); stopBackend(); return .terminateNow }
+}
+
+func selfTest(_ directory: URL) throws {
+    NSApp.appearance = NSAppearance(named: .aqua)  // screenshots are compared in light mode; dark is checked separately
+    let fm = FileManager.default; try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+    for name in ["PASS.txt", "FAIL.txt"] { try? fm.removeItem(at: directory.appendingPathComponent(name)) }
+    let scratch = directory.appendingPathComponent("run-" + UUID().uuidString)
+    try fm.createDirectory(at: scratch, withIntermediateDirectories: false)
+    defer { try? fm.removeItem(at: scratch) }
+    ShareSettings.root = scratch.appendingPathComponent("新設定")
+    var options = ShareOptions(); options.host = false; options.address = "192.168.7.4"; options.position = "up"
+    try ShareSettings.save(options); let restored = try ShareSettings.load()
+    guard !restored.host && restored.address == options.address && restored.position == "up" else { throw ShareError.message("Settings roundtrip failed") }
+    for host in [true, false] {
+        let old = scratch.appendingPathComponent(host ? "舊主控" : "舊接收"), profile = old.appendingPathComponent(host ? "profile-server" : "profile")
+        let fingerprint = try ShareSettings.run("cursorway-pair", ["init", profile.path])
+        _ = try ShareSettings.run("cursorway-pair", ["trust", profile.path, host ? "client" : "server", fingerprint])
+        guard try ShareSettings.importPairing(old, host, replace: false), try ShareSettings.initialize(host) == fingerprint, ShareSettings.trusted(host, fingerprint) else { throw ShareError.message("Pairing import failed") }
+        if try ShareSettings.importPairing(old, host, replace: false) { throw ShareError.message("Existing pairing overwritten") }
+    }
+    for direction in ShareSettings.directions {
+        let configuration = try ShareSettings.config(direction), opposite = ["left", "right", "down", "up"][ShareSettings.directions.firstIndex(of: direction)!]
+        if !configuration.contains("\(direction) = windows\n") || !configuration.contains("\(opposite) = windows-host\n") { throw ShareError.message("Invalid screen topology") }
+        if !configuration.contains("= switchInDirection(\(direction))\n") || !configuration.contains("= switchInDirection(\(opposite))\n") || configuration.components(separatedBy: "keystroke").count != 3 { throw ShareError.message("Switch hotkeys missing for \(direction)") }
+    }
+    var full = ShareAdvanced(); full.switchDelay = 250; full.doubleTap = 300; full.corners = true; full.cornerSize = 24; full.swapModifiers = true; full.relativeMouse = true; full.screenSaver = false; full.lockKey = true
+    full.targets = "10.8.0.5, office-pc.local"; full.extra = "# comment\nkeystroke(Control+Alt+F12) = switchToScreen(windows)\n"
+    let fullConfig = try ShareSettings.config("right", full)
+    for expected in [" windows:\n  ctrl = super\n  super = ctrl\n", " switchDelay = 250\n", " switchDoubleTap = 300\n", " switchCorners = all\n switchCornerSize = 24\n", " relativeMouseMoves = true\n", " screenSaverSync = false\n", " keystroke(Control+Alt+L) = lockCursorToScreen(toggle)\n", " keystroke(Control+Alt+F12) = switchToScreen(windows)\nend\n"] where !fullConfig.contains(expected) {
+        throw ShareError.message("Advanced option missing from config: \(expected)")
+    }
+    guard !fullConfig.contains("# comment"), try full.targetList() == "10.8.0.5,office-pc.local" else { throw ShareError.message("Advanced extras were not normalized") }
+    for bad in ["end", "section: links"] { var a = ShareAdvanced(); a.extra = bad; if (try? a.extraLines()) != nil { throw ShareError.message("Section boundary accepted: \(bad)") } }
+    var badTarget = ShareAdvanced(); badTarget.targets = "1.2.3.4 & calc"; if (try? badTarget.targetList()) != nil { throw ShareError.message("Invalid direct address accepted") }
+    var withAdvanced = ShareOptions(); withAdvanced.advanced = full; try ShareSettings.save(withAdvanced)
+    guard try ShareSettings.load().advanced == full else { throw ShareError.message("Advanced settings roundtrip failed") }
+    try Data(#"{"host":false,"address":"192.168.1.9","position":"up"}"#.utf8).write(to: ShareSettings.root.appendingPathComponent("settings.json"))
+    let legacy = try ShareSettings.load(); guard !legacy.host && legacy.position == "up" && legacy.advanced == ShareAdvanced(), legacy.advanced.swapModifiers else { throw ShareError.message("Settings from 0.3.8 did not load") }
+    let fa = "v2:sha256:" + String(repeating: "a", count: 64), fb = "v2:sha256:" + String(repeating: "b", count: 64), fc = "v2:sha256:" + String(repeating: "c", count: 64)
+    var swapped = ShareAdvanced(); swapped.swapModifiers = true
+    let multi = try ShareSettings.config("right", swapped, receivers: [fa, fb, fc], layout: [fb: [0, -1]])
+    let (na, nb, nc) = (ShareSettings.screenName(fa), ShareSettings.screenName(fb), ShareSettings.screenName(fc))
+    let mixed = try ShareSettings.config("right", swapped, receivers: [fa, fb, fc], platforms: [fa: "mac", fb: "windows"])
+    guard !mixed.contains(" \(na):\n  ctrl = super"), mixed.contains(" \(nb):\n  ctrl = super\n"), mixed.contains(" \(nc):\n  ctrl = super\n") else { throw ShareError.message("Ctrl/Command swap applied to a Mac receiver or skipped a Windows/unknown one") }
+    var withPlatform = ShareOptions(); withPlatform.platforms = [fa: "mac"]; try ShareSettings.save(withPlatform)
+    guard try ShareSettings.load().platforms == [fa: "mac"] else { throw ShareError.message("Receiver platforms were not saved") }
+    for expected in [" windows-host:\n  right = \(na)\n  left = \(nc)\n  up = \(nb)\n", " \(na):\n  left = windows-host\n", " \(nb):\n  down = windows-host\n", "section: aliases\n \(na):\n  windows\nend\n", " \(nb):\n  ctrl = super\n  super = ctrl\n", "switchInDirection(up)", "switchInDirection(down)"] where !multi.contains(expected) {
+        throw ShareError.message("Multi-screen config missing: \(expected)")
+    }
+    var withLayout = ShareOptions(); withLayout.layout = [fb: [0, -1], "bad": [9, 9]]; try ShareSettings.save(withLayout)
+    guard try ShareSettings.load().layout == [fb: [0, -1]] else { throw ShareError.message("Screen layout roundtrip failed") }
+    let layout = ShareLayoutView(names: [fa: "書房 Windows", fb: "MacBook Air", fc: "客廳電腦"], placement: [fa: .init(x: 1, y: 0), fb: .init(x: 0, y: -1), fc: .init(x: -1, y: 0)], blue: .systemBlue)
+    // Grid cells: this host at (2,2) of 5x5. Dropping on a computer swaps; the host can move too.
+    guard layout.reachable(), layout.place(fc, .init(x: 4, y: 4)), !layout.reachable(), layout.place(fc, .init(x: 1, y: 2)), layout.reachable(),
+          layout.place(ShareLayoutView.host, .init(x: 3, y: 2)), layout.placement[fa] == .init(x: -1, y: 0), layout.placement[fc] == .init(x: -2, y: 0), layout.reachable(),
+          !layout.place(fa, .init(x: 5, y: 0)), layout.preset == "custom" else { throw ShareError.message("Layout editor rules failed") }
+    // Presets fill the grid for the real receiver count; 自訂 survives looking at other presets.
+    let row = ShareLayoutView.layout("rowL", count: 8), rowCells: [ShareSettings.Cell] = (1...8).map { ShareSettings.Cell(x: $0, y: 0) }
+    guard row.cols == 9, row.rows == 1, row.host == ShareSettings.Cell(x: 0, y: 0), row.cells == rowCells,
+          ShareLayoutView.layout("rowR", count: 8).cells.first == ShareSettings.Cell(x: 7, y: 0), ShareLayoutView.layout("colT", count: 8).rows == 9 else { throw ShareError.message("Preset layouts failed") }
+    for p in ShareLayoutView.presets where p.id != "custom" { for n in 1...8 {
+        let l = ShareLayoutView.layout(p.id, count: n)
+        if l.cells.count != n || l.cols > 9 || l.rows > 9 || Set(l.cells).count != n || l.cells.contains(l.host) { throw ShareError.message("Preset \(p.id) failed for \(n) receivers") }
+    } }
+    let mine = layout.snapshot
+    layout.choose("rowL"); guard layout.cols == 4, layout.rows == 1, layout.placement.values.allSatisfy({ $0.y == 0 && $0.x > 0 }), layout.reachable() else { throw ShareError.message("Row preset failed") }
+    guard layout.resize(cols: 3, rows: 1) != nil, layout.resize(cols: 10, rows: 1) != nil, layout.resize(cols: 4, rows: 2) == nil, layout.preset == "custom" else { throw ShareError.message("Grid resize rules failed") }
+    layout.custom = mine; layout.choose("ring"); layout.choose("custom")
+    guard layout.snapshot == mine else { throw ShareError.message("自訂 layout was not restored") }
+    // A wide row (host + 8 receivers in a line) gives a chained config: each screen links only to its neighbours.
+    let eight = (0..<8).map { String(repeating: String($0), count: 64) }
+    let line = try ShareSettings.config("right", receivers: eight, layout: Dictionary(uniqueKeysWithValues: eight.enumerated().map { ($0.element, [$0.offset + 1, 0]) }))
+    let wide = eight.map(ShareSettings.screenName)
+    var chain = [" windows-host:\n  right = \(wide[0])\n ", " \(wide[0]):\n  right = \(wide[1])\n  left = windows-host\n ", " \(wide[7]):\n  left = \(wide[6])\n"]
+    for i in 1..<7 { chain.append(" \(wide[i]):\n  right = \(wide[i + 1])\n  left = \(wide[i - 1])\n ") }
+    for expected in chain where !line.contains(expected) { throw ShareError.message("Wide row config missing: \(expected)") }
+    var wideOptions = ShareOptions(); wideOptions.layout = [eight[0]: [8, 0]]; wideOptions.grid = ShareGrid(cols: 9, rows: 1, hostX: 0, hostY: 0); wideOptions.preset = "rowL"; wideOptions.custom = ShareGrid(cols: 9, rows: 9, hostX: 4, hostY: 4, layout: [eight[0]: [-4, 4]])
+    try ShareSettings.save(wideOptions); let wideBack = try ShareSettings.load()
+    guard wideBack.layout == wideOptions.layout, wideBack.grid == wideOptions.grid, wideBack.preset == "rowL", wideBack.custom == wideOptions.custom else { throw ShareError.message("Wide layout settings roundtrip failed") }
+    if let dir = ProcessInfo.processInfo.environment["CURSORWAY_WIDE_CONFIG"] { try line.write(toFile: dir, atomically: true, encoding: .utf8) }
+    guard try ShareSettings.config("right").contains(" keystroke(Control+Alt+Right) = switchInDirection(right)\n keystroke(Control+Alt+Left) = switchInDirection(left)\nend\n") else { throw ShareError.message("Hotkey syntax changed") }
+    var meter = ShareProgress(); meter.reset(); let t0 = Date()
+    let first = meter.describe("[2026-11-12T10:00:00] INFO: file clipboard: progress sent 1048576 bytes", now: t0.addingTimeInterval(1))
+    let second = meter.describe("[2026-11-12T10:00:01] INFO: file clipboard: progress received 3145728 bytes", now: t0.addingTimeInterval(2))
+    var again = ShareProgress()
+    guard again.resume("[2026-11-12T10:00:00] INFO: file clipboard: resuming at 3 items, 2097152 bytes", now: t0), again.lastBytes == 2097152,
+          let resumedText = again.describe("INFO: file clipboard: progress received 3145728 bytes", now: t0.addingTimeInterval(1)), resumedText.hasPrefix("續傳中… 已收 3.0 MB"), resumedText.contains("1.0 MB/s"),
+          !again.resume("file clipboard: resuming soon") else { throw ShareError.message("Resume progress parsing failed") }
+    again.reset(); guard !again.resumed else { throw ShareError.message("Resume state survived a new transfer") }
+    guard let a = first, a.contains("1.0 MB"), let b = second, b.hasPrefix("正在接收"), b.contains("3.0 MB"), b.contains("MB/s"), meter.describe("file clipboard: sent 5 bytes") == nil else { throw ShareError.message("Transfer progress parsing failed") }
+    let pop = ShareTransferPanel(target: NSObject(), cancelAction: #selector(NSWindow.orderOut(_:)))
+    pop.begin("正在接收檔案…", showAfter: 0); pop.progress(b)
+    guard pop.panel.isVisible, pop.title.stringValue == "正在接收檔案…", pop.detail.stringValue.contains("3.0 MB"), !pop.cancel.isHidden else { throw ShareError.message("Transfer window did not show progress") }
+    if let content = pop.panel.contentView, let shot = content.bitmapImageRepForCachingDisplay(in: content.bounds) {
+        content.cacheDisplay(in: content.bounds, to: shot); try shot.representation(using: .png, properties: [:])?.write(to: directory.appendingPathComponent("gui-transfer.png"))
+    }
+    pop.finish("已收到檔案", detail: "可在 Finder 資料夾按 ⌘V 貼上")
+    guard pop.title.stringValue == "已收到檔案", pop.cancel.isHidden, !pop.active else { throw ShareError.message("Transfer window did not show the result") }
+    pop.panel.orderOut(nil)
+    var auto = ShareAutoPaste()
+    guard auto.ready(front: 7) == nil else { throw ShareError.message("Pasted without a ⌘V") }
+    auto.pressed(front: 7); auto.pressed(front: 9)
+    guard auto.ready(front: 7) == 7, auto.target == nil else { throw ShareError.message("⌘V during a transfer was not pasted") }
+    auto.pressed(front: 7)
+    guard auto.ready(front: 9) == nil else { throw ShareError.message("Pasted into a different app") }
+    for binary in ["cursorway-server", "cursorway-client"] { if try !ShareSettings.run(binary, ["--help"], allowFailure: true).contains("--file-clipboard") { throw ShareError.message("Missing backend or file clipboard option") } }
+    guard let icon = Bundle.main.url(forResource: "Cursorway", withExtension: "icns"), NSImage(contentsOf: icon) != nil,
+          Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String == "Cursorway.icns" else { throw ShareError.message("Missing app icon") }
+    let base = "https://github.com/sunnylinisme/barrier/releases/tag/"
+    let releases = Data("""
+    [{"tag_name":"windows-v9.0.0","html_url":"\(base)windows-v9.0.0","draft":false,"prerelease":false},
+     {"tag_name":"mac-v0.4.0","html_url":"\(base)mac-v0.4.0","draft":true,"prerelease":false},
+     {"tag_name":"mac-v0.3.9","html_url":"\(base)mac-v0.3.9","draft":false,"prerelease":false},
+     {"tag_name":"mac-v0.3.10","html_url":"https://example.com/elsewhere","draft":false,"prerelease":false},
+     {"tag_name":"mac-v0.3.8","html_url":"\(base)mac-v0.3.8","draft":false,"prerelease":false},
+     {"tag_name":"v0.5.0","html_url":"\(base)v0.5.0","draft":true,"prerelease":false},
+     {"tag_name":"v0.3.11","html_url":"\(base)v0.3.11","draft":false,"prerelease":false}]
+    """.utf8)
+    guard let found = ShareUpdate.newer(releases, current: [0, 3, 4]), found.version == "0.3.11", found.url.absoluteString.hasSuffix("/v0.3.11") else { throw ShareError.message("Update selection ignored platform, draft or origin rules") }
+    guard let legacy = ShareUpdate.newer(Data(String(decoding: releases, as: UTF8.self).replacingOccurrences(of: "\"v0.3.11\"", with: "\"x0.3.11\"").utf8), current: [0, 3, 4]), legacy.url.absoluteString.hasSuffix("/mac-v0.3.9") else { throw ShareError.message("Update selection dropped legacy Mac releases") }
+    // After the rename the release pages live under /cursorway/.
+    let renamed = Data(String(decoding: releases, as: UTF8.self).replacingOccurrences(of: "/barrier/releases/tag/v0.3.11", with: "/cursorway/releases/tag/v0.3.11").utf8)
+    guard ShareUpdate.newer(renamed, current: [0, 3, 4])?.url.absoluteString == "https://github.com/sunnylinisme/cursorway/releases/tag/v0.3.11" else { throw ShareError.message("Renamed repository release ignored") }
+    let capital = Data(String(decoding: renamed, as: UTF8.self).replacingOccurrences(of: "/cursorway/", with: "/Cursorway/").utf8)
+    guard ShareUpdate.newer(capital, current: [0, 3, 4])?.url.absoluteString == "https://github.com/sunnylinisme/Cursorway/releases/tag/v0.3.11" else { throw ShareError.message("Capitalised repository release ignored") }
+    // 關於 links to the project and shows no commit.
+    let about = ShareApp.aboutOptions()
+    guard (about[.credits] as? NSAttributedString)?.string == "https://github.com/sunnylinisme/Cursorway", (about[.version] as? String) == "",
+          !((about[.applicationVersion] as? String) ?? "").contains(ShareApp.testCommit.isEmpty ? "\u{0}" : ShareApp.testCommit) else { throw ShareError.message("About panel wrong") }
+    // Settings folder: BarrierShare moves to Cursorway with its contents; an existing Cursorway is never overwritten.
+    let support = directory.appendingPathComponent("support", isDirectory: true); try? FileManager.default.removeItem(at: support)
+    try FileManager.default.createDirectory(at: support.appendingPathComponent("BarrierShare/profile/SSL", isDirectory: true), withIntermediateDirectories: true)
+    try Data("pem".utf8).write(to: support.appendingPathComponent("BarrierShare/profile/SSL/Barrier.pem"))
+    guard ShareSettings.folder(in: support).lastPathComponent == "BarrierShare", ShareSettings.migrateRoot(in: support).lastPathComponent == "Cursorway",
+          (try? String(contentsOf: support.appendingPathComponent("Cursorway/profile/SSL/Barrier.pem"), encoding: .utf8)) == "pem",
+          !FileManager.default.fileExists(atPath: support.appendingPathComponent("BarrierShare").path) else { throw ShareError.message("Settings folder not moved to Cursorway") }
+    try FileManager.default.createDirectory(at: support.appendingPathComponent("BarrierShare", isDirectory: true), withIntermediateDirectories: true)
+    guard ShareSettings.migrateRoot(in: support).lastPathComponent == "Cursorway", FileManager.default.fileExists(atPath: support.appendingPathComponent("BarrierShare").path),
+          (try? String(contentsOf: support.appendingPathComponent("Cursorway/profile/SSL/Barrier.pem"), encoding: .utf8)) == "pem" else { throw ShareError.message("Existing Cursorway folder was overwritten") }
+    try FileManager.default.removeItem(at: support)
+    // An old "Barrier Share.app" beside the new Cursorway.app is moved to the Trash; other apps are left alone.
+    let apps = directory.appendingPathComponent("apps", isDirectory: true); try? FileManager.default.removeItem(at: apps)
+    try FileManager.default.createDirectory(at: apps.appendingPathComponent("Barrier Share.app/Contents", isDirectory: true), withIntermediateDirectories: true)
+    try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "com.example.other"], format: .xml, options: 0).write(to: apps.appendingPathComponent("Barrier Share.app/Contents/Info.plist"))
+    guard ShareApp.retireOldApp(apps, running: Bundle.main.bundleURL) == nil, FileManager.default.fileExists(atPath: apps.appendingPathComponent("Barrier Share.app").path) else { throw ShareError.message("Retired an unrelated app") }
+    try FileManager.default.removeItem(at: apps)
+    guard ShareUpdate.newer(releases, current: [0, 3, 11]) == nil, ShareUpdate.newer(Data("{\"message\":\"rate limited\"}".utf8), current: [0, 0, 0]) == nil else { throw ShareError.message("Update reported without a newer release") }
+    NSApp.finishLaunching()
+    let app = ShareApp(test: true); app.buildWindow(); app.options.host = true; app.role.selectItem(at: 0); try app.refreshRole()
+    guard let trayIcon = app.tray?.button?.image, trayIcon.size == NSSize(width: 18, height: 18), !trayIcon.isTemplate else { throw ShareError.message("Menu bar icon is not the 18 pt app icon") }
+    _ = app.windowShouldClose(app.window)
+    guard NSApp.activationPolicy() == .accessory, !app.window.isVisible else { throw ShareError.message("Closing the window left the Dock icon") }
+    app.showWindow()
+    guard NSApp.activationPolicy() == .regular, app.window.isVisible else { throw ShareError.message("Opening the window did not restore the Dock icon") }
+    guard let edit = NSApp.mainMenu?.items.compactMap({ $0.submenu }).first(where: { $0.title == "編輯" }),
+          edit.items.contains(where: { $0.keyEquivalent == "a" && $0.action == #selector(NSText.selectAll(_:)) }),
+          edit.items.contains(where: { $0.keyEquivalent == "c" && $0.action == #selector(NSText.copy(_:)) }) else { throw ShareError.message("Edit menu lacks ⌘A / ⌘C") }
+    let trayTest = NSMenu(); app.menuNeedsUpdate(trayTest)
+    let trayTitles = trayTest.items.map { $0.title }
+    for expected in ["開啟視窗", "排列螢幕…", "進階設定…", "登入時自動啟動", "診斷紀錄", "檢查更新", "結束"] where !trayTitles.contains(expected) { throw ShareError.message("Menu bar item missing: \(expected)") }
+    let peer = "v2:sha256:" + String(repeating: "a", count: 64), name = Data("另一台電腦".utf8).base64EncodedString()
+    app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.2\t24801\tR")
+    app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.3\t24801\tR")
+    guard app.computers.count == 1 && app.computers[0].address == "192.168.1.3" else { throw ShareError.message("Discovery list update failed") }
+    app.linkLine("SAVED\t\(peer)\t\(name)")
+    app.linkLine("VERIFY\ttest-request\t\(name)\t\(peer)\t123456")
+    RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+    func snapshot(_ view: NSView?, _ file: String) throws {
+        guard let view = view, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ShareError.message("Cannot render \(file)") }
+        view.layoutSubtreeIfNeeded(); view.displayIfNeeded(); view.cacheDisplay(in: view.bounds, to: bitmap)
+        try bitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent(file))
+    }
+    guard let pairing = app.consent?.contentView, pairing.subviews.contains(where: { ($0 as? ShareCodeView)?.code == "123456" }) else { throw ShareError.message("Missing pairing dialog or code") }
+    try snapshot(pairing, "gui-pairing.png")
+    app.linkLine("CLOSED\ttest-request")
+    guard app.consent == nil && app.consentId == nil else { throw ShareError.message("Expired pairing dialog remained open") }
+    app.linkLine("GONE\t\(peer)"); guard app.computers.isEmpty else { throw ShareError.message("Offline peer remained listed") }
+    // Render the available-peer state without starting any input capture or network service.
+    app.link = Process(); app.peers.removeAll(); app.peersChanged(); app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.3\t24801\tR")
+    for (i, n) in ["客廳電腦", "MacBook Air", "書房 Windows"].enumerated() {
+        let fp = "v2:sha256:" + String(repeating: String(i + 1), count: 64)
+        app.linkLine("DEVICE\t\(fp)\t\(Data(n.utf8).base64EncodedString())\t192.168.1.\(10 + i)\t24801\tR"); app.linkLine("PLATFORM\t\(fp)\t\(i == 1 ? "mac" : "windows")")
+    }
+    app.status.stringValue = "找到附近電腦，可以發出配對邀請"
+    guard app.nearbyList.subviews.count == 4, app.emptyNearby.isHidden, app.nearbyCount.stringValue == "4 台尚未配對" else { throw ShareError.message("Nearby list did not show four computers") }
+    let firstRow = app.nearbyList.subviews.first
+    app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.3\t24801\tR"); app.status.stringValue = "狀態更新"; app.updateControls()
+    guard app.nearbyList.subviews.first === firstRow else { throw ShareError.message("Unchanged discovery rebuilt the nearby list (flicker)") }
+    app.filter.stringValue = "zzz"; app.rebuildNearby()
+    guard app.emptyNearby.stringValue == "找不到符合的電腦" else { throw ShareError.message("Search box did not filter the list") }
+    app.filter.stringValue = ""; app.rebuildNearby()
+    RunLoop.current.run(until: Date().addingTimeInterval(0.3)); app.window.displayIfNeeded()
+    guard let view = app.window.contentView, let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { throw ShareError.message("Cannot render window") }
+    view.cacheDisplay(in: view.bounds, to: bitmap)
+    guard let image = bitmap.representation(using: .png, properties: [:]) else { throw ShareError.message("Cannot render PNG") }
+    try image.write(to: directory.appendingPathComponent("gui-mac.png"))
+    // 外觀: three choices; dark repaints the window and is saved, then the test goes back to light.
+    guard app.appearanceMenu().items.map({ $0.title }) == ["跟隨系統", "淺色", "深色"], app.appearanceMenu().items[0].state == .on || app.options.appearance != "system" else { throw ShareError.message("Appearance menu wrong") }
+    let darkItem = app.appearanceMenu().items[2]; app.chooseAppearance(darkItem)
+    guard app.options.appearance == "dark", NSApp.appearance?.name == .darkAqua else { throw ShareError.message("Dark appearance not applied") }
+    RunLoop.current.run(until: Date().addingTimeInterval(0.3)); app.window.displayIfNeeded()
+    let darkBitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds)!; view.cacheDisplay(in: view.bounds, to: darkBitmap)
+    guard let darkPixel = darkBitmap.colorAt(x: 4, y: 4)?.usingColorSpace(.sRGB), darkPixel.redComponent < 0.2 else { throw ShareError.message("Window not dark: \(String(describing: darkBitmap.colorAt(x: 4, y: 4)))") }
+    try darkBitmap.representation(using: .png, properties: [:])!.write(to: directory.appendingPathComponent("gui-mac-dark.png"))
+    app.options.appearance = "light"; app.applyAppearance(); RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    app.showUpdate(found); RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    guard !app.banner.isHidden, app.bannerText.stringValue.contains("0.3.11") else { throw ShareError.message("Update banner did not show") }
+    try snapshot(app.window.contentView, "gui-mac-update.png")
+    guard app.bannerRepo.title == "github.com/sunnylinisme/Cursorway", app.bannerNotes.title == "查看更新內容", app.bannerButton.title == (found.zip != nil && ShareUpdater.canInstall ? "更新" : "下載更新") else { throw ShareError.message("Update banner source line or button wrong") }
+    // Background update: the Mac ZIP comes only from this repository, and is checked by size and SHA-256.
+    let zipJSON = #"[{"tag_name":"v0.3.30","html_url":"https://github.com/sunnylinisme/Cursorway/releases/tag/v0.3.30","draft":false,"prerelease":false,"assets":[{"name":"Cursorway-Setup-0.3.30-x64.exe","size":3,"browser_download_url":"https://github.com/sunnylinisme/Cursorway/releases/download/v0.3.30/Cursorway-Setup-0.3.30-x64.exe"},{"name":"Cursorway-0.3.30-macos-arm64.zip","size":3,"digest":"sha256:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD","browser_download_url":"https://github.com/sunnylinisme/Cursorway/releases/download/v0.3.30/Cursorway-0.3.30-macos-arm64.zip"}]}]"#
+    guard let withZip = ShareUpdate.newer(Data(zipJSON.utf8), current: [0, 3, 20]), let zip = withZip.zip, zip.size == 3, zip.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", zip.url.lastPathComponent == "Cursorway-0.3.30-macos-arm64.zip" else { throw ShareError.message("Mac update ZIP not found in the release") }
+    guard ShareUpdate.newer(Data(zipJSON.replacingOccurrences(of: "https://github.com/sunnylinisme/Cursorway/releases/download/", with: "https://example.com/").utf8), current: [0, 3, 20])?.zip == nil else { throw ShareError.message("Update ZIP from another site was accepted") }
+    let sample = FileManager.default.temporaryDirectory.appendingPathComponent("cursorway-update-test.bin"); try Data("abc".utf8).write(to: sample)
+    guard ShareUpdater.verify(sample, zip) == nil, ShareUpdater.verify(sample, ShareUpdate.Zip(url: zip.url, size: 3, sha256: String(repeating: "0", count: 64))) == "檔案校驗不符", ShareUpdater.verify(sample, ShareUpdate.Zip(url: zip.url, size: 4, sha256: nil)) == "檔案大小不符" else { throw ShareError.message("Update file check wrong") }
+    try? FileManager.default.removeItem(at: sample)
+    let syntax = Process(); syntax.executableURL = URL(fileURLWithPath: "/bin/sh"); syntax.arguments = ["-n", "-c", ShareUpdater.script]; try syntax.run(); syntax.waitUntilExit()
+    guard syntax.terminationStatus == 0 else { throw ShareError.message("Update install script has a syntax error") }
+    // The install script swaps the app and cleans up, or puts the old app back and leaves a note for the next launch.
+    func runScript(_ old: URL, _ new: URL, _ status: URL, _ work: URL) throws {
+        let run = Process(); run.executableURL = URL(fileURLWithPath: "/bin/sh"); run.environment = ["CURSORWAY_UPDATE_NO_OPEN": "1", "PATH": "/usr/bin:/bin"]
+        run.arguments = ["-c", ShareUpdater.script, "cursorway-update", "999999", old.path, new.path, status.path, work.path]; try run.run(); run.waitUntilExit()
+    }
+    let swap = FileManager.default.temporaryDirectory.appendingPathComponent("cursorway-swap-test"); try? FileManager.default.removeItem(at: swap)
+    let oldApp = swap.appendingPathComponent("Apps/Cursorway.app"), work = swap.appendingPathComponent("work"), newApp = work.appendingPathComponent("Cursorway.app"), status = swap.appendingPathComponent("failed.txt")
+    try FileManager.default.createDirectory(at: oldApp, withIntermediateDirectories: true); try Data("old".utf8).write(to: oldApp.appendingPathComponent("v"))
+    try FileManager.default.createDirectory(at: newApp, withIntermediateDirectories: true); try Data("new".utf8).write(to: newApp.appendingPathComponent("v"))
+    try runScript(oldApp, newApp, status, work)
+    guard (try? String(contentsOf: oldApp.appendingPathComponent("v"), encoding: .utf8)) == "new", !FileManager.default.fileExists(atPath: work.path), !FileManager.default.fileExists(atPath: oldApp.path + ".previous"), !FileManager.default.fileExists(atPath: status.path) else { throw ShareError.message("Update swap did not replace the app or clean up") }
+    try runScript(oldApp, swap.appendingPathComponent("missing.app"), status, work)
+    guard (try? String(contentsOf: oldApp.appendingPathComponent("v"), encoding: .utf8)) == "new", FileManager.default.fileExists(atPath: status.path) else { throw ShareError.message("Failed update swap did not restore the app and leave a note") }
+    app.reportFailedUpdate(status)
+    guard !FileManager.default.fileExists(atPath: status.path) else { throw ShareError.message("Failed update note was not cleared") }
+    try? FileManager.default.removeItem(at: swap)
+    if ShareUpdater.signer(Bundle.main.bundleURL) != nil, let mine = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+        guard ShareUpdater.check(Bundle.main.bundleURL, version: mine) == nil, ShareUpdater.check(Bundle.main.bundleURL, version: "0.0.1") == "版本不符" else { throw ShareError.message("Update signature check rejected this app") }
+    }
+    app.showUpdate(withZip); RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+    guard app.bannerButton.title == (ShareUpdater.canInstall ? "更新" : "下載更新") else { throw ShareError.message("Background update button wrong") }
+    app.showProgress(1048576, 4194304)
+    guard app.bannerText.stringValue == "下載新版中 25%（1.0 / 4.0 MB）· 可以繼續使用" else { throw ShareError.message("Update progress text wrong: " + app.bannerText.stringValue) }
+    try snapshot(app.window.contentView, "gui-mac-update-progress.png")
+    app.updateFound = nil; app.showUpdate(found)
+    app.dismissUpdate(); app.showUpdate(found)
+    guard app.banner.isHidden else { throw ShareError.message("Dismissed update banner came back for the same version") }
+    // Paired receiver: badge, summary and the arrange editor and advanced settings.
+    app.linkLine("SAVED\t\(peer)\t\(name)"); app.connections = 1; app.updateControls()
+    // Paired but not yet up: one state everywhere (badge 等待中, title waiting, the map tile dashed).
+    guard app.badge.text == "等待中", app.map.tiles.map({ $0.number ?? "" }) == ["1", "2"], app.map.tiles[1].placeholder, !app.allButton.isHidden, app.allButton.title == "全部電腦（2）"
+    else { throw ShareError.message("Waiting card wrong: \(app.badge.text) / \(app.map.tiles.map { $0.number ?? "" }) / \(app.allButton.title)") }
+    let screen = ShareSettings.screenName(peer)
+    app.log("NOTE: client \"\(screen)\" has connected")
+    guard app.badge.text == "已連線", app.status.stringValue == "滑鼠在這台 Mac", app.peerLabel.stringValue.hasPrefix("已連線 1 台"), !app.map.tiles[1].placeholder, app.map.tiles[0].active
+    else { throw ShareError.message("Connected card wrong: \(app.badge.text) / \(app.status.stringValue) / \(app.peerLabel.stringValue)") }
+    app.log("INFO: switch from \"windows-host\" to \"\(screen)\" at 1919,500")
+    guard app.status.stringValue == "正在控制 \(app.decoded(name))", app.map.tiles[1].active, !app.map.tiles[0].active else { throw ShareError.message("Active screen not shown: \(app.status.stringValue) \(app.map.tiles.map { "\($0.number ?? "")\($0.active)" })") }
+    guard app.cardEntries().count == 2, (app.allComputersView().subviews.first as? NSScrollView)?.documentView?.subviews.count == 2 else { throw ShareError.message("全部電腦 list wrong") }
+    try snapshot(app.allComputersView(), "gui-all-computers.png")
+    // Paired computers no longer repeat in the nearby list.
+    app.linkLine("DEVICE\t\(peer)\t\(name)\t192.168.1.9\t24801\tx")
+    guard app.computers.contains(where: { $0.fingerprint == peer }), app.nearbyList.subviews.count == app.computers.filter({ $0.fingerprint != peer }).count else { throw ShareError.message("Paired computer still listed under nearby") }
+    // Jump numbers: chosen ones first, the rest fill the free numbers in pairing order; hotkeys follow.
+    let (jA, jB, jC) = ("v2:sha256:" + String(repeating: "a", count: 64), "v2:sha256:" + String(repeating: "b", count: 64), "v2:sha256:" + String(repeating: "c", count: 64))
+    guard ShareSettings.numbers([jA, jB, jC], custom: [jC: 5, jB: 2]) == [jB: 2, jA: 3, jC: 5] else { throw ShareError.message("Jump numbering wrong") }
+    // The host tells each receiver its number; a receiver shows the one from its own host only.
+    app.options.screenNumbers = [peer: 4]
+    guard app.numbersLine().hasPrefix("NUMBERS\t\(peer)=4/") else { throw ShareError.message("NUMBERS line wrong: \(app.numbersLine())") }
+    app.options.host = false; app.hostNumber = nil; app.updateCard()
+    guard app.map.tiles[0].label == nil, app.map.tiles[0].tip == "號碼由主控端決定" else { throw ShareError.message("Receiver guessed a number") }
+    app.linkLine("NUMBER\tv2:sha256:\(String(repeating: "d", count: 64))\t6"); guard app.hostNumber == nil else { throw ShareError.message("NUMBER from an unpaired host accepted") }
+    app.linkLine("NUMBER\t\(peer)\t3\t-1,0"); guard app.map.tiles[1].cell == .init(x: 1, y: 0) else { throw ShareError.message("Host not drawn opposite the receiver") }
+    guard app.hostNumber == 3, app.map.tiles[0].label == "3" else { throw ShareError.message("Receiver number not shown") }
+    try snapshot(app.map, "gui-receiver-number.png")
+    app.options.host = true; app.options.screenNumbers = [:]; app.hostNumber = nil; app.hostCell = nil
+    // A receiver that paired with another host: the old host drops it and says why; it shows up as nearby again.
+    let movedName = app.decoded(name); let peersBefore = app.peers
+    app.linkLine("REMOVED\t\(peer)"); app.linkLine("UNPAIRED\t\(peer)")
+    guard !app.peers.contains(where: { $0.fingerprint == peer }), app.status.stringValue == "「\(movedName)」已解除和這台的配對（或改和其他主控端配對），這裡也已自動解除。" else { throw ShareError.message("UNPAIRED not shown: \(app.status.stringValue)") }
+    app.rebuildNearby(); guard app.nearbyList.subviews.count == app.computers.count else { throw ShareError.message("Unpaired receiver not back in nearby list") }
+    app.peers = peersBefore; app.peersChanged()
+    // 解除 one of several receivers keeps the core (and so the other receivers' connections) running.
+    let fakeCore = Process(); app.core = fakeCore; app.peers = [(peer, "A"), ("v2:sha256:" + String(repeating: "e", count: 64), "B")]
+    app.forgetNow("FORGET\t\(peer)"); guard app.core === fakeCore else { throw ShareError.message("Forgetting one of two receivers stopped the core") }
+    app.peers = [(peer, "A")]; app.forgetNow("FORGET\t\(peer)"); guard app.core == nil else { throw ShareError.message("Forgetting the last receiver kept the core") }
+    app.peers = peersBefore; app.peersChanged()
+    // Receiver: its host unpaired it.
+    app.options.host = false; app.linkLine("REMOVED\t\(peer)"); app.linkLine("UNPAIRED\t\(peer)")
+    guard app.peers.isEmpty, app.status.stringValue == "主控端「\(movedName)」已解除配對，這裡也已自動解除。" else { throw ShareError.message("Receiver UNPAIRED not shown: \(app.status.stringValue)") }
+    app.options.host = true; app.peers = peersBefore; app.peersChanged()
+    var keys = ShareAdvanced(); keys.directKeys = true
+    let numbered = try ShareSettings.config("right", keys, receivers: [jA, jB], numbers: [jB: 7])
+    guard numbered.contains(" keystroke(Control+Alt+7) = switchToScreen(\(ShareSettings.screenName(jB)))\n"), numbered.contains(" keystroke(Control+Alt+2) = switchToScreen(\(ShareSettings.screenName(jA)))\n"), numbered.contains(" keystroke(Control+Alt+KP_7) = switchToScreen(\(ShareSettings.screenName(jB)))\n") else { throw ShareError.message("Custom jump numbers not in config") }
+    app.log("NOTE: client \"\(screen)\" has disconnected")
+    guard app.badge.text == "等待中", !app.status.stringValue.hasPrefix("正在控制"), app.map.tiles[1].placeholder else { throw ShareError.message("Disconnect not shown: \(app.badge.text) / \(app.status.stringValue)") }
+    app.log("NOTE: client \"\(screen)\" has connected")
+    try snapshot(app.window.contentView, "gui-mac-paired.png")
+    let (layoutPanel, layoutView, _, _, _) = app.buildLayout()
+    guard layoutView.reachable(), !layoutView.place(peer, .init(x: 2, y: 2)) || !layoutView.reachable() else { throw ShareError.message("Arrange editor rules failed") }
+    layoutView.choose("center"); try snapshot(layoutPanel.contentView, "gui-arrange.png")
+    layoutView.choose("rowL"); try snapshot(layoutPanel.contentView, "gui-arrange-row.png"); layoutView.choose("center")
+    let (advancedPanel, readAdvanced, _, complain) = app.buildAdvanced(ShareAdvanced())
+    guard readAdvanced() == ShareAdvanced() else { throw ShareError.message("Advanced settings did not round-trip the defaults") }
+    // 手動位址: an invalid entry is named in red under the box (no dialog) and typing hides it again.
+    var wrong = ShareAdvanced(); wrong.targets = "10.8.0.5, bad&name"
+    do { _ = try wrong.targetList(); throw ShareError.message("Invalid manual address accepted") } catch let e as ShareError where e.localizedDescription == "「bad&name」不是有效的 IP 位址或電腦名稱" {}
+    complain("「bad&name」不是有效的 IP 位址或電腦名稱")
+    let advancedDoc = (advancedPanel.contentView?.subviews.first as? NSScrollView)?.documentView
+    func findViews<T: NSView>(_ v: NSView?, _ t: T.Type) -> [T] { guard let v = v else { return [] }; return v.subviews.compactMap { $0 as? T } + v.subviews.flatMap { findViews($0, t) } }
+    guard let errorLine = findViews(advancedDoc, NSTextField.self).first(where: { $0.textColor == ShareStyle.danger }), !errorLine.isHidden, errorLine.stringValue.contains("bad&name") else { throw ShareError.message("Manual address error not shown under the box") }
+    guard let addressBox = findViews(advancedDoc, NSTextView.self).first(where: { $0.accessibilityLabel() == "手動位址" }) else { throw ShareError.message("Manual address box missing") }
+    try snapshot(advancedDoc, "gui-advanced-address-error.png")
+    addressBox.insertText("x", replacementRange: NSRange(location: 0, length: 0)); RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+    guard errorLine.isHidden else { throw ShareError.message("Manual address error stayed after typing") }
+    addressBox.string = ""
+    try snapshot(advancedPanel.contentView, "gui-advanced.png")
+    // Buttons keep at least 20 pt from the bottom edge of every window.
+    func bottomMargin(_ root: NSView?, _ file: String) throws {
+        guard let root = root else { throw ShareError.message("No view for \(file)") }
+        let lowest = root.subviews.filter { $0 is NSButton && !$0.isHidden }.map { root.isFlipped ? root.bounds.height - $0.frame.maxY : $0.frame.minY }.min() ?? .infinity
+        if lowest < 20 { throw ShareError.message("\(file): a button is only \(Int(lowest)) pt from the bottom edge") }
+    }
+    try bottomMargin(advancedPanel.contentView, "advanced settings"); try bottomMargin(layoutPanel.contentView, "arrange screens")
+    try bottomMargin(app.body, "main window")
+    try snapshot((advancedPanel.contentView?.subviews.first as? NSScrollView)?.documentView, "gui-advanced-all.png")
+    // Original Barrier features: each setting writes its line into the host's screen config.
+    var features = ShareAdvanced(); features.directKeys = true; features.broadcastKey = true; features.capsLockFix = true; features.preserveFocus = true
+    features.clipboard = false; features.switchNeeds = "control"
+    let fx = "v2:sha256:" + String(repeating: "e", count: 64), nx = ShareSettings.screenName(fx)
+    let featureConfig = try ShareSettings.config("right", features, receivers: [fx], edgeRange: [fx: "first"])
+    for expected in [" clipboardSharing = false\n", " switchNeedsControl = true\n", " keystroke(Control+Alt+B) = keyboardBroadcast(toggle)\n",
+                     " keystroke(Control+Alt+1) = switchToScreen(windows-host)\n", " keystroke(Control+Alt+2) = switchToScreen(\(nx))\n",
+                     " \(nx):\n  ctrl = super\n  super = ctrl\n  halfDuplexCapsLock = true\n", " windows-host:\n  preserveFocus = true\n",
+                     "  right(0,50) = \(nx)\n", "  left = windows-host(0,50)\n"] where !featureConfig.contains(expected) {
+        throw ShareError.message("Feature config missing: \(expected)")
+    }
+    guard try ShareSettings.config("right").contains(" clipboardSharing = true\n"), !(try ShareSettings.config("right")).contains("switchNeeds") else { throw ShareError.message("Feature defaults changed the config") }
+    var receiverOptions = ShareOptions(); receiverOptions.host = false; receiverOptions.address = "192.168.1.5"; receiverOptions.advanced.wheelScale = 150; receiverOptions.advanced.wheelInvert = true
+    guard let wheelArgs = try ShareSettings.command(receiverOptions).arguments, wheelArgs.contains("--wheel-invert"), let at = wheelArgs.firstIndex(of: "--wheel-scale"), wheelArgs[at + 1] == "150" else { throw ShareError.message("Receiver wheel arguments missing") }
+    guard try ShareSettings.run("cursorway-client", ["--help"], allowFailure: true).contains("--wheel-scale") else { throw ShareError.message("Core lacks --wheel-scale") }
+    app.window.orderOut(nil); NSStatusBar.system.removeStatusItem(app.tray)
+    try "PASS: both pairing roles, saved IP/position, four screen directions, bundled backends, native GUI render, update notice selection, switch hotkeys and transfer progress".write(to: directory.appendingPathComponent("PASS.txt"), atomically: true, encoding: .utf8)
+}
+
+signal(SIGPIPE, SIG_IGN)
+let application = NSApplication.shared
+application.setActivationPolicy(.regular)
+if CommandLine.arguments.count == 3 && CommandLine.arguments[1] == "--self-test" {
+    let path = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
+    do { try selfTest(path); exit(0) }
+    catch { try? FileManager.default.createDirectory(at: path, withIntermediateDirectories: true); try? error.localizedDescription.write(to: path.appendingPathComponent("FAIL.txt"), atomically: true, encoding: .utf8); fputs(error.localizedDescription + "\n", stderr); exit(1) }
+}
+let delegate = ShareApp()
+application.delegate = delegate
+application.run()

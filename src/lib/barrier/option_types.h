@@ -55,6 +55,8 @@ static const OptionID    kOptionModifierMapForAltGr        = OPTION_CODE("MMFG")
 static const OptionID    kOptionModifierMapForMeta        = OPTION_CODE("MMFM");
 static const OptionID    kOptionModifierMapForSuper        = OPTION_CODE("MMFR");
 static const OptionID    kOptionHeartbeat                = OPTION_CODE("HART");
+// Cursorway: the server can resume an interrupted file clipboard transfer (older peers ignore it).
+static const OptionID    kOptionFileResume               = OPTION_CODE("FRSM");
 static const OptionID    kOptionScreenSwitchCorners        = OPTION_CODE("SSCM");
 static const OptionID    kOptionScreenSwitchCornerSize    = OPTION_CODE("SSCS");
 static const OptionID    kOptionScreenSwitchDelay        = OPTION_CODE("SSWT");

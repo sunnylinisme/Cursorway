@@ -19,6 +19,8 @@
 #include "client/Client.h"
 
 #include "client/ServerProxy.h"
+#include "barrier/App.h"
+#include "barrier/ClientArgs.h"
 #include "barrier/Screen.h"
 #include "barrier/FileChunk.h"
 #include "barrier/DropHelper.h"
@@ -43,6 +45,14 @@
 #include <sstream>
 #include <stdexcept>
 #include <fstream>
+#include <cstdlib>
+
+namespace {
+// End-to-end tests run the host and the receiver on one machine with one clipboard: the receiver
+// must neither claim nor report it, or the two would keep taking it from each other. Data the host
+// sends is still put on the clipboard.
+bool sharedClipboardTest() { static const bool on = std::getenv("CURSORWAY_TEST_SHARED_CLIPBOARD") != nullptr; return on; }
+}
 
 //
 // Client
@@ -283,7 +293,7 @@ Client::setClipboard(ClipboardID id, const IClipboard* clipboard)
 void
 Client::grabClipboard(ClipboardID id)
 {
-    m_screen->grabClipboard(id);
+    if (!sharedClipboardTest()) m_screen->grabClipboard(id);
     m_ownClipboard[id]  = false;
     m_sentClipboard[id] = false;
 }
@@ -340,6 +350,14 @@ Client::mouseRelativeMove(SInt32 dx, SInt32 dy)
 void
 Client::mouseWheel(SInt32 xDelta, SInt32 yDelta)
 {
+    // Receiver-side wheel settings (Barrier Share 進階設定 › 這台當接收端時).
+    if (auto args = dynamic_cast<const ClientArgs*>(&App::instance().argsBase())) {
+        if (args->m_wheelScale != 100) {
+            xDelta = static_cast<SInt32>(static_cast<long long>(xDelta) * args->m_wheelScale / 100);
+            yDelta = static_cast<SInt32>(static_cast<long long>(yDelta) * args->m_wheelScale / 100);
+        }
+        if (args->m_wheelInvert) { xDelta = -xDelta; yDelta = -yDelta; }
+    }
     m_screen->mouseWheel(xDelta, yDelta);
 }
 
@@ -559,6 +577,7 @@ Client::cleanupConnection()
 void
 Client::cleanupScreen()
 {
+    m_active = false;
     if (m_server != NULL) {
         if (m_ready) {
             m_screen->disable();
@@ -660,7 +679,7 @@ Client::handleShapeChanged(const Event&, void*)
 void
 Client::handleClipboardGrabbed(const Event& event, void*)
 {
-    if (!m_enableClipboard) {
+    if (!m_enableClipboard || sharedClipboardTest()) {
         return;
     }
 
@@ -827,4 +846,9 @@ void
 Client::sendDragInfo(UInt32 fileCount, std::string& info, size_t size)
 {
     m_server->sendDragInfo(fileCount, info.c_str(), size);
+}
+
+void Client::startNativeFile(std::shared_ptr<const barrier::NativeFile> file)
+{
+    if (m_active) m_screen->startNativeFile(file);
 }

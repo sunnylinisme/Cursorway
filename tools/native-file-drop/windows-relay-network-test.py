@@ -1,0 +1,259 @@
+"""cursorway-relay with a simulated host and two real receiver cores (user and system roles).
+
+The host must see one connection the whole time while the relay switches the input between the
+cores, a core is killed and comes back, and the clipboard goes only to the user core. A key held
+when the input moves to the other core must not stay pressed."""
+import ctypes
+import hashlib
+import pathlib
+import queue
+import select
+import socket
+import ssl
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from ctypes import wintypes
+
+binary = pathlib.Path(sys.argv[1]).resolve()
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+def report(kind, value, trace):
+    import traceback
+    print("::error title=Relay::" + "%0A".join("".join(traceback.format_exception(kind, value, trace)).splitlines()[-12:]), flush=True)
+    sys.__excepthook__(kind, value, trace)
+sys.excepthook = report
+user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+
+def cursor():
+    point = wintypes.POINT(); user32.GetPhysicalCursorPos(ctypes.byref(point)); return point.x, point.y
+
+
+def wait(check, what, seconds=10):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        value = check()
+        if value: return value
+        time.sleep(.05)
+    raise AssertionError(what)
+
+
+def windows_clipboard():
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.GetClipboardData.restype = wintypes.HANDLE; kernel32.GlobalLock.restype = ctypes.c_void_p; kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    if not user32.OpenClipboard(None): return None
+    try:
+        handle = user32.GetClipboardData(13)
+        if not handle: return None
+        pointer = kernel32.GlobalLock(handle)
+        try: return ctypes.wstring_at(pointer)
+        finally: kernel32.GlobalUnlock(handle)
+    finally: user32.CloseClipboard()
+
+
+def set_windows_clipboard(text):
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]; kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.restype = ctypes.c_void_p; kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]; kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    wait(lambda: user32.OpenClipboard(None), "cannot open the clipboard", 3)
+    try:
+        data = (text + "\0").encode("utf-16-le"); handle = kernel32.GlobalAlloc(2, len(data)); pointer = kernel32.GlobalLock(handle)
+        ctypes.memmove(pointer, data, len(data)); kernel32.GlobalUnlock(handle); user32.EmptyClipboard()
+        assert user32.SetClipboardData(13, handle), "SetClipboardData failed"
+    finally: user32.CloseClipboard()
+
+
+def set_windows_files(paths):
+    """CF_HDROP with the given files, as Explorer's Copy puts it."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]; kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.restype = ctypes.c_void_p; kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]; kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    names = ("\0".join(str(p) for p in paths) + "\0\0").encode("utf-16-le")
+    data = struct.pack("<IiiII", 20, 0, 0, 0, 1) + names
+    wait(lambda: user32.OpenClipboard(None), "cannot open the clipboard", 3)
+    try:
+        handle = kernel32.GlobalAlloc(2, len(data)); pointer = kernel32.GlobalLock(handle)
+        ctypes.memmove(pointer, data, len(data)); kernel32.GlobalUnlock(handle); user32.EmptyClipboard()
+        assert user32.SetClipboardData(15, handle), "SetClipboardData(CF_HDROP) failed"
+    finally: user32.CloseClipboard()
+
+
+class Host:
+    """The simulated host: accepts the relay, answers keep-alives in the background.
+
+    One SSL object must not be used from two threads at once, so one thread does all the socket I/O:
+    send() only queues, and that thread writes the queue, sends a keep-alive every second and reads."""
+    def __init__(self, connection):
+        self.wire = connection; self.wire.settimeout(10); self.outbox = queue.Queue(); self.inbox = []; self.alive = True; self.buffer = bytearray()
+        self.wire.sendall(self.frame(b"Barrier" + struct.pack("!HH", 1, 6)))
+        message = None
+        while message is None:
+            part = self.wire.recv(65536)
+            if not part: raise RuntimeError("relay disconnected from the host")
+            self.buffer.extend(part); message = self.take()
+        assert message.startswith(b"Barrier"), message
+        self.send(b"QINF")
+        threading.Thread(target=self.io, daemon=True).start()
+    @staticmethod
+    def frame(message): return struct.pack("!I", len(message)) + message
+    def send(self, message): self.outbox.put(self.frame(message))
+    def take(self):
+        if len(self.buffer) < 4: return None
+        size, = struct.unpack("!I", self.buffer[:4])
+        if len(self.buffer) < 4 + size: return None
+        message = bytes(self.buffer[4:4 + size]); del self.buffer[:4 + size]; return message
+    def io(self):
+        raw = self.wire; alive_at = 0.0
+        try:
+            while self.alive:
+                if time.monotonic() >= alive_at: self.outbox.put(self.frame(b"CALV")); alive_at = time.monotonic() + 1
+                raw.settimeout(None)
+                while not self.outbox.empty(): raw.sendall(self.outbox.get())
+                if raw.pending() or select.select([raw], [], [], .02)[0]:
+                    raw.settimeout(0)
+                    try: part = raw.recv(65536)
+                    except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError): continue
+                    if not part: raise RuntimeError("relay disconnected from the host")
+                    self.buffer.extend(part)
+                    while True:
+                        message = self.take()
+                        if message is None: break
+                        if message != b"CALV": self.inbox.append(message)
+        except Exception as error:
+            if self.alive: self.inbox.append(b"DROPPED " + str(error).encode())
+    def until(self, code, seconds=10):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            for i, m in enumerate(self.inbox):
+                assert not m.startswith(b"DROPPED"), m
+                if m.startswith(code): del self.inbox[i]; return m
+            time.sleep(.02)
+        raise AssertionError("host did not get " + code.decode())
+
+
+with tempfile.TemporaryDirectory(prefix="cursorway-relay-") as temporary:
+    root = pathlib.Path(temporary); processes = []
+    try:
+        def pair(*args): return subprocess.check_output([str(binary / "cursorway-pair.exe"), *map(str, args)], text=True).strip()
+        profiles = {name: root / name for name in ("host", "relay", "user", "system")}
+        fp = {name: pair("init", path) for name, path in profiles.items()}
+        pair("trust", profiles["relay"], "server", fp["host"])
+        for core in ("user", "system"): pair("trust", profiles[core], "server", fp["relay"])
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER); context.verify_mode = ssl.CERT_REQUIRED; context.verify_flags = 0
+        context.load_cert_chain(profiles["host"] / "SSL/Barrier.pem"); context.load_verify_locations(profiles["relay"] / "SSL/Barrier.pem")
+        listener = socket.socket(); listener.bind(("127.0.0.1", 0)); listener.listen(4); listener.settimeout(30)
+        host_port = listener.getsockname()[1]
+        relay_log = root / "relay.log"
+        relay = subprocess.Popen([str(binary / "cursorway-relay.exe"), "--profile", str(profiles["relay"]), "--host", "127.0.0.1:%d" % host_port, "--listen", "0",
+                                  "--user-core", fp["user"], "--system-core", fp["system"], "--name", "windows", "--log", str(relay_log)],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8")
+        processes.append(relay)
+        first = relay.stdout.readline().strip(); assert first.startswith("listening on 127.0.0.1:"), first
+        relay_port = int(first.rsplit(":", 1)[1])
+        threading.Thread(target=lambda: [None for _ in relay.stdout], daemon=True).start()
+        def route(to): relay.stdin.write("ROUTE " + to + "\n"); relay.stdin.flush()
+        def core(name, clipboard):
+            log = root / (name + ".log")
+            args = [str(binary / "cursorway-client.exe"), "-f", "--no-tray", "--debug", "DEBUG", "--profile-dir", str(profiles[name]), "--log", str(log), "--name", "windows"]
+            if clipboard: args.append("--file-clipboard")
+            p = subprocess.Popen(args + ["127.0.0.1:%d" % relay_port], stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT); processes.append(p); return p, log
+        def log_text(path): return path.read_text(errors="replace") if path.exists() else ""
+        user, user_log = core("user", True)
+        system, system_log = core("system", False)
+        peer, _ = listener.accept(); listener.settimeout(1)
+        host = Host(context.wrap_socket(peer, server_side=True))
+        assert hashlib.sha256(host.wire.getpeercert(binary_form=True)).hexdigest() == fp["relay"].split(":", 2)[2], "relay showed another identity"
+        info = host.until(b"DINF"); host.send(b"CIAK"); host.send(b"CROP")
+        # The host must see the user desktop's real shape, or it cannot tell when the pointer leaves an edge.
+        shape = struct.unpack("!hhhh", info[4:12]); metrics = tuple(user32.GetSystemMetrics(i) for i in (76, 77, 78, 79))
+        assert shape == metrics, "the host was given the shape %r, the desktop is %r" % (shape, metrics)
+        host.send(b"DSOP" + struct.pack("!I", 2) + b"CLPS" + struct.pack("!I", 1))
+        assert host.until(b"FCAP") == b"FCAP" + struct.pack("!I", 2), "the user core's file clipboard did not reach the host"
+        host.send(b"FCAP" + struct.pack("!I", 2))
+        wait(lambda: "ready" in log_text(relay_log) and log_text(relay_log).count(" ready") >= 2, "both cores did not get ready", 15)
+        # 1. The user core has the input.
+        host.send(b"CINN" + struct.pack("!hhIH", 60, 60, 1, 0))
+        host.send(b"DMMV" + struct.pack("!hh", 120, 130)); wait(lambda: abs(cursor()[0] - 120) <= 1 and abs(cursor()[1] - 130) <= 1, "the user core did not move the pointer")
+        wait(lambda: "entering screen" in log_text(user_log), "the user core was not entered")
+        assert "entering screen" not in log_text(system_log), "the system core got input while the user desktop was active"
+        # 2. Text from the host reaches the Windows clipboard through the user core only.
+        text = "Cursorway relay ✓"; data = text.encode(); blob = struct.pack("!III", 1, 0, len(data)) + data
+        def string(value): return struct.pack("!I", len(value)) + value
+        for mark, body in ((1, str(len(blob)).encode()), (2, blob), (3, b"")): host.send(b"DCLP" + struct.pack("!BIB", 0, 7, mark) + string(body))
+        time.sleep(1); wait(lambda: windows_clipboard() == text, "text from the host did not reach the clipboard", 5)
+        assert "clipboard was updated" not in log_text(system_log), "the system core got the clipboard"
+        # 2b. A large transfer while the pointer keeps moving: the relay's writes to the core back up and are
+        # retried with a grown buffer; the connections must stay (a file drag dropped the host link in 0.3.34).
+        big = ("Cursorway " * 300000).encode(); blob = struct.pack("!III", 1, 0, len(big)) + big
+        # As a real host sends it: the data in 32 KB DCLP chunks (one message may not exceed the core's limit).
+        chunks = [(1, str(len(blob)).encode())] + [(2, blob[i:i + 32768]) for i in range(0, len(blob), 32768)] + [(3, b"")]
+        for n, (mark, body) in enumerate(chunks):
+            host.send(b"DCLP" + struct.pack("!BIB", 0, 8, mark) + string(body))
+            if n % 10 == 0: host.send(b"DMMV" + struct.pack("!hh", 100 + n % 100, 100))
+        host.send(b"DMMV" + struct.pack("!hh", 222, 233)); wait(lambda: abs(cursor()[0] - 222) <= 1 and abs(cursor()[1] - 233) <= 1, "the pointer stopped after a large transfer", 15)
+        assert "disconnected" not in log_text(relay_log), log_text(relay_log)
+        # 2c. Windows -> host: a copy on Windows grabs the clipboard at once; the text follows when the input leaves.
+        host.inbox[:] = [m for m in host.inbox if not m.startswith(b"CCLP") and not m.startswith(b"DCLP")]
+        outgoing = "from Windows ✓ %d" % time.time_ns(); set_windows_clipboard(outgoing)
+        host.until(b"CCLP", 10)
+        host.send(b"COUT"); deadline = time.monotonic() + 10; data = b""
+        while outgoing.encode() not in data:
+            assert time.monotonic() < deadline, "the Windows clipboard did not reach the host when the input left: %r" % data[-200:]
+            try: data += host.until(b"DCLP", max(.1, deadline - time.monotonic()))
+            except AssertionError: pass
+        host.send(b"CINN" + struct.pack("!hhIH", 60, 60, 2, 0))
+        # 2d. Windows -> host files: copied on Windows, streamed to the host (FC*) when the input leaves.
+        payload = hashlib.sha256(b"cursorway").digest() * 40000; source = root / "從 Windows 複製.bin"; source.write_bytes(payload)
+        set_windows_files([source]); time.sleep(.5)
+        host.send(b"COUT"); digest = hashlib.sha256(); received = 0; transfer = None; counter = 0; done = False; deadline = time.monotonic() + 30
+        while not done:
+            assert time.monotonic() < deadline, "the file from Windows did not reach the host (%d of %d bytes)" % (received, len(payload))
+            message = next((m for m in list(host.inbox) if m[:2] == b"FC" and m[:4] not in (b"FCAP", b"FCAK")), None)
+            if message is None: time.sleep(.02); continue
+            host.inbox.remove(message); kind = message[:4]
+            assert kind not in (b"FCNO", b"FCAB"), "the file transfer was rejected: %r" % message[:200]
+            if kind == b"FCBG": transfer, = struct.unpack_from("!I", message, 4)
+            elif kind == b"FCEN":
+                _, _, length = struct.unpack_from("!IBI", message, 4); assert message[13:13 + length].decode() == source.name, message[:200]
+            elif kind == b"FCHK": length, = struct.unpack_from("!I", message, 8); digest.update(message[12:12 + length]); received += length
+            elif kind == b"FCDN": done = True
+            host.send(b"FCAK" + struct.pack("!II", transfer or 0, counter))
+            if not done: counter += 1
+        assert received == len(payload) and digest.digest() == hashlib.sha256(payload).digest(), "the file from Windows arrived damaged (%d bytes)" % received
+        host.send(b"CINN" + struct.pack("!hhIH", 60, 60, 3, 0))
+        # 3. Shift held on the host; the input moves to the system core: Shift must not stay down.
+        host.send(b"DKDN" + struct.pack("!HHH", 0xEFE1, 0, 42)); time.sleep(.3)
+        assert user32.GetAsyncKeyState(0x10) & 0x8000, "the user core did not press Shift"
+        started = time.monotonic(); route("system")
+        wait(lambda: "entering screen" in log_text(system_log), "the system core was not entered after the switch")
+        switched = time.monotonic() - started
+        wait(lambda: not user32.GetAsyncKeyState(0x10) & 0x8000, "Shift stayed pressed after the switch", 3)
+        host.send(b"DKUP" + struct.pack("!HHH", 0xEFE1, 0, 42))
+        host.send(b"DMMV" + struct.pack("!hh", 300, 310)); wait(lambda: abs(cursor()[0] - 300) <= 1 and abs(cursor()[1] - 310) <= 1, "the system core did not move the pointer")
+        # 4. The system core dies and comes back; the host connection stays.
+        system.kill(); system.wait(); system, system_log2 = core("system", False)
+        wait(lambda: log_text(relay_log).count("system core ready") >= 2, "the restarted system core did not get ready", 15)
+        host.send(b"DMMV" + struct.pack("!hh", 410, 420)); wait(lambda: abs(cursor()[0] - 410) <= 1 and abs(cursor()[1] - 420) <= 1, "the restarted system core did not get the input")
+        # The route goes over the relay's stdin, the input over the network: wait for the switch.
+        switches = log_text(relay_log).count("route: user desktop"); route("user")
+        wait(lambda: log_text(relay_log).count("route: user desktop") > switches, "the relay did not switch back to the user core")
+        host.send(b"DMMV" + struct.pack("!hh", 500, 510)); wait(lambda: abs(cursor()[0] - 500) <= 1 and abs(cursor()[1] - 510) <= 1, "the user core did not get the input back")
+        # 5. One connection from the relay the whole time.
+        try: listener.accept(); raise AssertionError("the relay connected to the host a second time")
+        except socket.timeout: pass
+        assert not any(m.startswith(b"DROPPED") for m in host.inbox), host.inbox
+        print("::notice title=Relay::input moved to the other core in %.2f s; one host connection throughout" % switched)
+        print("PASS: one host connection while the input moved between the cores, a core restarted, the clipboard went only to the user core and no key stayed pressed")
+        host.alive = False
+    except Exception:
+        for path in [root / "relay.log", root / "user.log", root / "system.log"]:
+            if path.exists(): print("==", path.name); print(path.read_text(errors="replace")[-4000:]); print("::error title=" + str(path.name) + "::" + "%0A".join(path.read_text(encoding="utf-8", errors="replace")[-2500:].replace("%", "%25").splitlines()), flush=True)
+        raise
+    finally:
+        for p in processes:
+            if p.poll() is None: p.kill()
+        for p in processes: p.wait()

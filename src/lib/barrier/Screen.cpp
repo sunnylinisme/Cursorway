@@ -189,8 +189,8 @@ Screen::screensaver(bool activate)
 void
 Screen::keyDown(KeyID id, KeyModifierMask mask, KeyButton button)
 {
-    // check for ctrl+alt+del emulation
-    if (id == kKeyDelete &&
+    // check for ctrl+alt+del emulation; the keypad's Del (or "." on keyboards without Num Lock, like a Mac's) counts too
+    if ((id == kKeyDelete || id == kKeyKP_Delete || id == kKeyKP_Decimal) &&
         (mask & (KeyModifierControl | KeyModifierAlt)) ==
                 (KeyModifierControl | KeyModifierAlt)) {
         LOG((CLOG_DEBUG "emulating ctrl+alt+del press"));
@@ -563,3 +563,7 @@ Screen::leaveSecondary()
 }
 
 }
+
+std::string barrier::Screen::nativeDraggingPath() { return m_screen->nativeDraggingPath(); }
+bool barrier::Screen::cancelNativeSourceDrag() { return m_screen->cancelNativeSourceDrag(); }
+void barrier::Screen::startNativeFile(std::shared_ptr<const NativeFile> file) { m_screen->startNativeFile(file); }

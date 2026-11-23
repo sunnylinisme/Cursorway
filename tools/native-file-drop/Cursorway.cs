@@ -967,6 +967,32 @@ sealed class ShareCode : Control
             }
     }
 }
+// A sliding on/off switch drawn in place of a check box (same Checked/CheckedChanged), matching the Mac app and Windows 11 settings.
+sealed class ShareSwitch : CheckBox
+{
+    bool hover;
+    public ShareSwitch() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); Cursor = Cursors.Hand; }
+    protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+    protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics; g.Clear(BackColor); g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        float scale = DeviceDpi / 96F; int th = (int)Math.Round(20 * scale), tw = (int)Math.Round(36 * scale), ty = (Height - th) / 2;
+        var track = new Rectangle(1, ty, tw, th);
+        Color fill = !Enabled ? ShareStyle.DisabledFill : Checked ? (hover ? ShareStyle.BlueHover : ShareStyle.Blue) : (hover ? ShareStyle.PressFill : ShareStyle.Border);
+        using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
+            path.AddArc(track.X, track.Y, th, th, 90, 180); path.AddArc(track.Right - th, track.Y, th, th, 270, 180); path.CloseFigure();
+            using (var b = new SolidBrush(fill)) g.FillPath(b, path);
+            if (Focused && ShowFocusCues) using (var pen = new Pen(ShareStyle.Blue, Math.Max(1F, scale))) { var r = track; r.Inflate(2, 2); g.DrawRectangle(pen, r); }
+        }
+        int pad = Math.Max(2, (int)Math.Round(2 * scale)), knob = th - pad * 2, kx = Checked ? track.Right - pad - knob : track.X + pad;
+        using (var shade = new SolidBrush(Color.FromArgb(40, 0, 0, 0))) g.FillEllipse(shade, kx, ty + pad + 1, knob, knob);
+        using (var white = new SolidBrush(Enabled ? Color.White : ShareStyle.Card)) g.FillEllipse(white, kx, ty + pad, knob, knob);
+        if (Text.Length > 0) TextRenderer.DrawText(g, Text, Font, new Rectangle(track.Right + (int)(10 * scale), 0, Width - track.Right - (int)(10 * scale), Height), Enabled ? ForeColor : ShareStyle.DisabledText, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+    }
+}
 sealed class ShareWindow : Form
 {
     readonly ShareComboBox role = new ShareComboBox(), position = new ShareComboBox();
@@ -1030,7 +1056,7 @@ sealed class ShareWindow : Form
     // Asks before a role change drops live connections; the self-test answers it without a dialog.
     internal Func<string, string, bool> Confirm;
     bool balloonOpensUpdate, manualUpdateCheck, closing, loading = true, enabled = true, discoveryReady, started, transferring, keepServiceCore;
-    readonly CheckBox autostart = new CheckBox();
+    readonly CheckBox autostart = new ShareSwitch();
     readonly ShareProgress progress = new ShareProgress();
     ShareTransferPopup popup;
     readonly ShareAutoPaste autoPaste = new ShareAutoPaste();
@@ -2135,7 +2161,7 @@ sealed class ShareWindow : Form
             control.Location = new Point(W - 14 - control.Width, rowY + (h - control.Height) / 2); control.AccessibleName = title; group.Controls.Add(control);
             rowY += h; group.Height = rowY + 1; y = group.Bottom;
         };
-        Func<bool, CheckBox> check = value => new CheckBox { Checked = value, BackColor = Color.White, Size = new Size(20, 20) };
+        Func<bool, CheckBox> check = value => new ShareSwitch { Checked = value, BackColor = Color.White, Size = new Size(40, 24) };
         Func<int[], Func<int, string>, int, ShareComboBox> choice = (values, label, current) => {
             var list = values.ToList(); if (!list.Contains(current)) { list.Add(current); list.Sort(); }
             var box = new ShareComboBox { Font = new Font(Font.FontFamily, 9.5F), Size = new Size(132, 30), Tag = list };

@@ -776,9 +776,6 @@ sealed class ShareSegment : Control
     protected override void OnMouseDown(MouseEventArgs e) { Focus(); for (int i = 0; i < options.Length; ++i) if (Part(i).Contains(e.Location)) Selected = i; base.OnMouseDown(e); }
     protected override bool IsInputKey(Keys key) { return key == Keys.Left || key == Keys.Right || base.IsInputKey(key); }
     protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Left) Selected = selected - 1; if (e.KeyCode == Keys.Right) Selected = selected + 1; base.OnKeyDown(e); }
-    bool keyboardFocus;
-    protected override void OnKeyUp(KeyEventArgs e) { keyboardFocus = true; Invalidate(); base.OnKeyUp(e); }
-    protected override void OnMouseDown(MouseEventArgs e) { keyboardFocus = false; base.OnMouseDown(e); }
     protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
     protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
     protected override AccessibleObject CreateAccessibilityInstance() { return new SegmentAccessible(this); }
@@ -977,6 +974,9 @@ sealed class ShareSwitch : CheckBox
     public ShareSwitch() { SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true); Cursor = Cursors.Hand; }
     protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
     protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
+    bool keyboardFocus;
+    protected override void OnKeyUp(KeyEventArgs e) { keyboardFocus = true; Invalidate(); base.OnKeyUp(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { keyboardFocus = false; base.OnMouseDown(e); }
     protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
     protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
     protected override void OnPaint(PaintEventArgs e)

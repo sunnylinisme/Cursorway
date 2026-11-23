@@ -86,15 +86,19 @@ class Host:
         self.wire = connection; self.wire.settimeout(10); self.lock = threading.Lock(); self.inbox = []; self.alive = True
         self.send(b"Barrier" + struct.pack("!HH", 1, 6))
         hello = self.exact_message(); assert hello.startswith(b"Barrier"), hello
-        self.send(b"QINF")
+        self.send(b"QINF"); self.wire.settimeout(.05)
         threading.Thread(target=self.reader, daemon=True).start()
         threading.Thread(target=self.keepalive, daemon=True).start()
     def send(self, message):
         with self.lock: self.wire.sendall(struct.pack("!I", len(message)) + message)
     def exact(self, size):
+        # One SSL object must not be read and written from two threads at once (the reader against
+        # send()): that is what dropped this link now and then. Read under the send lock, a little at a time.
         data = bytearray()
         while len(data) < size:
-            part = self.wire.recv(size - len(data))
+            with self.lock:
+                try: part = self.wire.recv(size - len(data))
+                except (socket.timeout, TimeoutError): continue
             if not part: raise RuntimeError("relay disconnected from the host")
             data.extend(part)
         return bytes(data)

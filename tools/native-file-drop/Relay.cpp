@@ -316,6 +316,7 @@ int main(int argc, char** argv) {
     if (profile.empty() || relay.hostAddress.empty() || relay.screenName.empty() || relay.userFp.empty()) { std::fprintf(stderr, "usage: see Relay.cpp\n"); return 2; }
     WSADATA wsa; WSAStartup(MAKEWORD(2, 2), &wsa);
     relay.context = SSL_CTX_new(TLS_method());
+    if (relay.context) SSL_CTX_set_min_proto_version(relay.context, TLS1_2_VERSION);
     // The outgoing buffer grows while a write waits (a file on the way): a retried SSL_write may see
     // it moved or longer. Without these modes OpenSSL fails the retry and the connection drops.
     SSL_CTX_set_mode(relay.context, SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_ENABLE_PARTIAL_WRITE);

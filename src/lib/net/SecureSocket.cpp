@@ -407,8 +407,9 @@ SecureSocket::initContext(bool server)
     SSL_METHOD* m = const_cast<SSL_METHOD*>(method);
     m_ssl->m_context = SSL_CTX_new(m);
 
-    // drop SSLv3 support
+    // TLS 1.2 or newer only
     SSL_CTX_set_options(m_ssl->m_context, SSL_OP_NO_SSLv3);
+    SSL_CTX_set_min_proto_version(m_ssl->m_context, TLS1_2_VERSION);
 
     if (m_ssl->m_context == NULL) {
         showError("");

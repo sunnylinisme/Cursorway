@@ -391,7 +391,7 @@ static void network(State& state, const std::string& testTarget) {
     std::thread worker;
     std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context(nullptr, SSL_CTX_free);
     try {
-        context.reset(SSL_CTX_new(TLS_method())); require(context != nullptr, "Cannot initialize TLS");
+        context.reset(SSL_CTX_new(TLS_method())); require(context != nullptr, "Cannot initialize TLS"); SSL_CTX_set_min_proto_version(context.get(), TLS1_2_VERSION);
         SSL_CTX_set_min_proto_version(context.get(), TLS1_2_VERSION);
         // Self-signed identities are authorized only after matching TLS-bound codes or saved pins.
         SSL_CTX_set_verify(context.get(), SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, [](int, X509_STORE_CTX*) { return 1; });

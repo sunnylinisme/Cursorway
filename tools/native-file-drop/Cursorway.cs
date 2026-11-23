@@ -1082,10 +1082,10 @@ sealed class ShareWindow : Form
         banner.Dock = DockStyle.Top; banner.Height = 56; banner.BackColor = ShareStyle.Tint; banner.Visible = false;
         bannerText.ForeColor = ShareStyle.BlueInk; bannerText.TextAlign = ContentAlignment.MiddleLeft; bannerText.Font = new Font(Font.FontFamily,10F); bannerText.AutoEllipsis = true; bannerText.Bounds = new Rectangle(24,6,520,24);
         // Second line: where the update comes from, and this release's notes on GitHub.
-        bannerSource.Text = "來源：github.com/sunnylinisme/Cursorway · 查看更新內容"; bannerSource.LinkArea = new LinkArea(bannerSource.Text.Length - 6, 6);
+        bannerSource.Text = "來源：github.com/sunnylinisme/Cursorway · 查看更新內容"; bannerSource.Links.Clear(); bannerSource.Links.Add(3, 33, "repo"); bannerSource.Links.Add(bannerSource.Text.Length - 6, 6, "notes");
         bannerSource.BackColor = ShareStyle.Tint; bannerSource.ForeColor = ShareStyle.Muted; bannerSource.Font = new Font(Font.FontFamily,9F); bannerSource.TextAlign = ContentAlignment.MiddleLeft; bannerSource.Bounds = new Rectangle(24,30,520,20);
         bannerSource.LinkBehavior = LinkBehavior.HoverUnderline; bannerSource.LinkColor = ShareStyle.Blue; bannerSource.ActiveLinkColor = ShareStyle.Blue; bannerSource.VisitedLinkColor = ShareStyle.Blue;
-        bannerSource.LinkClicked += delegate { OpenUpdate(); };
+        bannerSource.LinkClicked += (s, e) => { if ((e.Link.LinkData as string) == "repo") { try { Process.Start(new ProcessStartInfo(ShareWindow.Project) { UseShellExecute = true }); } catch (Exception x) { Error(x); } } else OpenUpdate(); };
         bannerDownload.Text = "下載更新"; bannerDownload.BackColor = ShareStyle.Tint; bannerDownload.Font = new Font(Font.FontFamily,10F); bannerDownload.Bounds = new Rectangle(560,13,104,30);
         bannerClose.Text = "✕"; bannerClose.BackColor = ShareStyle.Tint; bannerClose.Bounds = new Rectangle(668,13,30,30); bannerClose.AccessibleName = "稍後再說";
         banner.Controls.AddRange(new Control[] { bannerText, bannerSource, bannerDownload, bannerClose });

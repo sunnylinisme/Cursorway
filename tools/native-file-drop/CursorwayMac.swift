@@ -1045,7 +1045,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     var updateURL: URL?, updateTimer: Timer?
     // Background update state: the release found, the running download, and the checked app ready to install.
     var updateFound: ShareUpdate.Found?, updateDownload: ShareDownload?, updateReady: URL?
-    let bannerButton = SharePrimaryButton(title: "下載更新", target: nil, action: nil), bannerSource = NSTextField(labelWithString: ""), bannerNotes = NSButton(title: "", target: nil, action: nil)
+    let bannerButton = SharePrimaryButton(title: "下載更新", target: nil, action: nil), bannerSource = NSTextField(labelWithString: ""), bannerRepo = NSButton(title: "", target: nil, action: nil), bannerDot = NSTextField(labelWithString: "·"), bannerNotes = NSButton(title: "", target: nil, action: nil)
     static let bannerHeight: CGFloat = 56
     let autostart = NSButton(checkboxWithTitle: "登入時自動啟動", target: nil, action: nil)
     var transferring = false, progress = ShareProgress()
@@ -1100,11 +1100,15 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         // Two lines: what is happening, then where the update comes from and a link to its release notes.
         banner.frame = NSRect(x: 0, y: 0, width: W, height: ShareApp.bannerHeight); banner.fill = ShareStyle.tint; banner.isHidden = true
         bannerText.textColor = ShareStyle.blueInk; bannerText.font = .systemFont(ofSize: 13); bannerText.lineBreakMode = .byTruncatingTail; bannerText.frame = NSRect(x: 24, y: 9, width: 520, height: 18); banner.addSubview(bannerText)
-        bannerSource.stringValue = "來源：github.com/sunnylinisme/Cursorway ·"; bannerSource.textColor = ShareStyle.blueInk; bannerSource.font = .systemFont(ofSize: 11); bannerSource.sizeToFit()
+        bannerSource.stringValue = "來源："; bannerSource.textColor = ShareStyle.blueInk; bannerSource.font = .systemFont(ofSize: 11); bannerSource.sizeToFit()
         bannerSource.frame = NSRect(x: 24, y: 31, width: bannerSource.frame.width, height: 16); banner.addSubview(bannerSource)
+        bannerRepo.isBordered = false; bannerRepo.target = self; bannerRepo.action = #selector(openProject); bannerRepo.toolTip = "在瀏覽器打開 Cursorway 的 GitHub 專案頁"
+        bannerRepo.attributedTitle = NSAttributedString(string: "github.com/sunnylinisme/Cursorway", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: ShareStyle.blueInk, .underlineStyle: NSUnderlineStyle.single.rawValue])
+        bannerRepo.sizeToFit(); bannerRepo.frame = NSRect(x: bannerSource.frame.maxX, y: 30, width: bannerRepo.frame.width, height: 18); banner.addSubview(bannerRepo)
+        bannerDot.textColor = ShareStyle.blueInk; bannerDot.font = .systemFont(ofSize: 11); bannerDot.sizeToFit(); bannerDot.frame = NSRect(x: bannerRepo.frame.maxX + 2, y: 31, width: bannerDot.frame.width, height: 16); banner.addSubview(bannerDot)
         bannerNotes.isBordered = false; bannerNotes.target = self; bannerNotes.action = #selector(openUpdate); bannerNotes.toolTip = "在瀏覽器打開這一版的 GitHub 發佈頁"
         bannerNotes.attributedTitle = NSAttributedString(string: "查看更新內容", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: ShareStyle.blueInk, .underlineStyle: NSUnderlineStyle.single.rawValue])
-        bannerNotes.sizeToFit(); bannerNotes.frame = NSRect(x: bannerSource.frame.maxX + 2, y: 30, width: bannerNotes.frame.width, height: 18); banner.addSubview(bannerNotes)
+        bannerNotes.sizeToFit(); bannerNotes.frame = NSRect(x: bannerDot.frame.maxX + 2, y: 30, width: bannerNotes.frame.width, height: 18); banner.addSubview(bannerNotes)
         bannerButton.target = self; bannerButton.action = #selector(updateClicked); bannerButton.frame = NSRect(x: 560, y: 13, width: 104, height: 30); banner.addSubview(bannerButton)
         let dismiss = NSButton(title: "✕", target: self, action: #selector(dismissUpdate)); dismiss.isBordered = false; dismiss.frame = NSRect(x: 670, y: 13, width: 30, height: 30); dismiss.toolTip = "稍後再說"; banner.addSubview(dismiss)
         body.frame = NSRect(x: 0, y: 0, width: W, height: H); root.addSubview(body); root.addSubview(banner)
@@ -1584,6 +1588,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         }
     }
     @objc func openUpdate() { if let url = updateURL { NSWorkspace.shared.open(url) } }
+    @objc func openProject() { if let url = URL(string: ShareUpdate.project) { NSWorkspace.shared.open(url) } }
     // Banner button: 更新 starts a background download, 取消 stops it, 重新啟動 swaps in the new app and opens it.
     @objc func updateClicked() {
         guard let found = updateFound else { return }
@@ -2235,7 +2240,7 @@ func selfTest(_ directory: URL) throws {
     app.showUpdate(found); RunLoop.current.run(until: Date().addingTimeInterval(0.2))
     guard !app.banner.isHidden, app.bannerText.stringValue.contains("0.3.11") else { throw ShareError.message("Update banner did not show") }
     try snapshot(app.window.contentView, "gui-mac-update.png")
-    guard app.bannerSource.stringValue.contains("github.com/sunnylinisme/Cursorway"), app.bannerNotes.title == "查看更新內容", app.bannerButton.title == (found.zip != nil && ShareUpdater.canInstall ? "更新" : "下載更新") else { throw ShareError.message("Update banner source line or button wrong") }
+    guard app.bannerRepo.title == "github.com/sunnylinisme/Cursorway", app.bannerNotes.title == "查看更新內容", app.bannerButton.title == (found.zip != nil && ShareUpdater.canInstall ? "更新" : "下載更新") else { throw ShareError.message("Update banner source line or button wrong") }
     // Background update: the Mac ZIP comes only from this repository, and is checked by size and SHA-256.
     let zipJSON = #"[{"tag_name":"v0.3.30","html_url":"https://github.com/sunnylinisme/Cursorway/releases/tag/v0.3.30","draft":false,"prerelease":false,"assets":[{"name":"Cursorway-Setup-0.3.30-x64.exe","size":3,"browser_download_url":"https://github.com/sunnylinisme/Cursorway/releases/download/v0.3.30/Cursorway-Setup-0.3.30-x64.exe"},{"name":"Cursorway-0.3.30-macos-arm64.zip","size":3,"digest":"sha256:BA7816BF8F01CFEA414140DE5DAE2223B00361A396177A9CB410FF61F20015AD","browser_download_url":"https://github.com/sunnylinisme/Cursorway/releases/download/v0.3.30/Cursorway-0.3.30-macos-arm64.zip"}]}]"#
     guard let withZip = ShareUpdate.newer(Data(zipJSON.utf8), current: [0, 3, 20]), let zip = withZip.zip, zip.size == 3, zip.sha256 == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", zip.url.lastPathComponent == "Cursorway-0.3.30-macos-arm64.zip" else { throw ShareError.message("Mac update ZIP not found in the release") }

@@ -24,6 +24,10 @@ Cursorway（原名 Barrier Share）— Windows／Mac 共用鍵盤滑鼠與雙向
    按「權限設定」可開啟設定；必要時重開程式。
    Windows 安裝程式會自動允許 Cursorway 使用私人／網域網路；若網路被設為「公用」，請改成「私人」。
 
+下一版更新（Windows）
+- Windows 當主控端時，游標在 Windows 接收端按 Ctrl+Alt+End（同遠端桌面的慣例）即可對接收端送出 Ctrl+Alt+Del；直接按 Ctrl+Alt+Del 一定由這台 Windows 自己處理。游標在這台時 Ctrl+Alt+End 照常。Mac 當主控端時仍用 ⌘⌥⌦（fn + delete）。
+- 設定的「鍵盤與滑鼠」加上這個說明。
+
 0.3.37 更新（Windows）
 - 修正：Mac 拷貝檔案到 Windows 時，若 Mac 在傳輸開始後又回報一次剪貼簿變更，Windows 會自己拒收，檔案貼不出來（0.3.36 修了 Mac 端，這版修 Windows 端）。
 - 自動測試新增：真主控端程式＋不斷線轉接站＋接收端的端到端測試（文字、檔案、游標回主控端、轉接站重啟）。

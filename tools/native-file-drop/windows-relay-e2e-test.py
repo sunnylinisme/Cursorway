@@ -179,6 +179,14 @@ end
         assert any(hashlib.sha256(f.read_bytes()).digest() == hashlib.sha256(payload).digest() for f in files), "the received file differs"
         leave_over_edge("the pointer did not come back to the host after the file")
 
+        # 2b. Ctrl+Alt+End on the host while the input is on the receiver arrives there as Ctrl+Alt+Delete, not End.
+        def key_downs(id): return text("user").count("recv key down id=0x%08x" % id)
+        deletes, ends = key_downs(0xEFFF), key_downs(0xEF57)
+        enter(); keys(0x11, 0x12, 0x23)  # Ctrl+Alt+End
+        wait(lambda: key_downs(0xEFFF) > deletes, "Ctrl+Alt+End did not reach the receiver as Delete:\n" + text("user")[-2000:])
+        assert key_downs(0xEF57) == ends, "the receiver got End instead of Delete"
+        leave_over_edge("the pointer did not come back to the host after Ctrl+Alt+End")
+
         # 3. One host connection so far.
         assert text("server").count('client "windows" has connected') == 1, "the relay connected to the host more than once"
 

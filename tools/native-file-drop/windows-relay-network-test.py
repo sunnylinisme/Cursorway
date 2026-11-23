@@ -6,6 +6,8 @@ when the input moves to the other core must not stay pressed."""
 import ctypes
 import hashlib
 import pathlib
+import queue
+import select
 import socket
 import ssl
 import struct
@@ -81,42 +83,48 @@ def set_windows_files(paths):
 
 
 class Host:
-    """The simulated host: accepts the relay, answers keep-alives in the background."""
+    """The simulated host: accepts the relay, answers keep-alives in the background.
+
+    One SSL object must not be used from two threads at once, so one thread does all the socket I/O:
+    send() only queues, and that thread writes the queue, sends a keep-alive every second and reads."""
     def __init__(self, connection):
-        self.wire = connection; self.wire.settimeout(10); self.lock = threading.Lock(); self.inbox = []; self.alive = True
-        self.send(b"Barrier" + struct.pack("!HH", 1, 6))
-        hello = self.exact_message(); assert hello.startswith(b"Barrier"), hello
-        self.send(b"QINF"); self.wire.settimeout(.05)
-        threading.Thread(target=self.reader, daemon=True).start()
-        threading.Thread(target=self.keepalive, daemon=True).start()
-    def send(self, message):
-        with self.lock: self.wire.sendall(struct.pack("!I", len(message)) + message)
-    def exact(self, size):
-        # One SSL object must not be read and written from two threads at once (the reader against
-        # send()): that is what dropped this link now and then. Read under the send lock, a little at a time.
-        data = bytearray()
-        while len(data) < size:
-            with self.lock:
-                try: part = self.wire.recv(size - len(data))
-                except (socket.timeout, TimeoutError): continue
+        self.wire = connection; self.wire.settimeout(10); self.outbox = queue.Queue(); self.inbox = []; self.alive = True; self.buffer = bytearray()
+        self.wire.sendall(self.frame(b"Barrier" + struct.pack("!HH", 1, 6)))
+        message = None
+        while message is None:
+            part = self.wire.recv(65536)
             if not part: raise RuntimeError("relay disconnected from the host")
-            data.extend(part)
-        return bytes(data)
-    def exact_message(self):
-        size, = struct.unpack("!I", self.exact(4)); return self.exact(size)
-    def reader(self):
+            self.buffer.extend(part); message = self.take()
+        assert message.startswith(b"Barrier"), message
+        self.send(b"QINF")
+        threading.Thread(target=self.io, daemon=True).start()
+    @staticmethod
+    def frame(message): return struct.pack("!I", len(message)) + message
+    def send(self, message): self.outbox.put(self.frame(message))
+    def take(self):
+        if len(self.buffer) < 4: return None
+        size, = struct.unpack("!I", self.buffer[:4])
+        if len(self.buffer) < 4 + size: return None
+        message = bytes(self.buffer[4:4 + size]); del self.buffer[:4 + size]; return message
+    def io(self):
+        raw = self.wire; alive_at = 0.0
         try:
             while self.alive:
-                message = self.exact_message()
-                if message == b"CALV": continue
-                self.inbox.append(message)
+                if time.monotonic() >= alive_at: self.outbox.put(self.frame(b"CALV")); alive_at = time.monotonic() + 1
+                raw.settimeout(None)
+                while not self.outbox.empty(): raw.sendall(self.outbox.get())
+                if raw.pending() or select.select([raw], [], [], .02)[0]:
+                    raw.settimeout(0)
+                    try: part = raw.recv(65536)
+                    except (ssl.SSLWantReadError, ssl.SSLWantWriteError, BlockingIOError): continue
+                    if not part: raise RuntimeError("relay disconnected from the host")
+                    self.buffer.extend(part)
+                    while True:
+                        message = self.take()
+                        if message is None: break
+                        if message != b"CALV": self.inbox.append(message)
         except Exception as error:
             if self.alive: self.inbox.append(b"DROPPED " + str(error).encode())
-    def keepalive(self):
-        while self.alive:
-            try: self.send(b"CALV")
-            except Exception: return
-            time.sleep(1)
     def until(self, code, seconds=10):
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:

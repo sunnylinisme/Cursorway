@@ -1047,7 +1047,7 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
     var updateFound: ShareUpdate.Found?, updateDownload: ShareDownload?, updateReady: URL?
     let bannerButton = SharePrimaryButton(title: "下載更新", target: nil, action: nil), bannerSource = NSTextField(labelWithString: ""), bannerRepo = NSButton(title: "", target: nil, action: nil), bannerDot = NSTextField(labelWithString: "·"), bannerNotes = NSButton(title: "", target: nil, action: nil)
     static let bannerHeight: CGFloat = 56
-    let autostart = NSButton(checkboxWithTitle: "登入時自動啟動", target: nil, action: nil)
+    let autostart = NSSwitch(), autostartLabel = NSTextField(labelWithString: "登入時自動啟動")
     var transferring = false, progress = ShareProgress()
     lazy var transferPanel = ShareTransferPanel(target: self, cancelAction: #selector(resume))
     var receiving = false, autoPaste = ShareAutoPaste(), pasteMonitor: Any?, lastProgress = ""
@@ -1142,7 +1142,8 @@ final class ShareApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuD
         emptyNearby.alignment = .center; text(emptyNearby, 13, .regular, ShareStyle.muted); emptyNearby.maximumNumberOfLines = 3; emptyNearby.frame = NSRect(x: 40, y: 88, width: 592, height: 60); listCard.addSubview(emptyNearby)
         // Footer: everyday switches; the rarely used actions sit under 更多.
         let rule = NSBox(); rule.boxType = .custom; rule.borderWidth = 0; rule.fillColor = ShareStyle.border; at(rule, 0, 556, W, 1)
-        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; autostart.font = .systemFont(ofSize: 13); at(autostart, 24, 579, 200, 22)
+        autostart.target = self; autostart.action = #selector(toggleLogin); autostart.state = !test && ShareLogin.enabled ? .on : .off; autostart.controlSize = .small; autostart.setAccessibilityLabel("登入時自動啟動"); at(autostart, 24, 579, 40, 22)
+        autostartLabel.font = .systemFont(ofSize: 13); autostartLabel.textColor = ShareStyle.ink; at(autostartLabel, 74, 581, 160, 18)
         at(ShareQuietButton("進階設定", self, #selector(showAdvanced)), 404, 574, 100, 30)
         at(ShareQuietButton("診斷紀錄", self, #selector(showDiagnostics)), 508, 574, 100, 30)
         at(ShareQuietButton("更多  ▾", self, #selector(showMore(_:))), 612, 574, 84, 30)

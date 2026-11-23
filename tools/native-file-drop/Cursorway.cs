@@ -776,6 +776,9 @@ sealed class ShareSegment : Control
     protected override void OnMouseDown(MouseEventArgs e) { Focus(); for (int i = 0; i < options.Length; ++i) if (Part(i).Contains(e.Location)) Selected = i; base.OnMouseDown(e); }
     protected override bool IsInputKey(Keys key) { return key == Keys.Left || key == Keys.Right || base.IsInputKey(key); }
     protected override void OnKeyDown(KeyEventArgs e) { if (e.KeyCode == Keys.Left) Selected = selected - 1; if (e.KeyCode == Keys.Right) Selected = selected + 1; base.OnKeyDown(e); }
+    bool keyboardFocus;
+    protected override void OnKeyUp(KeyEventArgs e) { keyboardFocus = true; Invalidate(); base.OnKeyUp(e); }
+    protected override void OnMouseDown(MouseEventArgs e) { keyboardFocus = false; base.OnMouseDown(e); }
     protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
     protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
     protected override AccessibleObject CreateAccessibilityInstance() { return new SegmentAccessible(this); }
@@ -980,12 +983,15 @@ sealed class ShareSwitch : CheckBox
     {
         var g = e.Graphics; g.Clear(BackColor); g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
         float scale = DeviceDpi / 96F; int th = (int)Math.Round(20 * scale), tw = (int)Math.Round(36 * scale), ty = (Height - th) / 2;
-        var track = new Rectangle(1, ty, tw, th);
+        var track = new Rectangle(Text.Length > 0 ? 3 : (Width - tw) / 2, ty, tw, th);
         Color fill = !Enabled ? ShareStyle.DisabledFill : Checked ? (hover ? ShareStyle.BlueHover : ShareStyle.Blue) : (hover ? ShareStyle.PressFill : ShareStyle.Border);
         using (var path = new System.Drawing.Drawing2D.GraphicsPath()) {
             path.AddArc(track.X, track.Y, th, th, 90, 180); path.AddArc(track.Right - th, track.Y, th, th, 270, 180); path.CloseFigure();
             using (var b = new SolidBrush(fill)) g.FillPath(b, path);
-            if (Focused && ShowFocusCues) using (var pen = new Pen(ShareStyle.Blue, Math.Max(1F, scale))) { var r = track; r.Inflate(2, 2); g.DrawRectangle(pen, r); }
+        }
+        // Keyboard focus only: a soft rounded ring hugging the track (no square box after a mouse click).
+        if (Focused && ShowFocusCues && keyboardFocus) using (var ring = new System.Drawing.Drawing2D.GraphicsPath()) using (var pen = new Pen(Color.FromArgb(120, ShareStyle.Blue), Math.Max(1.5F, 1.5F * scale))) {
+            var r = Rectangle.Inflate(track, 2, 2); ring.AddArc(r.X, r.Y, r.Height, r.Height, 90, 180); ring.AddArc(r.Right - r.Height, r.Y, r.Height, r.Height, 270, 180); ring.CloseFigure(); g.DrawPath(pen, ring);
         }
         int pad = Math.Max(2, (int)Math.Round(2 * scale)), knob = th - pad * 2, kx = Checked ? track.Right - pad - knob : track.X + pad;
         using (var shade = new SolidBrush(Color.FromArgb(40, 0, 0, 0))) g.FillEllipse(shade, kx, ty + pad + 1, knob, knob);
@@ -1161,7 +1167,9 @@ sealed class ShareWindow : Form
         emptyNearby.BackColor = Color.White; emptyNearby.ForeColor = ShareStyle.Muted; emptyNearby.TextAlign = ContentAlignment.MiddleCenter; emptyNearby.BorderStyle = BorderStyle.FixedSingle; At(emptyNearby,24,306,672,236);
         // Footer: everyday switches; the rarely used actions sit under 更多.
         At(new Panel { BackColor = ShareStyle.Border },0,556,720,1);
-        autostart.Text = "登入時自動啟動"; autostart.BackColor = ShareStyle.Background; autostart.Font = new Font(Font.FontFamily,10F); autostart.TabIndex = 5; At(autostart,24,568,200,28);
+        autostart.AccessibleName = "登入時自動啟動"; autostart.BackColor = ShareStyle.Background; autostart.TabIndex = 5; At(autostart,22,568,44,28);
+        // The words beside the switch are only a caption: clicking them does not flip it.
+        At(new Label { Text = "登入時自動啟動", BackColor = ShareStyle.Background, ForeColor = ShareStyle.Ink, Font = new Font(Font.FontFamily,10F), TextAlign = ContentAlignment.MiddleLeft, AutoSize = false }, 70, 568, 160, 28);
         try { autostart.Checked = !selfTest && ShareLogin.Enabled; } catch (Exception) { }
         autostart.CheckedChanged += delegate { if (!testing) try { ShareLogin.Enabled = autostart.Checked; } catch (Exception e) { Error(e); } };
         var advancedButton = new ShareButton { Text = "進階設定", Quiet = true, BackColor = ShareStyle.Background, Font = new Font(Font.FontFamily,10F), TabIndex = 6 }; At(advancedButton,412,566,96,32); advancedButton.Click += delegate { ShowAdvanced(); };

@@ -1209,10 +1209,8 @@ MSWindowsScreen::onKey(WPARAM wParam, LPARAM lParam)
             return true;
         }
 
-        // check for ctrl+alt+del emulation.  Ctrl+Alt+End is the Remote
-        // Desktop convention; we only get here while the input is on the
-        // other screen, so on this screen Ctrl+Alt+End is left alone.
-        if ((virtKey == VK_PAUSE || virtKey == VK_CANCEL || virtKey == VK_END) &&
+        // check for ctrl+alt+del emulation
+        if ((virtKey == VK_PAUSE || virtKey == VK_CANCEL) &&
             (state & s_ctrlAlt) == s_ctrlAlt) {
             LOG((CLOG_DEBUG "emulate ctrl+alt+del"));
             // switch wParam and lParam to be as if VK_DELETE was

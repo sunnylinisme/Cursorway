@@ -2156,7 +2156,6 @@ sealed class ShareWindow : Form
         var swap = check(a.SwapModifiers); row("Mac 上對調 Ctrl 與 Command", "只對 Mac 接收端生效：用這台的鍵盤在 Mac 上按 Ctrl+C／V 就是複製貼上", swap);
         var lockKey = check(a.LockKey); row("啟用鎖定游標快捷鍵", "按 Ctrl+Alt+L 把游標鎖在目前這台，碰到邊緣也不會切換；再按一次解除", lockKey);
         var relative = check(a.RelativeMouse); row("相對滑鼠移動", "搭配鎖定游標使用：鎖定時只傳送移動量，全螢幕遊戲和 3D 軟體的視角才會正常轉動", relative);
-        row("對接收端送出 Ctrl+Alt+Del", "游標在 Windows 接收端時按 Ctrl+Alt+End（同遠端桌面）；直接按 Ctrl+Alt+Del 會開這台自己的安全畫面。Mac 當主控端時按 ⌘⌥⌦", new Label { Text = "Ctrl+Alt+End", AutoSize = true, BackColor = Color.White, ForeColor = ShareStyle.Muted });
         var saver = check(a.ScreenSaver); row("同步螢幕保護程式", "一台啟動螢幕保護程式時，其他電腦也一起啟動，結束時也一起結束", saver);
         var broadcast = check(a.BroadcastKey); row("啟用鍵盤廣播快捷鍵", "按 Ctrl+Alt+B 開始或停止：打的字會同時送到所有電腦，適合在多台輸入相同指令", broadcast);
         var caps = check(a.CapsLockFix); row("接收端的 Caps Lock 修正", "接收端的大小寫或 Caps Lock 燈號跟按鍵對不上時再開啟，常見於 Mac 接收端", caps);
